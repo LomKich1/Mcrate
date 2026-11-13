@@ -1,6 +1,9 @@
 //! mcrate-audio: воспроизведение звука. Обёртка над rodio,
 //! чтобы остальной проект не зависел от деталей библиотеки.
 
+pub mod queue;
+pub use queue::{PlayQueue, RepeatMode}; // чтобы писать mcrate_audio::PlayQueue
+
 use std::fs::File;
 use std::path::Path;
 use std::time::Duration;
