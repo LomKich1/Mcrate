@@ -9,7 +9,7 @@ use eframe::egui::{self, Frame, Margin};
 use mcrate_core::Track;
 
 use crate::controller::Controller;
-use crate::settings::{Design, GraphicsSettings, STORAGE_KEY};
+use crate::settings::{Design, GraphicsSettings, STORAGE_KEY, ThemePreset};
 use crate::theme::{Surface, Theme, glass, with_alpha};
 use crate::{fonts, platform};
 
@@ -26,7 +26,7 @@ pub struct McrateApp {
     applied: Option<GraphicsSettings>, // какие настройки уже применены к egui
     pub theme: Theme,
     render_state: eframe::egui_wgpu::RenderState, // доступ к GPU (нужен стеклу)
-    wallpaper_key: Option<([u8; 3], bool)>,        // для каких (акцент, тёмная) уже загружены обои
+    wallpaper_key: Option<(ThemePreset, [u8; 3], bool)>, // для какой темы уже загружены обои
     pub backdrop_error: Option<String>,
 
     pub ctl: Controller,
@@ -85,7 +85,7 @@ impl McrateApp {
         self.theme.apply(ctx);
 
         // Обои для стекла зависят только от палитры.
-        let key = (self.settings.accent, self.settings.dark);
+        let key = self.settings.palette_key();
         if self.settings.design == Design::LiquidGlass && self.wallpaper_key != Some(key) {
             let img = glass::wallpaper(&self.theme.palette);
             egui_glass::set_backdrop(ctx, &self.render_state, &img);
@@ -98,7 +98,7 @@ impl McrateApp {
         }
 
         // Тёмный/светлый заголовок окна.
-        ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(if self.settings.dark {
+        ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(if self.settings.is_dark() {
             egui::SystemTheme::Dark
         } else {
             egui::SystemTheme::Light

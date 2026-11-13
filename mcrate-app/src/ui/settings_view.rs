@@ -5,7 +5,8 @@ use egui::{Color32, CursorIcon, FontId, Rect, RichText, Sense, Ui, pos2, vec2};
 use super::widgets::{ButtonKind, pill_button};
 use crate::app::McrateApp;
 use crate::platform;
-use crate::settings::{ACCENT_PRESETS, Design, GraphicsSettings, WindowBackdrop};
+use crate::settings::{Design, GraphicsSettings, ThemePreset, WindowBackdrop};
+use crate::theme::Palette;
 use crate::theme::{Theme, with_alpha};
 
 impl McrateApp {
@@ -27,36 +28,38 @@ impl McrateApp {
             });
 
             // ---------- цвет ----------
-            group_title(ui, "Цвет");
-            ui.horizontal(|ui| {
-                let dark = self.settings.dark;
-                let kind = |on: bool| if on { ButtonKind::Filled } else { ButtonKind::Tonal };
-                if pill_button(ui, theme, "Светлая", None, kind(!dark)).clicked() {
-                    self.settings.dark = false;
-                }
-                if pill_button(ui, theme, "Тёмная", None, kind(dark)).clicked() {
-                    self.settings.dark = true;
-                }
-            });
+            group_title(ui, "Цветовая тема");
+            // Карточки тем в несколько рядов: сколько влезает по ширине.
+            let card_w = 150.0;
+            let gap = ui.spacing().item_spacing.x;
+            let per_row = (((ui.available_width() + gap) / (card_w + gap)).floor() as usize).max(1);
+            for row in ThemePreset::ALL.chunks(per_row) {
+                ui.horizontal(|ui| {
+                    for &preset in row {
+                        if theme_card(ui, theme, preset, &self.settings, self.settings.theme == preset, card_w).clicked() {
+                            self.settings.theme = preset;
+                        }
+                    }
+                });
+            }
+            if self.settings.theme == ThemePreset::Custom {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let dark = self.settings.dark;
+                    let kind = |on: bool| if on { ButtonKind::Filled } else { ButtonKind::Tonal };
+                    if pill_button(ui, theme, "Светлая", None, kind(!dark)).clicked() {
+                        self.settings.dark = false;
+                    }
+                    if pill_button(ui, theme, "Тёмная", None, kind(dark)).clicked() {
+                        self.settings.dark = true;
+                    }
+                    ui.label("Цвет:");
+                    ui.color_edit_button_srgb(&mut self.settings.accent);
+                });
+            }
             ui.add_space(4.0);
-            ui.horizontal_wrapped(|ui| {
-                for seed in ACCENT_PRESETS {
-                    let selected = self.settings.accent == seed;
-                    let (rect, resp) = ui.allocate_exact_size(vec2(34.0, 34.0), Sense::click());
-                    let color = Color32::from_rgb(seed[0], seed[1], seed[2]);
-                    ui.painter().circle_filled(rect.center(), 14.0, color);
-                    if selected {
-                        ui.painter().circle_stroke(rect.center(), 17.0, egui::Stroke::new(2.5, p.on_surface));
-                    }
-                    if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
-                        self.settings.accent = seed;
-                    }
-                }
-                ui.label("Свой:");
-                ui.color_edit_button_srgb(&mut self.settings.accent);
-            });
             ui.label(
-                RichText::new("Из одного цвета строится вся палитра Material 3 (спецификация 2025).")
+                RichText::new("Готовые темы совпадают с приложением расписания. «Свой цвет» строит палитру из одного цвета.")
                     .size(12.5)
                     .color(p.on_surface_variant),
             );
@@ -165,5 +168,43 @@ fn design_card(ui: &mut Ui, theme: &Theme, design: Design, name: &str, selected:
     if selected {
         painter.circle_filled(pos2(rect.right() - 22.0, rect.bottom() - 20.0), 6.0, p.primary);
     }
+    resp.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// Карточка цветовой темы: мини-окно в цветах этой темы + название.
+/// Цвета берём из палитры самой темы, а не текущей, чтобы все карточки выглядели по-разному.
+fn theme_card(ui: &mut Ui, theme: &Theme, preset: ThemePreset, settings: &GraphicsSettings, selected: bool, width: f32) -> egui::Response {
+    let cur = &theme.palette;
+    let pv = Palette::for_preset(preset, settings.accent, settings.dark);
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 92.0), Sense::click());
+    let painter = ui.painter();
+
+    painter.rect_filled(rect, 16.0, cur.surface_container_high);
+    if resp.hovered() && !selected {
+        painter.rect_filled(rect, 16.0, theme.row_hover_fill());
+    }
+    if selected {
+        painter.rect_stroke(rect, 16.0, egui::Stroke::new(2.5, cur.primary), egui::StrokeKind::Inside);
+    }
+
+    // Мини-окно: фон, боковая панель, основная область, кружок акцента.
+    let win = Rect::from_min_max(rect.min + vec2(8.0, 8.0), pos2(rect.right() - 8.0, rect.bottom() - 28.0));
+    painter.rect_filled(win, 10.0, pv.surface);
+    let side = Rect::from_min_max(win.min + vec2(5.0, 5.0), pos2(win.left() + win.width() * 0.26, win.bottom() - 5.0));
+    painter.rect_filled(side, 6.0, pv.surface_container_high);
+    painter.rect_filled(Rect::from_min_size(side.min + vec2(4.0, 5.0), vec2(side.width() - 8.0, 7.0)), 3.5, pv.secondary_container);
+    let main = Rect::from_min_max(pos2(side.right() + 5.0, win.top() + 5.0), pos2(win.right() - 5.0, win.bottom() - 5.0));
+    painter.rect_filled(main, 6.0, pv.surface_container_low);
+    painter.circle_filled(main.left_top() + vec2(10.0, 10.0), 5.0, pv.primary);
+    painter.rect_filled(Rect::from_min_size(main.left_top() + vec2(20.0, 7.0), vec2(main.width() * 0.4, 6.0)), 3.0, pv.on_surface_variant);
+    painter.rect_filled(Rect::from_min_size(main.left_bottom() + vec2(6.0, -13.0), vec2(main.width() - 12.0, 7.0)), 3.5, pv.primary_container);
+
+    painter.text(
+        pos2(rect.left() + 12.0, rect.bottom() - 14.0),
+        egui::Align2::LEFT_CENTER,
+        preset.label(),
+        FontId::proportional(13.5),
+        cur.on_surface,
+    );
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }

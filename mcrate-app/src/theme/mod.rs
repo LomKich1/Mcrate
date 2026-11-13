@@ -10,7 +10,7 @@ pub mod palette;
 use egui::{Color32, Context, CornerRadius, Ui};
 
 use crate::settings::{Design, GraphicsSettings, WindowBackdrop};
-pub use palette::{Palette, with_alpha};
+pub use palette::{Palette, with_alpha, with_alpha_over};
 
 /// Какие бывают поверхности (контейнеры) в интерфейсе.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -36,7 +36,7 @@ impl Theme {
     pub fn new(settings: &GraphicsSettings) -> Self {
         Self {
             settings: settings.clone(),
-            palette: Palette::from_seed(settings.accent, settings.dark),
+            palette: Palette::from_settings(settings),
         }
     }
 
@@ -158,15 +158,4 @@ impl Theme {
             Design::LiquidGlass => glass::surface(self, ui, role, add),
         }
     }
-}
-
-/// Смешивает `base` с `overlay` в пропорции `amount` (0..1). Так в M3 делаются «слои состояния»
-/// (state layers): при наведении поверх цвета кладётся 8% цвета текста.
-pub fn with_alpha_over(base: Color32, overlay: Color32, amount: f32) -> Color32 {
-    let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * amount).round() as u8;
-    Color32::from_rgb(
-        mix(base.r(), overlay.r()),
-        mix(base.g(), overlay.g()),
-        mix(base.b(), overlay.b()),
-    )
 }
