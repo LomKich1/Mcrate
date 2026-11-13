@@ -9,6 +9,13 @@ use mcrate_audio::{AudioPlayer, PlayQueue, RepeatMode};
 use mcrate_core::{MusicProvider, StreamSource, Track};
 use mcrate_providers::LocalProvider;
 
+/// Где лежит файл со списком сохранённых треков: %APPDATA%\Mcrate\library.txt
+/// (APPDATA = переменная окружения Windows, обычно C:\Users\<имя>\AppData\Roaming).
+/// Option, потому что переменной теоретически может не быть.
+fn library_file() -> Option<PathBuf> {
+    std::env::var_os("APPDATA").map(|dir| PathBuf::from(dir).join("Mcrate").join("library.txt"))
+}
+
 pub struct Controller {
     // Runtime = «движок» для async-кода. Методы MusicProvider асинхронные, а UI синхронный,
     // поэтому ждём результат через block_on (для локальных файлов это мгновенно).
@@ -35,16 +42,34 @@ impl Controller {
             Ok(a) => (Some(a), None),
             Err(e) => (None, Some(e.to_string())),
         };
+        // Библиотека сохраняется между запусками. Если папку приложения определить не удалось,
+        // работаем только в памяти (как раньше).
+        let provider = match library_file() {
+            Some(path) => LocalProvider::with_storage(path),
+            None => LocalProvider::new(),
+        };
+        // load() заново читает сохранённые пути. Возвращает пути, которые не загрузились.
+        let (unavailable, load_error) = match provider.load() {
+            Ok(list) => (list.len(), None),
+            Err(e) => (0, Some(e.to_string())),
+        };
+        // Пустой запрос = все треки (так устроен LocalProvider::search).
+        let library = rt.block_on(provider.search("")).unwrap_or_default();
+        let status = match (load_error, unavailable) {
+            (Some(e), _) => Some(format!("Не удалось загрузить библиотеку: {e}")),
+            (None, 0) => None,
+            (None, n) => Some(format!("Не найдено файлов: {n} (удалены или перемещены)")),
+        };
         Self {
             rt,
-            provider: LocalProvider::new(),
+            provider,
             audio,
             audio_error,
             queue: PlayQueue::new(),
-            library: Vec::new(),
+            library,
             now: None,
             volume: 0.8,
-            status: None,
+            status,
             ended: false,
         }
     }
