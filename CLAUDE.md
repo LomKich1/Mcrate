@@ -18,9 +18,15 @@
 - boringtun (Rust-WireGuard) не умеет обфускацию Amnezia, скорее всего нужен amneziawg-go отдельным процессом. Лицензию проверить.
 - Cloudflare WARP, насколько известно, поддерживает только часть обфускации (Jc/Jmin/Jmax). Проверять на практике.
 
-## Состояние
-- Репозиторий LomKich1/Mcrate создан (приватный), оба с правом записи.
-- Кода пока нет. Основная работа на ПК в VS Code, Windows 11.
+## Состояние (обновлено 13.11.2026)
+- Репозиторий LomKich1/Mcrate (приватный), оба с правом записи. Работа на ПК, Windows 11, VS Code.
+- Готово, дорожка A «движок» (делает LomKich):
+  - mcrate-core: Track, ProviderKind (Yandex, Vk, SoundCloud, Spotify, Local), StreamSource (DirectUrl, HlsPlaylist, LocalFile), ProviderError, трейт MusicProvider; secrets.rs: TokenStore (keyring 4.x, Windows Credential Manager).
+  - mcrate-audio: AudioPlayer (rodio 0.23: файл, пауза, громкость, перемотка), PlayQueue (очередь, повтор, перемешивание, 7 тестов), PlaybackEngine (контракт ниже).
+  - mcrate-providers: LocalProvider (свои файлы, теги через lofty).
+  - Примеры: mcrate-audio/examples/{play,queue}.rs, mcrate-providers/examples/{local,engine_demo}.rs.
+- Не начато: онлайн-провайдеры, UI (дорожка B, будет делать P1tr0v1ch), волна, AmneziaWG.
+- Yandex Music: полный звук только с платной подпиской, провайдер отложен до появления подписки для тестов.
 
 ## План по шагам
 1. Cargo workspace: mcrate-core (общие типы, трейт MusicProvider: поиск, получение потока, лайки) и mcrate-app (окно, интерфейс, плеер).
@@ -64,3 +70,20 @@ git pull
 - Коммиты маленькие, по одной задаче, чтобы напарнику было легко читать.
 - Общие интерфейсы (трейты в mcrate-core) меняем только после согласования друг с другом.
 - Новые решения (фреймворк, крейты) записываем в этот файл.
+
+## Принятые решения
+- Звук: отдельный крейт mcrate-audio поверх rodio 0.23 (внутри symphonia + cpal). Свой конвейер на symphonia + cpal сделаем позже, когда понадобятся HLS и своя буферизация.
+- Разделение: дорожка A (движок: mcrate-core, mcrate-audio, mcrate-providers) и дорожка B (интерфейс: mcrate-app, UI-фреймворк, drag&drop). Drag&drop делает B и передаёт пути в LocalProvider.
+- Поиск идёт сразу по всем подключённым сервисам (параллельно, у каждого свой таймаут). Результаты показываются вместе с подписью источника (Track.provider); ошибки сервисов (нет авторизации, нет подписки, таймаут) показываются отдельно, не ломая остальной поиск. Трек между сервисами не сопоставляем: пользователь сам выбирает вариант. Агрегатор: SearchHub в mcrate-providers.
+- Токены: только Windows Credential Manager через TokenStore, в тестах только выдуманные.
+- Музыкальные файлы в папку репозитория не кладём (.gitignore аудио не игнорирует).
+
+## Контракт звука: PlaybackEngine (mcrate-audio)
+Единая точка входа в звук для UI. Движок живёт в своём потоке; UI шлёт команды, читает события и снимок состояния.
+- Создание: `PlaybackEngine::new(providers: Vec<Arc<dyn MusicProvider>>)`. Звуковое устройство открывается внутри потока движка.
+- Команды (не блокируют UI, берут &self): `play_queue(Vec<Track>, start)`, `add_to_queue(Track)`, `toggle_pause()`, `next()`, `prev()`, `seek(Duration)`, `set_volume(0.0..=1.0)`, `set_shuffle(bool)`, `cycle_repeat()`, `stop()`.
+- События: UI каждый кадр вызывает `poll_events()`. Виды: TrackChanged(Option<Track>), PauseChanged(bool), ModeChanged{shuffle, repeat}, QueueChanged{len}, TrackFailed{track, reason}, QueueEnded, Error(String).
+- Снимок: `state()` возвращает PlaybackState (current, position, duration, is_playing, volume, shuffle, repeat, queue_index, queue_len). Позиция для полосы перемотки берётся из снимка, не из событий.
+- В очереди лежат Track. Ссылку на звук движок запрашивает у провайдера в момент проигрывания (ссылки сервисов протухают). Сейчас поддержан только StreamSource::LocalFile.
+- Битый трек пропускается, причина приходит событием TrackFailed.
+- `prev()`: если трек играет дольше 3 секунд, перезапускает его, иначе переходит к предыдущему.
