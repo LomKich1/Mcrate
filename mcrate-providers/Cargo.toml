@@ -1,0 +1,13 @@
+[package]
+name = "mcrate-providers"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait = "0.1.92"
+lofty = "0.25.5"
+mcrate-core = { version = "0.1.0", path = "../mcrate-core" }
+
+[dev-dependencies]
+mcrate-audio = { path = "../mcrate-audio" }
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }
