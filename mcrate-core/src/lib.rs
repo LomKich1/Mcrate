@@ -3,6 +3,7 @@
 
 use async_trait::async_trait; // макрос, который разрешает async fn в трейте
 use thiserror::Error;         // макрос для удобного описания ошибок
+use std::path::PathBuf; // PathBuf = путь к файлу (владеющий, как String для текста)
 pub mod secrets; // подключает файл secrets.rs как часть крейта
 
 /// Какой это сервис.
@@ -15,6 +16,7 @@ pub enum ProviderKind {
     Vk,
     SoundCloud,
     Spotify,
+    Local,
 }
 
 /// Один трек. `pub` значит «виден из других крейтов».
@@ -33,6 +35,7 @@ pub struct Track {
 pub enum StreamSource {
     DirectUrl(String),    // прямая ссылка на аудиофайл
     HlsPlaylist(String),  // ссылка на HLS-плейлист (.m3u8)
+    LocalFile(PathBuf), // локальный файл, играем прямо с диска
 }
 
 /// Ошибки провайдеров. `#[error("...")]` задаёт текст ошибки.
@@ -46,6 +49,8 @@ pub enum ProviderError {
     UnexpectedResponse(String),
     #[error("этот сервис так не умеет")]
     Unsupported,
+    #[error("ошибка с локальным файлом: {0}")]
+    LocalFile(String),
 }
 
 /// Сокращение: вместо Result<T, ProviderError> пишем ProviderResult<T>.

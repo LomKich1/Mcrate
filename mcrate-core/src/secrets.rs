@@ -36,6 +36,7 @@ impl TokenStore {
             ProviderKind::Vk => "vk-token",
             ProviderKind::SoundCloud => "soundcloud-token",
             ProviderKind::Spotify => "spotify-token",
+            ProviderKind::Local => "local-unused", // у своих файлов токена нет, имя-заглушка
         }
     }
 
