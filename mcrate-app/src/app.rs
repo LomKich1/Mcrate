@@ -109,7 +109,7 @@ impl McrateApp {
 
     /// Файлы, брошенные в окно, + пробел как «пауза/играть».
     fn handle_input(&mut self, ctx: &egui::Context) {
-        let dropped: Vec<_> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
+        let dropped: Vec<_> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
         if !dropped.is_empty() {
             self.ctl.add_paths(&dropped);
             self.view = View::Library;
@@ -134,7 +134,7 @@ impl McrateApp {
             return;
         }
         let p = &self.theme.palette;
-        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop_overlay")));
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique("drop_overlay")));
         let r = ctx.content_rect();
         painter.rect_filled(r, 0.0, with_alpha(p.primary, 80));
         painter.text(

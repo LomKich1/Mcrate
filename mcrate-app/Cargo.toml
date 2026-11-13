@@ -2,6 +2,7 @@
 name = "mcrate-app"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.95" # минимум для eframe 0.37 и egui_glass 0.2 (cargo сам выдаст понятную ошибку на старом Rust)
 
 [dependencies]
 mcrate-core = { version = "0.1.0", path = "../mcrate-core" }
@@ -9,10 +10,10 @@ mcrate-audio = { path = "../mcrate-audio" }
 mcrate-providers = { path = "../mcrate-providers" }
 
 # UI: egui поверх wgpu (GPU). persistence = сохранение настроек оформления в файл.
-eframe = { version = "0.35", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "persistence", "wayland", "x11"] }
-# Liquid Glass: рефракция + блюр шейдерами wgpu (MIT, версия 0.1.x: API может меняться)
-egui = "0.35"
-egui_glass = "0.1.5"
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "persistence", "wayland", "x11"] }
+# Liquid Glass: рефракция + блюр шейдерами wgpu (MIT). 0.2.x требует egui 0.37; есть LiveBackdrop (стекло видит живой контент). API может меняться
+egui = "0.37"
+egui_glass = "0.2.0"
 # Material 3: генерация цветовых схем из одного "seed"-цвета (порт material-color-utilities)
 material-colors = "0.5"
 # Системные диалоги выбора файлов/папок
@@ -22,6 +23,6 @@ tokio = { version = "1.54.1", features = ["rt"] }
 serde = { version = "1", features = ["derive"] }
 
 # Только Windows: winit даёт доступ к DWM (Mica/Acrylic) через WindowExtWindows.
-# Версия должна совпадать с той, что использует eframe (0.30).
+# Версия должна совпадать с той, что использует eframe (0.30.x).
 [target.'cfg(windows)'.dependencies]
 winit = "0.30"
