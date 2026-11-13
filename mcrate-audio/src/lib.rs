@@ -3,6 +3,8 @@
 
 pub mod queue;
 pub use queue::{PlayQueue, RepeatMode}; // чтобы писать mcrate_audio::PlayQueue
+pub mod engine;
+pub use engine::{PlaybackEngine, PlaybackEvent, PlaybackState};
 
 use std::fs::File;
 use std::path::Path;
@@ -26,6 +28,8 @@ pub enum AudioError {
     Decode(#[from] rodio::decoder::DecoderError),
     #[error("перемотка не удалась: {0}")]
     Seek(#[from] rodio::source::SeekError),
+    #[error("ошибка движка воспроизведения: {0}")]
+    Engine(String),
 }
 
 pub struct AudioPlayer {

@@ -109,6 +109,7 @@ impl<T> PlayQueue<T> {
     }
 
     pub fn len(&self) -> usize { self.items.len() }
+    pub fn index(&self) -> usize { self.pos }
     pub fn is_empty(&self) -> bool { self.items.is_empty() }
 
     /// Что играет сейчас.

@@ -4,5 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+mcrate-core = { version = "0.1.0", path = "../mcrate-core" }
 rodio = "0.23.0"
 thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["rt"] }
