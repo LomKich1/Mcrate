@@ -1,0 +1,7 @@
+[package]
+name = "mcrate-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mcrate-core = { version = "0.1.0", path = "../mcrate-core" }
