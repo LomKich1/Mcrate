@@ -5,3 +5,23 @@ edition = "2024"
 
 [dependencies]
 mcrate-core = { version = "0.1.0", path = "../mcrate-core" }
+mcrate-audio = { path = "../mcrate-audio" }
+mcrate-providers = { path = "../mcrate-providers" }
+
+# UI: egui поверх wgpu (GPU). persistence = сохранение настроек оформления в файл.
+eframe = { version = "0.35", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "persistence", "wayland", "x11"] }
+# Liquid Glass: рефракция + блюр шейдерами wgpu (MIT, версия 0.1.x: API может меняться)
+egui = "0.35"
+egui_glass = "0.1.5"
+# Material 3: генерация цветовых схем из одного "seed"-цвета (порт material-color-utilities)
+material-colors = "0.5"
+# Системные диалоги выбора файлов/папок
+rfd = "0.18"
+# tokio нужен, чтобы вызывать async-методы MusicProvider из UI (block_on)
+tokio = { version = "1.54.1", features = ["rt"] }
+serde = { version = "1", features = ["derive"] }
+
+# Только Windows: winit даёт доступ к DWM (Mica/Acrylic) через WindowExtWindows.
+# Версия должна совпадать с той, что использует eframe (0.30).
+[target.'cfg(windows)'.dependencies]
+winit = "0.30"
