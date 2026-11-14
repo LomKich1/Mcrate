@@ -22,8 +22,12 @@ use std::time::{Duration, Instant};
 use mcrate_audio::{PlaybackEngine, PlaybackEvent};
 use mcrate_core::{MusicProvider, Track};
 
-// current_thread = async-код примера идёт в одном потоке; у движка своя среда с потоками внутри
-#[tokio::main(flavor = "current_thread")]
+// ВАЖНО: среда именно многопоточная. Поиск идёт здесь, а ссылку на трек потом запрашивает движок
+// в своей среде, но через тот же HTTP-клиент провайдера. Соединения клиента обслуживаются
+// задачами той среды, где он впервые ходил в сеть. В `current_thread` они работают, только пока
+// поток занят `.await`; пример же дальше спит в обычном `sleep`, и запросы из движка зависали
+// до таймаута 30 с ("error sending request").
+#[tokio::main(flavor = "multi_thread", worker_threads = 1)]
 async fn main() {
     if let Err(e) = run().await {
         eprintln!("\nОШИБКА: {e}");
