@@ -2342,6 +2342,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mcrate-net"
+version = "0.1.0"
+dependencies = [
+ "mcrate-core",
+ "reqwest",
+]
+
+[[package]]
 name = "mcrate-providers"
 version = "0.1.0"
 dependencies = [
@@ -2349,6 +2357,7 @@ dependencies = [
  "lofty",
  "mcrate-audio",
  "mcrate-core",
+ "mcrate-net",
  "reqwest",
  "serde_json",
  "tokio",

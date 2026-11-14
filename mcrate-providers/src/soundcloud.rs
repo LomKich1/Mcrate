@@ -17,7 +17,7 @@ use mcrate_core::{MusicProvider, ProviderError, ProviderKind, ProviderResult, St
 use reqwest::Url;
 use serde_json::Value; // Value = «любой JSON»
 
-use crate::http::{build_client, net_err, short};
+use mcrate_net::http::{build_client, net_err, short};
 
 /// В каком формате предпочитаем получать звук.
 /// Если предпочтительного нет у конкретного трека, берётся следующий по списку.

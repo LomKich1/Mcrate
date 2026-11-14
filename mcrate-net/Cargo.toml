@@ -1,0 +1,10 @@
+[package]
+name = "mcrate-net"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mcrate-core = { version = "0.1.0", path = "../mcrate-core" }
+# HTTP-клиент. native-tls = шифрование HTTPS средствами самой Windows (Schannel),
+# поэтому для сборки не нужен C-компилятор. system-proxy = учитывает системный прокси и VPN.
+reqwest = { version = "0.13.5", default-features = false, features = ["native-tls", "charset", "http2", "system-proxy"] }
