@@ -104,7 +104,13 @@ impl Theme {
         v.window_stroke = egui::Stroke::new(1.0, p.outline_variant);
         v.window_corner_radius = CornerRadius::same(28);
         v.menu_corner_radius = CornerRadius::same(16);
-        v.extreme_bg_color = p.surface_container_lowest; // фон полей ввода
+        // Фон полей ввода. Раньше был почти чёрный (surface_container_lowest), из-за чего поиск
+        // выглядел чёрной полосой. В M3 поле заполняется тональным цветом поверхности; в стекле
+        // это лёгкая полупрозрачная подсветка, сквозь которую видно фон.
+        v.extreme_bg_color = match self.design() {
+            Design::Material3 => p.surface_container_high,
+            Design::LiquidGlass => with_alpha(p.on_surface, if p.dark { 26 } else { 20 }),
+        };
         v.faint_bg_color = with_alpha(p.on_surface, 10);
         v.hyperlink_color = p.primary;
         v.selection.bg_fill = with_alpha(p.primary, 90);

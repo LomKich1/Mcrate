@@ -9,7 +9,7 @@ use eframe::egui::{self, Frame, Margin};
 use mcrate_core::Track;
 
 use crate::controller::Controller;
-use crate::settings::{Design, GraphicsSettings, STORAGE_KEY, ThemePreset};
+use crate::settings::{Design, GraphicsSettings, STORAGE_KEY, ThemePreset, WindowBackdrop};
 use crate::theme::{Surface, Theme, glass, with_alpha};
 use crate::{fonts, platform};
 
@@ -96,6 +96,15 @@ impl McrateApp {
         if backdrop_changed {
             self.backdrop_error = platform::apply_window_backdrop(frame, self.settings.window_backdrop).err();
         }
+
+        // Заголовок окна в цвет темы (поверх системной тёмной/светлой темы ниже).
+        let pal = &self.theme.palette;
+        let _ = platform::apply_title_bar(
+            frame,
+            [pal.surface.r(), pal.surface.g(), pal.surface.b()],
+            [pal.on_surface.r(), pal.on_surface.g(), pal.on_surface.b()],
+            self.settings.window_backdrop != WindowBackdrop::Off,
+        );
 
         // Тёмный/светлый заголовок окна.
         ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(if self.settings.is_dark() {
