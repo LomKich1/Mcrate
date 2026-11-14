@@ -116,7 +116,9 @@ async fn run() -> Result<(), AnyError> {
     let query = std::env::args().nth(1).unwrap_or_else(|| "Кино Группа крови".to_string());
     let client = reqwest::Client::builder()
         .user_agent(USER_AGENT)
-        .timeout(Duration::from_secs(25)) // если сервер молчит дольше, сдаёмся
+        // Общий таймаут на запрос здесь вредил: скрипты сайта по ~1 МБ на медленном интернете качаются дольше 25 секунд.
+        .connect_timeout(Duration::from_secs(10)) // на соединение даём 10 секунд
+        .read_timeout(Duration::from_secs(30)) // сдаёмся, только если данные не идут 30 секунд подряд
         .build()?;
 
     // ---------- Шаг 1: достаём client_id из скриптов сайта ----------
@@ -160,11 +162,17 @@ async fn run() -> Result<(), AnyError> {
 
     let mut policies: BTreeMap<String, usize> = BTreeMap::new(); // сколько треков с каждым значением policy
     let mut stream_kinds: BTreeSet<String> = BTreeSet::new(); // какие виды потоков вообще встречаются
+    let mut by_policy: BTreeMap<String, BTreeSet<String>> = BTreeMap::new(); // какие потоки у треков с каждым policy
     for (i, t) in tracks.iter().enumerate() {
         let policy = t["policy"].as_str().unwrap_or("?");
         *policies.entry(policy.to_string()).or_insert(0) += 1;
         let transcodings = t["media"]["transcodings"].as_array().cloned().unwrap_or_default();
         for tc in &transcodings {
+            by_policy.entry(policy.to_string()).or_default().insert(format!(
+                "{}/{}",
+                tc["preset"].as_str().unwrap_or("?"),
+                tc["format"]["protocol"].as_str().unwrap_or("?")
+            ));
             stream_kinds.insert(format!(
                 "preset={} protocol={} mime={}",
                 tc["preset"].as_str().unwrap_or("?"),
@@ -185,6 +193,10 @@ async fn run() -> Result<(), AnyError> {
         }
     }
     println!("значения policy по всем трекам: {policies:?}");
+    println!("потоки в разрезе policy (у каких треков какие потоки):");
+    for (pol, kinds) in &by_policy {
+        println!("  {pol}: {}", kinds.iter().cloned().collect::<Vec<_>>().join(", "));
+    }
     println!("виды потоков по всем трекам:");
     for k in &stream_kinds {
         println!("  - {k}");
