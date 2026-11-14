@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use eframe::egui::{self, Frame, Margin};
+use eframe::egui::{self, Frame, Margin, Rect, Sense, UiBuilder, pos2};
 use mcrate_core::Track;
 
 use crate::controller::Controller;
@@ -15,6 +15,11 @@ use crate::ui::transition::ViewTransition;
 use crate::settings::{Design, GraphicsSettings, STORAGE_KEY, ThemePreset, WindowBackdrop};
 use crate::theme::{Surface, Theme, glass, with_alpha};
 use crate::{fonts, platform};
+
+/// Высота плавающей панели плеера в Liquid Glass: содержимое 80 (52+4+24) + отступы 12 сверху и снизу.
+const GLASS_BAR_H: f32 = 104.0;
+/// Внешний отступ плавающих панелей от края окна.
+const EDGE: f32 = 12.0;
 
 /// Какой экран открыт.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -41,8 +46,12 @@ pub struct McrateApp {
     pub settings: GraphicsSettings,
     applied: Option<GraphicsSettings>, // какие настройки уже применены к egui
     pub theme: Theme,
-    render_state: eframe::egui_wgpu::RenderState, // доступ к GPU (нужен стеклу)
+    glass: egui_glass::GlassContext, // стекло: обои + живой фон (преломляет то, что лежит под панелями)
     wallpaper_key: Option<(ThemePreset, [u8; 3], bool)>, // для какой темы уже загружены обои
+    wallpaper_tex: Option<egui::TextureId>, // текстура обоев (нужна странице живого фона)
+    /// Сколько пикселей снизу закрыто плавающей панелью плеера (0 вне Liquid Glass).
+    /// Экраны добавляют столько пустого места в конец прокручиваемого содержимого.
+    pub bottom_inset: f32,
     pub backdrop_error: Option<String>,
     /// Какой графический API (DX12, Vulkan...) реально работает. Показывается в настройках:
     /// для Mica/Acrylic нужен Dx12.
@@ -54,15 +63,14 @@ pub struct McrateApp {
     /// чтобы заметить смену экрана и запустить анимацию (см. ui/transition.rs).
     pub shown_view: View,
     pub transition: Option<ViewTransition>,
+    /// Время кадра основного контекста (секунды). Страница живого фона рисуется ещё раз в закадровом
+    /// контексте со своими часами; чтобы переход экранов шёл в такт и там, время берём отсюда.
+    pub frame_time: f64,
     pub search: String,
     pub filtered: Vec<Track>,
     filter_key: Option<(String, usize)>,
     pub seek_drag: Option<f32>,
     pub volume_before_mute: f32,
-    /// Сколько пикселей снизу экрана закрыто плавающей панелью плеера. Сейчас панель плеера
-    /// обычная (`Panel::bottom`) и содержимое под неё не заходит, поэтому 0. Когда вернётся
-    /// «живое» стекло (панель поверх содержимого), здесь будет высота панели.
-    pub bottom_inset: f32,
 }
 
 impl McrateApp {
@@ -78,12 +86,14 @@ impl McrateApp {
             .clone()
             .expect("нужен рендерер wgpu (Renderer::Wgpu)");
         let gpu_backend = format!("{:?}", render_state.adapter.get_info().backend);
-        egui_glass::init(&render_state, 1); // 1 = без сглаживания MSAA (значение по умолчанию)
+        // GlassContext = egui_glass::init + LiveBackdrop одним вызовом (1 = без MSAA, как у eframe).
+        let glass = egui_glass::GlassContext::new(&cc.egui_ctx, &render_state, 1).expect("не удалось запустить egui_glass");
 
-        // Сначала свой набор шрифтов, потом к нему добавляются иконки, и всё ставится одним вызовом.
+        // Один набор шрифтов (Segoe UI + иконки) отдаём и основному контексту, и закадровому
+        // контексту стекла: set_fonts делает оба сразу.
         let mut font_defs = fonts::definitions();
         icons::add_to_definitions(&mut font_defs);
-        cc.egui_ctx.set_fonts(font_defs);
+        glass.set_fonts(font_defs);
 
         let mut ctl = Controller::new();
         if !open_paths.is_empty() {
@@ -94,20 +104,22 @@ impl McrateApp {
             theme: Theme::new(&settings),
             settings,
             applied: None,
-            render_state,
+            glass,
             wallpaper_key: None,
+            wallpaper_tex: None,
+            bottom_inset: 0.0,
             backdrop_error: None,
             gpu_backend,
             ctl,
             view: View::Library,
             shown_view: View::Library,
             transition: None,
+            frame_time: 0.0,
             search: String::new(),
             filtered: Vec::new(),
             filter_key: None,
             seek_drag: None,
             volume_before_mute: 0.8,
-            bottom_inset: 0.0,
         }
     }
 
@@ -133,7 +145,8 @@ impl McrateApp {
         let key = self.settings.palette_key();
         if self.settings.design == Design::LiquidGlass && self.wallpaper_key != Some(key) {
             let img = glass::wallpaper(&self.theme.palette);
-            egui_glass::set_backdrop(ctx, &self.render_state, &img);
+            // Старая текстура освобождается сама; новый id рисуем со следующего кадра.
+            self.wallpaper_tex = self.glass.set_backdrop(&img).ok();
             self.wallpaper_key = Some(key);
         }
 
@@ -159,6 +172,86 @@ impl McrateApp {
         }));
 
         self.applied = Some(self.settings.clone());
+    }
+
+    /// Обычная раскладка (Material 3 и Liquid Glass с выключенным блюром): панели по краям,
+    /// потом центральная область. Все поверхности плотные.
+    fn panel_layout(&mut self, ui: &mut egui::Ui, theme: &Theme, full: Rect, bp: Breakpoint) {
+        theme.paint_background(ui, full);
+
+        // Порядок важен: сначала панели по краям, потом центральная область.
+        egui::Panel::bottom("player_bar")
+            .frame(Frame::NONE.inner_margin(Margin { left: 12, right: 12, top: 4, bottom: 12 }))
+            .resizable(false)
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                theme.surface(ui, Surface::PlayerBar, |ui| self.player_bar(ui, theme));
+            });
+
+        egui::Panel::left("rail")
+            .frame(Frame::NONE.inner_margin(Margin { left: 12, right: 4, top: 12, bottom: 4 }))
+            .resizable(false)
+            .show_separator_line(false)
+            .exact_size(bp.rail_width())
+            .show(ui, |ui| {
+                theme.surface(ui, Surface::Rail, |ui| self.rail_view(ui, theme, bp.is_compact()));
+            });
+
+        egui::CentralPanel::default()
+            .frame(Frame::NONE.inner_margin(Margin { left: 4, right: 12, top: 12, bottom: 4 }))
+            .show(ui, |ui| {
+                theme.surface(ui, Surface::Content, |ui| self.screen(ui, theme));
+            });
+    }
+
+    /// Раскладка Liquid Glass. Основная панель лежит на всё окно, а рейка и панель плеера
+    /// плавают над ней стеклом и преломляют то, что под ними (живой фон).
+    ///
+    /// Слои снизу вверх: обои -> основная панель с содержимым (это «страница» живого фона,
+    /// её замыкание egui_glass вызывает дважды за кадр: на экран и за кадр) -> рейка и
+    /// панель плеера (стекло, вне замыкания страницы).
+    fn glass_layout(&mut self, ui: &mut egui::Ui, theme: &Theme, full: Rect, bp: Breakpoint) {
+        // Геометрия: панель плеера внизу на всю ширину, рейка слева над ней,
+        // основная панель под обеими (содержимое начинается правее рейки).
+        let pane = full.shrink(EDGE);
+        let bar = Rect::from_min_max(pos2(pane.left(), pane.bottom() - GLASS_BAR_H), pane.max);
+        let rail = Rect::from_min_max(
+            pos2(pane.left(), pane.top()),
+            pos2(full.left() + bp.rail_width() - 4.0, bar.top() - 8.0),
+        );
+        let inner = Rect::from_min_max(pos2(rail.right() + 8.0 + 20.0, pane.top() + 20.0), pos2(pane.right() - 20.0, pane.bottom()));
+        self.bottom_inset = full.bottom() - bar.top() + 4.0;
+
+        let live = self.glass.live_backdrop().clone(); // дёшево: клоны делят один закадровый контекст
+        let style = ui.style().clone(); // закадровый контекст не знает нашу тему: стиль передаём сами
+        let tex = self.wallpaper_tex;
+        let translucent = theme.window_backdrop_active();
+        let quality = glass::lib_quality(theme.settings.glass_quality);
+
+        // Внутри замыкания нет побочных эффектов, кроме обычной отрисовки: во втором (закадровом)
+        // проходе нет событий мыши и клавиатуры, поэтому клики не повторяются.
+        live.run_with_quality(ui, theme.palette.surface, quality, |page| {
+            page.set_style(style.clone());
+            glass::paint_wallpaper(page.painter(), full, tex, theme.palette.surface, translucent);
+            glass::paint_pane(theme, page.painter(), pane);
+            page.scope_builder(UiBuilder::new().max_rect(inner), |ui| self.screen(ui, theme));
+        });
+
+        // Стекло. Прозрачный «щит» (Sense::click_and_drag) идёт до содержимого и не даёт кликам
+        // и прокрутке проваливаться в список, который лежит под панелью.
+        ui.scope_builder(UiBuilder::new().max_rect(rail), |ui| {
+            ui.interact(rail, egui::Id::unique("rail_shield"), Sense::click_and_drag());
+            theme.surface(ui, Surface::Rail, |ui| self.rail_view(ui, theme, bp.is_compact()));
+        });
+        ui.scope_builder(UiBuilder::new().max_rect(bar), |ui| {
+            ui.interact(bar, egui::Id::unique("bar_shield"), Sense::click_and_drag());
+            theme.surface(ui, Surface::PlayerBar, |ui| self.player_bar(ui, theme));
+        });
+    }
+
+    /// Текущий экран (или два экрана во время анимации перехода, см. ui/transition.rs).
+    fn screen(&mut self, ui: &mut egui::Ui, theme: &Theme) {
+        self.view_host(ui, theme);
     }
 
     /// Файлы, брошенные в окно, + пробел как «пауза/играть».
@@ -215,34 +308,15 @@ impl eframe::App for McrateApp {
         let theme = self.theme.clone();
 
         let full = ui.max_rect();
-        theme.paint_background(ui, full);
         // Размерный класс окна: от него зависит ширина навигации (см. ui/layout.rs).
         let bp = Breakpoint::from_width(full.width());
 
-        // Порядок важен: сначала панели по краям, потом центральная область.
-        egui::Panel::bottom("player_bar")
-            .frame(Frame::NONE.inner_margin(Margin { left: 12, right: 12, top: 4, bottom: 12 }))
-            .resizable(false)
-            .show_separator_line(false)
-            .show(ui, |ui| {
-                theme.surface(ui, Surface::PlayerBar, |ui| self.player_bar(ui, &theme));
-            });
-
-        egui::Panel::left("rail")
-            .frame(Frame::NONE.inner_margin(Margin { left: 12, right: 4, top: 12, bottom: 4 }))
-            .resizable(false)
-            .show_separator_line(false)
-            .exact_size(bp.rail_width())
-            .show(ui, |ui| {
-                theme.surface(ui, Surface::Rail, |ui| self.rail_view(ui, &theme, bp.is_compact()));
-            });
-
-        egui::CentralPanel::default()
-            .frame(Frame::NONE.inner_margin(Margin { left: 4, right: 12, top: 12, bottom: 4 }))
-            .show(ui, |ui| {
-                // view_host сам выбирает: один экран или два (во время анимации перехода).
-                theme.surface(ui, Surface::Content, |ui| self.view_host(ui, &theme));
-            });
+        if theme.glass_active() {
+            self.glass_layout(ui, &theme, full, bp);
+        } else {
+            self.bottom_inset = 0.0;
+            self.panel_layout(ui, &theme, full, bp);
+        }
 
         self.paint_drop_overlay(&ctx);
 

@@ -67,6 +67,7 @@ impl McrateApp {
     /// клик в меню, drag&drop, кнопка внутри экрана) и запускает переход.
     pub fn update_transition(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
+        self.frame_time = now; // view_host берёт время отсюда (см. поле `frame_time`)
         if self.view != self.shown_view {
             self.transition = Some(ViewTransition { from: self.shown_view, to: self.view, started: now });
             self.shown_view = self.view;
@@ -81,7 +82,9 @@ impl McrateApp {
     /// Рисует текущий экран или два экрана во время перехода. Заменяет прямой `match self.view`.
     pub fn view_host(&mut self, ui: &mut Ui, theme: &Theme) {
         let rect = ui.available_rect_before_wrap();
-        let now = ui.input(|i| i.time);
+        // Время основного контекста, а не `ui.input`: страницу живого фона стекло рисует ещё раз
+        // в закадровом контексте с другими часами, и переход там не совпал бы с основным.
+        let now = self.frame_time;
 
         let Some(tr) = self.transition else {
             self.view_layer(ui, theme, self.view, rect, 0.0, 1.0, true);
