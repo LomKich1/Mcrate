@@ -44,9 +44,10 @@ impl Theme {
         self.settings.design
     }
 
-    /// Рисуем ли настоящее стекло (дизайн Liquid Glass и блюр не выключен).
+    /// Рисуем ли настоящее стекло. Блюр и стекло включаются вместе с дизайном Liquid Glass
+    /// (отдельного выключателя больше нет).
     pub fn glass_active(&self) -> bool {
-        self.settings.design == Design::LiquidGlass && self.settings.blur_enabled
+        self.settings.design == Design::LiquidGlass
     }
 
     /// Показывается ли системный материал (Mica/Acrylic) сквозь окно.

@@ -59,6 +59,10 @@ pub struct McrateApp {
     filter_key: Option<(String, usize)>,
     pub seek_drag: Option<f32>,
     pub volume_before_mute: f32,
+    /// Сколько пикселей снизу экрана закрыто плавающей панелью плеера. Сейчас панель плеера
+    /// обычная (`Panel::bottom`) и содержимое под неё не заходит, поэтому 0. Когда вернётся
+    /// «живое» стекло (панель поверх содержимого), здесь будет высота панели.
+    pub bottom_inset: f32,
 }
 
 impl McrateApp {
@@ -76,8 +80,10 @@ impl McrateApp {
         let gpu_backend = format!("{:?}", render_state.adapter.get_info().backend);
         egui_glass::init(&render_state, 1); // 1 = без сглаживания MSAA (значение по умолчанию)
 
-        fonts::install(&cc.egui_ctx);
-        icons::install(&cc.egui_ctx); // после fonts::install: тот заменяет набор шрифтов целиком
+        // Сначала свой набор шрифтов, потом к нему добавляются иконки, и всё ставится одним вызовом.
+        let mut font_defs = fonts::definitions();
+        icons::add_to_definitions(&mut font_defs);
+        cc.egui_ctx.set_fonts(font_defs);
 
         let mut ctl = Controller::new();
         if !open_paths.is_empty() {
@@ -101,6 +107,17 @@ impl McrateApp {
             filter_key: None,
             seek_drag: None,
             volume_before_mute: 0.8,
+            bottom_inset: 0.0,
+        }
+    }
+
+    /// Рисует один экран. Единственное место, где экраны сопоставлены с `View`:
+    /// им пользуется `view_host` (ui/transition.rs), в том числе во время анимации перехода.
+    pub fn draw_view(&mut self, ui: &mut egui::Ui, theme: &Theme, view: View) {
+        match view {
+            View::Library => self.library_view(ui, theme),
+            View::NowPlaying => self.now_playing_view(ui, theme),
+            View::Settings => self.settings_view(ui, theme),
         }
     }
 

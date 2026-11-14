@@ -94,8 +94,6 @@ pub struct GraphicsSettings {
     pub dark: bool,
     /// Только для темы «Свой цвет»: исходный цвет, из него строится палитра.
     pub accent: [u8; 3],
-    /// Главный выключатель блюра внутри приложения. false = все поверхности непрозрачные.
-    pub blur_enabled: bool,
     /// Радиус блюра стекла, в логических пикселях.
     pub blur_radius: f32,
     /// Сила преломления на краях стекла.
@@ -114,7 +112,6 @@ impl Default for GraphicsSettings {
             theme: ThemePreset::Dark,
             dark: true,
             accent: [0x4F, 0x7C, 0xFF],
-            blur_enabled: true,
             blur_radius: 22.0,
             refraction: 5.0,
             glass_opacity: 0.45,

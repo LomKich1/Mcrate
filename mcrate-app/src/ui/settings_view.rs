@@ -1,6 +1,7 @@
 //! Экран «Оформление»: выбор дизайна, цветов и подробные настройки графики.
 
-use egui::{Color32, CursorIcon, FontId, Rect, RichText, Sense, Ui, pos2, vec2};
+use egui::collapsing_header::CollapsingState;
+use egui::{Color32, CursorIcon, FontId, Rect, RichText, Sense, Stroke, Ui, Vec2, pos2, vec2};
 
 use super::widgets::{ButtonKind, pill_button};
 use crate::app::McrateApp;
@@ -26,6 +27,20 @@ impl McrateApp {
                     }
                 }
             });
+
+            // ---------- параметры стекла ----------
+            // Блюр и стекло включаются вместе с Liquid Glass; их настройки прячутся в строку,
+            // которая раскрывается по нажатию и сдвигает всё, что ниже (как строки настроек в iOS).
+            ui.add_space(10.0);
+            if self.settings.design == Design::LiquidGlass {
+                glass_options(ui, theme, &mut self.settings);
+            } else {
+                ui.label(
+                    RichText::new("Блюр и стекло включаются вместе с дизайном Liquid Glass. Material 3 использует плотные поверхности.")
+                        .size(12.5)
+                        .color(p.on_surface_variant),
+                );
+            }
 
             // ---------- цвет ----------
             group_title(ui, "Цветовая тема");
@@ -64,31 +79,6 @@ impl McrateApp {
                     .color(p.on_surface_variant),
             );
 
-            // ---------- блюр ----------
-            group_title(ui, "Блюр внутри приложения");
-            ui.checkbox(&mut self.settings.blur_enabled, "Включить блюр и стекло");
-            let glass_design = self.settings.design == Design::LiquidGlass;
-            let sliders_on = self.settings.blur_enabled && glass_design;
-            ui.add_enabled_ui(sliders_on, |ui| {
-                ui.add(egui::Slider::new(&mut self.settings.blur_radius, 2.0..=48.0).text("Радиус блюра"));
-                ui.add(egui::Slider::new(&mut self.settings.refraction, 0.0..=14.0).text("Преломление"));
-                ui.add(egui::Slider::new(&mut self.settings.glass_opacity, 0.0..=1.0).text("Плотность стекла"));
-                ui.horizontal(|ui| {
-                    ui.label("Качество живого фона:");
-                    for q in GlassQuality::ALL {
-                        ui.selectable_value(&mut self.settings.glass_quality, q, q.label());
-                    }
-                });
-            });
-            let hint = if !glass_design {
-                "Блюр и стекло работают только в дизайне Liquid Glass. Material 3 использует плотные поверхности."
-            } else if !self.settings.blur_enabled {
-                "Блюр выключен: все панели непрозрачные (подходит для слабых видеокарт)."
-            } else {
-                "Рейка и панель плеера плавают над содержимым и преломляют всё, что под ними, включая текст. Фон рисуется ещё раз за кадр: на слабой видеокарте снизьте качество или выключите блюр."
-            };
-            ui.label(RichText::new(hint).size(12.5).color(p.on_surface_variant));
-
             // ---------- окно ----------
             group_title(ui, "Материал окна (Windows 11)");
             ui.add_enabled_ui(platform::BACKDROP_SUPPORTED, |ui| {
@@ -125,6 +115,79 @@ impl McrateApp {
             ui.add_space(8.0 + self.bottom_inset); // подушка под плавающую панель плеера (Liquid Glass)
         });
     }
+}
+
+/// Раскрывающийся блок «Параметры стекла»: строка-заголовок и под ней настройки.
+/// Раскрытие двигает нижние элементы (высота блока плавно растёт), а не рисуется поверх них.
+fn glass_options(ui: &mut Ui, theme: &Theme, s: &mut GraphicsSettings) {
+    let p = &theme.palette;
+    let id = ui.make_persistent_id("glass_options");
+    let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, false);
+    let openness = state.openness(ui.ctx());
+    if expander_header(ui, theme, "Параметры стекла", "Блюр, преломление, плотность, качество", openness).clicked() {
+        state.toggle(ui);
+    }
+    state.show_body_unindented(ui, |ui| {
+        ui.add_space(6.0);
+        egui::Frame::new()
+            .fill(p.surface_container_low)
+            .corner_radius(16)
+            .inner_margin(egui::Margin::same(14))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.add(egui::Slider::new(&mut s.blur_radius, 2.0..=48.0).text("Радиус блюра"));
+                ui.add(egui::Slider::new(&mut s.refraction, 0.0..=14.0).text("Преломление"));
+                ui.add(egui::Slider::new(&mut s.glass_opacity, 0.0..=1.0).text("Плотность стекла"));
+                ui.horizontal(|ui| {
+                    ui.label("Качество живого фона:");
+                    for q in GlassQuality::ALL {
+                        ui.selectable_value(&mut s.glass_quality, q, q.label());
+                    }
+                });
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "Рейка и панель плеера плавают над содержимым и преломляют всё, что под ними, включая текст. \
+                         Фон рисуется ещё раз за кадр: на слабой видеокарте снизьте качество или выберите Material 3.",
+                    )
+                    .size(12.5)
+                    .color(p.on_surface_variant),
+                );
+            });
+    });
+}
+
+/// Строка-заголовок раскрывающегося блока: название, подпись и шеврон, который
+/// поворачивается вместе с раскрытием (`openness`: 0 = закрыто, 1 = открыто).
+fn expander_header(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str, openness: f32) -> egui::Response {
+    let p = &theme.palette;
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width().min(700.0), 60.0), Sense::click());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 16.0, p.surface_container_high);
+    if resp.hovered() {
+        painter.rect_filled(rect, 16.0, theme.row_hover_fill());
+    }
+    painter.text(
+        pos2(rect.left() + 16.0, rect.center().y - 9.0),
+        egui::Align2::LEFT_CENTER,
+        title,
+        FontId::proportional(15.0),
+        p.on_surface,
+    );
+    painter.text(
+        pos2(rect.left() + 16.0, rect.center().y + 11.0),
+        egui::Align2::LEFT_CENTER,
+        subtitle,
+        FontId::proportional(12.5),
+        p.on_surface_variant,
+    );
+    // Шеврон «>» поворачиваем на 90° по часовой, получается «v».
+    let (sin, cos) = (openness * std::f32::consts::FRAC_PI_2).sin_cos();
+    let rot = |v: Vec2| vec2(v.x * cos - v.y * sin, v.x * sin + v.y * cos);
+    let c = pos2(rect.right() - 24.0, rect.center().y);
+    let pts: Vec<egui::Pos2> = [vec2(-3.0, -6.0), vec2(3.0, 0.0), vec2(-3.0, 6.0)].iter().map(|&v| c + rot(v)).collect();
+    painter.add(egui::Shape::line(pts, Stroke::new(2.0, p.on_surface_variant)));
+    resp.on_hover_cursor(CursorIcon::PointingHand)
 }
 
 fn group_title(ui: &mut Ui, text: &str) {
