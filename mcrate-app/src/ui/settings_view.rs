@@ -101,6 +101,16 @@ impl McrateApp {
             if let Some(err) = &self.backdrop_error {
                 ui.label(RichText::new(err).size(12.5).color(p.error));
             }
+            // Диагностика: без DX12 (DirectComposition) окно не прозрачное, и материал не виден.
+            let (diag, ok) = if self.gpu_backend == "Dx12" {
+                ("Графический API: DX12 (прозрачность окна доступна).".to_string(), true)
+            } else {
+                (
+                    format!("Графический API: {}. Для Mica/Acrylic нужен DX12 (см. MCRATE_NO_DCOMP в CLAUDE.md).", self.gpu_backend),
+                    !platform::BACKDROP_SUPPORTED,
+                )
+            };
+            ui.label(RichText::new(diag).size(12.5).color(if ok { p.on_surface_variant } else { p.error }));
 
             ui.add_space(16.0);
             if pill_button(ui, theme, "Сбросить настройки", None, ButtonKind::Tonal).clicked() {

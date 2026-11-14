@@ -6,6 +6,35 @@ use crate::settings::WindowBackdrop;
 /// Есть ли на этой ОС Mica/Acrylic.
 pub const BACKDROP_SUPPORTED: bool = cfg!(windows);
 
+/// Настройка wgpu (графической библиотеки) для окна, сквозь которое виден Mica/Acrylic.
+///
+/// Почему это нужно: по умолчанию wgpu на Windows показывает окно через обычную цепочку
+/// DXGI, у которой нет прозрачности (режим Opaque). Тогда eframe не может включить
+/// режим PreMultiplied, а прозрачный фон (clear_color = 0,0,0,0) превращается в чёрный.
+/// Прозрачность даёт только DX12 + DirectComposition (`DxgiFromVisual`: окно показывается
+/// через «визуал» системного композитора DWM). Поэтому на Windows берём именно его.
+///
+/// Запасной выход: если видеокарта или драйвер не тянут DX12, запустите приложение
+/// с переменной окружения `MCRATE_NO_DCOMP=1`. Тогда настройки по умолчанию
+/// (Vulkan/DX12 как выберет wgpu), но без Mica/Acrylic.
+pub fn wgpu_configuration() -> eframe::egui_wgpu::WgpuConfiguration {
+    #[allow(unused_mut)] // на не-Windows переменная не меняется
+    let mut config = eframe::egui_wgpu::WgpuConfiguration::default();
+    #[cfg(windows)]
+    {
+        if std::env::var_os("MCRATE_NO_DCOMP").is_some() {
+            return config;
+        }
+        use eframe::egui_wgpu::{WgpuSetup, WgpuSetupCreateNew, wgpu};
+        // display_handle eframe заполнит сам (см. документацию egui-wgpu).
+        let mut setup = WgpuSetupCreateNew::without_display_handle();
+        setup.instance_descriptor.backends = wgpu::Backends::DX12;
+        setup.instance_descriptor.backend_options.dx12.presentation_system = wgpu::Dx12SwapchainKind::DxgiFromVisual;
+        config.wgpu_setup = WgpuSetup::CreateNew(setup);
+    }
+    config
+}
+
 /// Применить материал окна. На сборках Windows старше 22621 вызов просто не даст эффекта.
 pub fn apply_window_backdrop(frame: &eframe::Frame, kind: WindowBackdrop) -> Result<(), String> {
     #[cfg(windows)]

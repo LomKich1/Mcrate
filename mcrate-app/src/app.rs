@@ -30,6 +30,9 @@ pub struct McrateApp {
     render_state: eframe::egui_wgpu::RenderState, // доступ к GPU (нужен стеклу)
     wallpaper_key: Option<(ThemePreset, [u8; 3], bool)>, // для какой темы уже загружены обои
     pub backdrop_error: Option<String>,
+    /// Какой графический API (DX12, Vulkan...) реально работает. Показывается в настройках:
+    /// для Mica/Acrylic нужен Dx12.
+    pub gpu_backend: String,
 
     pub ctl: Controller,
     pub view: View,
@@ -52,6 +55,7 @@ impl McrateApp {
             .wgpu_render_state
             .clone()
             .expect("нужен рендерер wgpu (Renderer::Wgpu)");
+        let gpu_backend = format!("{:?}", render_state.adapter.get_info().backend);
         egui_glass::init(&render_state, 1); // 1 = без сглаживания MSAA (значение по умолчанию)
 
         fonts::install(&cc.egui_ctx);
@@ -69,6 +73,7 @@ impl McrateApp {
             render_state,
             wallpaper_key: None,
             backdrop_error: None,
+            gpu_backend,
             ctl,
             view: View::Library,
             search: String::new(),

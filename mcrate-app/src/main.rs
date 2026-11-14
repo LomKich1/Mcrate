@@ -13,6 +13,7 @@ mod ui;
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu, // egui_glass работает только на wgpu
+        wgpu_options: platform::wgpu_configuration(), // DX12 + DirectComposition: без него Mica/Acrylic не видны
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Mcrate")
             .with_inner_size([1180.0, 760.0])
