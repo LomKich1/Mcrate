@@ -5,7 +5,7 @@ use std::sync::RwLock; // замок «много читают или один �
 
 use async_trait::async_trait;
 use lofty::file::{AudioFile, TaggedFileExt}; // AudioFile даёт properties() (длина), TaggedFileExt даёт primary_tag() и first_tag()
-use lofty::tag::Accessor;       // даёт методы title(), artist()
+use lofty::tag::{Accessor, ItemKey}; // Accessor даёт title(); ItemKey = «какое поле тега» (например, TrackArtist)
 use mcrate_core::{
     MusicProvider, ProviderError, ProviderKind, ProviderResult, StreamSource, Track,
 };
@@ -129,19 +129,25 @@ impl LocalProvider {
         // primary_tag = главный тег формата; first_tag = любой первый, если главного нет
         let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
 
-        // Название из тега; если тега нет, берём имя файла без расширения
+        // Название из тега; если тега нет или он пустой, берём имя файла без расширения
         let title = tag
-            .and_then(|t| t.title().map(|s| s.to_string()))
+            .and_then(|t| t.title().map(|s| s.trim().to_string())) // trim убирает пробелы по краям
+            .filter(|s| !s.is_empty()) // пустое название считаем отсутствующим
             .unwrap_or_else(|| {
                 path.file_stem()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "Без названия".to_string())
             });
 
+        // artist() отдаёт только первого исполнителя, а get_strings(TrackArtist) всех (у дуэтов их несколько)
         let artists: Vec<String> = tag
-            .and_then(|t| t.artist().map(|s| s.to_string()))
-            .into_iter() // Option превращаем в итератор из 0 или 1 элемента
-            .collect();
+            .map(|t| {
+                t.get_strings(ItemKey::TrackArtist)
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default(); // нет тега = пустой список
 
         let track = Track {
             id,
@@ -229,6 +235,8 @@ impl MusicProvider for LocalProvider {
 #[cfg(test)] // этот блок собирается только для `cargo test`
 mod tests {
     use super::*; // подтягиваем всё из файла выше (LocalProvider, MusicProvider и т.д.)
+    use lofty::config::WriteOptions;
+    use lofty::tag::{ItemKey, ItemValue, Tag, TagExt, TagItem, TagType}; // TagExt даёт save_to_path
 
     /// Чистая временная папка для теста. Имя содержит номер процесса, чтобы тесты не мешали друг другу.
     fn temp_dir(name: &str) -> PathBuf {
@@ -259,6 +267,21 @@ mod tests {
         b.extend_from_slice(&data_len.to_le_bytes());
         b.resize(b.len() + data_len as usize, 0); // тишина: нули
         std::fs::write(path, b).unwrap();
+    }
+
+    /// Записывает теги прямо в файл (формат ID3v2: его понимают и WAV, и mp3).
+    /// None вместо названия = тега названия в файле нет совсем.
+    fn write_tags(path: &Path, title: Option<&str>, artists: &[&str]) {
+        let mut tag = Tag::new(TagType::Id3v2);
+        if let Some(t) = title {
+            tag.set_title(t.to_string()); // set_title даёт трейт Accessor (он уже импортирован выше)
+        }
+        for a in artists {
+            // push добавляет ещё одну запись с тем же ключом, не затирая прежние (в отличие от insert)
+            tag.push(TagItem::new(ItemKey::TrackArtist, ItemValue::Text(a.to_string())));
+        }
+        // WriteOptions::default() = настройки записи по умолчанию
+        tag.save_to_path(path, WriteOptions::default()).unwrap();
     }
 
     // #[tokio::test] запускает async-тест (search у нас async)
@@ -321,5 +344,89 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&store);
+    }
+
+    #[tokio::test]
+    async fn tags_are_read() {
+        let dir = temp_dir("tags");
+        let wav = dir.join("file_name.wav");
+        write_test_wav(&wav);
+        write_tags(&wav, Some("Test Title"), &["Test Artist"]);
+
+        let p = LocalProvider::new();
+        let track = p.add_file(&wav).unwrap();
+        assert_eq!(track.title, "Test Title"); // название из тега, а не из имени файла
+        assert_eq!(track.artists, vec!["Test Artist".to_string()]);
+        assert_eq!(track.duration_secs, 1);
+
+        // поиск находит и по названию, и по исполнителю, без учёта регистра
+        assert_eq!(p.search("test title").await.unwrap().len(), 1);
+        assert_eq!(p.search("ARTIST").await.unwrap().len(), 1);
+        assert!(p.search("нет такого").await.unwrap().is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn cyrillic_tags_and_search() {
+        let dir = temp_dir("cyrillic");
+        let wav = dir.join("track01.wav");
+        write_test_wav(&wav);
+        write_tags(&wav, Some("Группа крови"), &["Кино"]);
+
+        let p = LocalProvider::new();
+        let track = p.add_file(&wav).unwrap();
+        assert_eq!(track.title, "Группа крови");
+        assert_eq!(track.artists, vec!["Кино".to_string()]);
+        // to_lowercase понимает кириллицу: заглавные и строчные считаются одинаковыми
+        assert_eq!(p.search("кино").await.unwrap().len(), 1);
+        assert_eq!(p.search("ГРУППА").await.unwrap().len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn missing_title_falls_back_to_file_name() {
+        let dir = temp_dir("notitle");
+        let wav = dir.join("My Song.wav");
+        write_test_wav(&wav);
+        write_tags(&wav, None, &["Someone"]); // исполнитель есть, названия нет
+
+        let p = LocalProvider::new();
+        let track = p.add_file(&wav).unwrap();
+        assert_eq!(track.title, "My Song"); // имя файла без расширения
+        assert_eq!(track.artists, vec!["Someone".to_string()]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn empty_title_falls_back_to_file_name() {
+        let dir = temp_dir("emptytitle");
+        let wav = dir.join("Other Song.wav");
+        write_test_wav(&wav);
+        write_tags(&wav, Some(""), &["Someone"]); // тег названия есть, но пустой
+
+        let p = LocalProvider::new();
+        let track = p.add_file(&wav).unwrap();
+        assert_eq!(track.title, "Other Song");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn several_artists_are_all_kept() {
+        let dir = temp_dir("artists");
+        let wav = dir.join("duet.wav");
+        write_test_wav(&wav);
+        write_tags(&wav, Some("Duet"), &["First Artist", "Second Artist"]);
+
+        let p = LocalProvider::new();
+        let track = p.add_file(&wav).unwrap();
+        assert_eq!(track.artists, vec!["First Artist".to_string(), "Second Artist".to_string()]);
+        // и второго исполнителя тоже можно найти поиском
+        assert_eq!(p.search("second").await.unwrap().len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
