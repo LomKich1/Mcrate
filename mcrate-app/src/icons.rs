@@ -1,7 +1,12 @@
-//! Иконки, нарисованные кодом (линии, многоугольники). Так не нужны файлы и шрифты с иконками,
-//! а размер и цвет меняются свободно. Сетка 24x24, центр в (0, 0).
+//! Иконки: готовый набор Google Material Symbols (Rounded, Filled) через крейт `egui_material_icons`.
+//! Шрифт иконок вшит в exe, а каждая иконка это один символ шрифта: она чёткая на любом
+//! размере и красится любым цветом, как обычный текст.
+//!
+//! Лицензии: крейт под MIT, сам шрифт Material Symbols под Apache 2.0 (см. THIRD_PARTY_NOTICES.md).
 
-use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, pos2, vec2};
+use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, pos2, vec2};
+use egui_material_icons::MaterialIcon;
+use egui_material_icons::icons as mi;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Icon {
@@ -21,93 +26,57 @@ pub enum Icon {
     Folder,
 }
 
-/// Нарисовать иконку с центром в `center`; `size` = сторона квадрата в пикселях.
-pub fn paint(painter: &Painter, icon: Icon, center: Pos2, size: f32, color: Color32) {
-    let u = size / 24.0; // масштаб: 1 «единица сетки» в пикселях
-    let p = |x: f32, y: f32| center + vec2(x * u, y * u); // точка сетки -> точка на экране
-    let stroke = Stroke::new((2.0 * u).max(1.2), color);
-    let fill_poly = |pts: Vec<Pos2>| Shape::convex_polygon(pts, color, Stroke::NONE);
-    let bar = |x0: f32, y0: f32, x1: f32, y1: f32| {
-        painter.rect_filled(Rect::from_min_max(p(x0, y0), p(x1, y1)), 1.5 * u, color);
-    };
+impl Icon {
+    fn glyph(self) -> MaterialIcon {
+        match self {
+            Icon::Play => mi::ICON_PLAY_ARROW,
+            Icon::Pause => mi::ICON_PAUSE,
+            Icon::Next => mi::ICON_SKIP_NEXT,
+            Icon::Prev => mi::ICON_SKIP_PREVIOUS,
+            Icon::Shuffle => mi::ICON_SHUFFLE,
+            Icon::Repeat => mi::ICON_REPEAT,
+            Icon::RepeatOne => mi::ICON_REPEAT_ONE,
+            Icon::Volume => mi::ICON_VOLUME_UP,
+            Icon::VolumeMute => mi::ICON_VOLUME_OFF,
+            Icon::Note => mi::ICON_MUSIC_NOTE,
+            Icon::Queue => mi::ICON_QUEUE_MUSIC,
+            Icon::Settings => mi::ICON_TUNE,
+            Icon::Plus => mi::ICON_ADD,
+            Icon::Folder => mi::ICON_FOLDER,
+        }
+    }
 
-    match icon {
-        Icon::Play => {
-            painter.add(fill_poly(vec![p(-6.0, -9.0), p(-6.0, 9.0), p(9.0, 0.0)]));
-        }
-        Icon::Pause => {
-            bar(-7.0, -8.0, -2.0, 8.0);
-            bar(2.0, -8.0, 7.0, 8.0);
-        }
-        Icon::Next => {
-            painter.add(fill_poly(vec![p(-8.0, -7.0), p(-8.0, 7.0), p(4.0, 0.0)]));
-            bar(5.5, -7.0, 8.0, 7.0);
-        }
-        Icon::Prev => {
-            painter.add(fill_poly(vec![p(8.0, -7.0), p(8.0, 7.0), p(-4.0, 0.0)]));
-            bar(-8.0, -7.0, -5.5, 7.0);
-        }
-        Icon::Shuffle => {
-            painter.add(Shape::line(vec![p(-9.0, -6.0), p(-3.0, -6.0), p(3.0, 6.0), p(7.0, 6.0)], stroke));
-            painter.add(Shape::line(vec![p(-9.0, 6.0), p(-3.0, 6.0), p(3.0, -6.0), p(7.0, -6.0)], stroke));
-            painter.add(fill_poly(vec![p(6.0, 3.0), p(6.0, 9.0), p(11.0, 6.0)]));
-            painter.add(fill_poly(vec![p(6.0, -9.0), p(6.0, -3.0), p(11.0, -6.0)]));
-        }
-        Icon::Repeat | Icon::RepeatOne => {
-            painter.rect_stroke(Rect::from_min_max(p(-9.0, -5.0), p(9.0, 5.0)), 4.0 * u, stroke, StrokeKind::Middle);
-            painter.add(fill_poly(vec![p(5.0, -9.5), p(5.0, -0.5), p(11.0, -5.0)]));
-            if icon == Icon::RepeatOne {
-                painter.text(center, Align2::CENTER_CENTER, "1", FontId::proportional(9.0 * u * 1.2), color);
-            }
-        }
-        Icon::Volume | Icon::VolumeMute => {
-            painter.rect_filled(Rect::from_min_max(p(-10.0, -3.0), p(-6.0, 3.0)), 1.0 * u, color);
-            painter.add(fill_poly(vec![p(-6.0, -3.0), p(-1.0, -8.0), p(-1.0, 8.0), p(-6.0, 3.0)]));
-            if icon == Icon::Volume {
-                for r in [5.0_f32, 9.0] {
-                    // Дуга: точки на окружности радиуса r с центром (-1, 0), углы от -50° до +50°.
-                    let pts: Vec<Pos2> = (0..=8)
-                        .map(|i| {
-                            let a = (-50.0_f32 + 12.5 * i as f32).to_radians();
-                            p(-1.0 + r * a.cos(), r * a.sin())
-                        })
-                        .collect();
-                    painter.add(Shape::line(pts, stroke));
-                }
-            } else {
-                painter.line_segment([p(3.0, -4.0), p(10.0, 4.0)], stroke);
-                painter.line_segment([p(10.0, -4.0), p(3.0, 4.0)], stroke);
-            }
-        }
-        Icon::Note => {
-            painter.circle_filled(p(-3.5, 6.0), 3.8 * u, color);
-            painter.line_segment([p(0.0, 6.0), p(0.0, -8.0)], stroke);
-            painter.add(Shape::line(vec![p(0.0, -8.0), p(7.0, -5.5), p(7.0, -1.0)], stroke));
-        }
-        Icon::Queue => {
-            painter.line_segment([p(-10.0, -6.0), p(3.0, -6.0)], stroke);
-            painter.line_segment([p(-10.0, 0.0), p(3.0, 0.0)], stroke);
-            painter.line_segment([p(-10.0, 6.0), p(-2.0, 6.0)], stroke);
-            painter.add(fill_poly(vec![p(4.0, 2.5), p(4.0, 9.5), p(10.0, 6.0)]));
-        }
-        Icon::Settings => {
-            painter.line_segment([p(-10.0, -5.0), p(10.0, -5.0)], stroke);
-            painter.line_segment([p(-10.0, 5.0), p(10.0, 5.0)], stroke);
-            painter.circle_filled(p(3.5, -5.0), 3.2 * u, color);
-            painter.circle_filled(p(-3.5, 5.0), 3.2 * u, color);
-        }
-        Icon::Plus => {
-            painter.line_segment([p(-8.0, 0.0), p(8.0, 0.0)], stroke);
-            painter.line_segment([p(0.0, -8.0), p(0.0, 8.0)], stroke);
-        }
-        Icon::Folder => {
-            painter.rect_stroke(Rect::from_min_max(p(-10.0, -4.0), p(10.0, 8.0)), 2.5 * u, stroke, StrokeKind::Middle);
-            painter.add(Shape::line(vec![p(-10.0, -4.0), p(-10.0, -8.0), p(-3.0, -8.0), p(-1.0, -4.0)], stroke));
+    /// Поправка по вертикали (доля размера, плюс = вверх) для иконок, которые в самом шрифте
+    /// нарисованы ниже центра квадрата. Значения вычислены по контурам глифов шрифта.
+    fn nudge_up(self) -> f32 {
+        match self {
+            Icon::Queue => 0.042,
+            Icon::VolumeMute => 0.029,
+            _ => 0.0,
         }
     }
 }
 
+/// Крейт иконок сдвигает все глифы на 5% вниз (подгонка под текст кнопок). Для точной
+/// центровки в круглых кнопках этот сдвиг компенсируем. Тест `glyph_offset_matches_constant`
+/// следит, что после обновления крейта число не изменилось.
+const CRATE_Y_OFFSET: f32 = 0.05;
+
+/// Подключить шрифт иконок. Вызывать ПОСЛЕ `fonts::install`: тот заменяет набор шрифтов целиком.
+pub fn install(ctx: &egui::Context) {
+    egui_material_icons::initialize(ctx);
+}
+
+/// Нарисовать иконку с центром в `center`. `size` = размер шрифта (как «24dp» в Material:
+/// иконка занимает квадрат size x size, сама картинка чуть меньше с полями внутри).
+pub fn paint(painter: &Painter, icon: Icon, center: Pos2, size: f32, color: Color32) {
+    let g = icon.glyph();
+    let shift_up = (CRATE_Y_OFFSET + icon.nudge_up()) * size;
+    painter.text(center - vec2(0.0, shift_up), Align2::CENTER_CENTER, g.codepoint, FontId::new(size, g.font_family()), color);
+}
+
 /// Анимированный «эквалайзер» для играющего трека. `t` = время в секундах.
+/// Это не иконка из набора, а анимация из трёх полосок, поэтому рисуется кодом.
 pub fn paint_equalizer(painter: &Painter, center: Pos2, size: f32, color: Color32, t: f64, animate: bool) {
     let w = size * 0.18;
     let gap = size * 0.12;
@@ -117,5 +86,46 @@ pub fn paint_equalizer(painter: &Painter, center: Pos2, size: f32, color: Color3
         let x = center.x + (i as f32 - 1.0) * (w + gap);
         let r = Rect::from_min_max(pos2(x - w / 2.0, center.y + size / 2.0 - h), pos2(x + w / 2.0, center.y + size / 2.0));
         painter.rect_filled(r, w / 2.0, color);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Все глифы должны существовать в шрифте (иначе вместо иконки будет «квадратик»),
+    /// а смещение глифа относительно центра строки должно остаться ~5% размера.
+    #[test]
+    fn glyph_offset_matches_constant() {
+        let ctx = egui::Context::default();
+        // Тот же порядок, что в приложении: сначала свой набор шрифтов, потом иконки.
+        ctx.set_fonts(egui::FontDefinitions::default());
+        install(&ctx);
+
+        let all = [
+            Icon::Play, Icon::Pause, Icon::Next, Icon::Prev, Icon::Shuffle, Icon::Repeat, Icon::RepeatOne,
+            Icon::Volume, Icon::VolumeMute, Icon::Note, Icon::Queue, Icon::Settings, Icon::Plus, Icon::Folder,
+        ];
+        let mut failures: Vec<String> = Vec::new();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            for icon in all {
+                for size in [20.0_f32, 24.0, 40.0] {
+                    let g = icon.glyph();
+                    let galley = ui.painter().layout_no_wrap(g.codepoint.to_string(), FontId::new(size, g.font_family()), Color32::WHITE);
+                    let ink = galley.rows[0].visuals.mesh_bounds;
+                    if ink.width() < 1.0 || ink.height() < 1.0 {
+                        failures.push(format!("{icon:?}: глиф не нарисовался"));
+                        continue;
+                    }
+                    // Положение иконки после нашей компенсации: ink_center - сдвиг вверх.
+                    let after = (ink.center().y - galley.rect.center().y) - (CRATE_Y_OFFSET + icon.nudge_up()) * size;
+                    if after.abs() > 0.2 * size * 0.1 + 0.75 {
+                        failures.push(format!("{icon:?} при {size}: ink смещён на {after:+.2}px"));
+                    }
+                }
+            }
+        });
+        out.textures_delta.clear();
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 }

@@ -9,6 +9,7 @@ use eframe::egui::{self, Frame, Margin};
 use mcrate_core::Track;
 
 use crate::controller::Controller;
+use crate::icons;
 use crate::ui::layout::Breakpoint;
 use crate::settings::{Design, GraphicsSettings, STORAGE_KEY, ThemePreset, WindowBackdrop};
 use crate::theme::{Surface, Theme, glass, with_alpha};
@@ -54,6 +55,7 @@ impl McrateApp {
         egui_glass::init(&render_state, 1); // 1 = без сглаживания MSAA (значение по умолчанию)
 
         fonts::install(&cc.egui_ctx);
+        icons::install(&cc.egui_ctx); // после fonts::install: тот заменяет набор шрифтов целиком
 
         let mut ctl = Controller::new();
         if !open_paths.is_empty() {

@@ -44,7 +44,7 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, diameter: f32, kind: 
     if a > 0 {
         painter.circle_filled(rect.center(), r, with_alpha(fg, a));
     }
-    icons::paint(painter, icon, rect.center(), diameter * 0.5, fg);
+    icons::paint(painter, icon, rect.center(), diameter * 0.6, fg);
     resp.on_hover_text(tip).on_hover_cursor(CursorIcon::PointingHand)
 }
 
@@ -100,9 +100,9 @@ pub fn nav_item(ui: &mut Ui, theme: &Theme, icon: Icon, label: &str, selected: b
         painter.rect_filled(rect, 24.0, theme.row_hover_fill());
     }
     if compact {
-        icons::paint(painter, icon, rect.center(), 22.0, fg);
+        icons::paint(painter, icon, rect.center(), 24.0, fg);
     } else {
-        icons::paint(painter, icon, pos2(rect.left() + 28.0, rect.center().y), 22.0, fg);
+        icons::paint(painter, icon, pos2(rect.left() + 28.0, rect.center().y), 24.0, fg);
         painter.text(pos2(rect.left() + 52.0, rect.center().y), Align2::LEFT_CENTER, label, FontId::proportional(15.0), fg);
         if let Some(t) = trailing {
             painter.text(pos2(rect.right() - 14.0, rect.center().y), Align2::RIGHT_CENTER, t, FontId::proportional(11.0), fg);
