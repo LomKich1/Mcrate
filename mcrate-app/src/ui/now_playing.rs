@@ -4,6 +4,7 @@
 
 use egui::{RichText, Sense, Ui, Vec2};
 
+use super::layout::cover_side;
 use super::widgets::{artists_text, cover_tile};
 use crate::app::McrateApp;
 use crate::theme::Theme;
@@ -21,7 +22,7 @@ impl McrateApp {
 
         ui.vertical_centered(|ui| {
             ui.add_space(12.0);
-            let side = (ui.available_height() * 0.55).clamp(160.0, 320.0);
+            let side = cover_side(ui.available_width(), ui.available_height());
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
             cover_tile(ui, theme, rect, &track.id, 36.0);
             ui.add_space(18.0);

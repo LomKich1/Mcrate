@@ -9,6 +9,7 @@ use eframe::egui::{self, Frame, Margin};
 use mcrate_core::Track;
 
 use crate::controller::Controller;
+use crate::ui::layout::Breakpoint;
 use crate::settings::{Design, GraphicsSettings, STORAGE_KEY, ThemePreset, WindowBackdrop};
 use crate::theme::{Surface, Theme, glass, with_alpha};
 use crate::{fonts, platform};
@@ -170,6 +171,8 @@ impl eframe::App for McrateApp {
 
         let full = ui.max_rect();
         theme.paint_background(ui, full);
+        // Размерный класс окна: от него зависит ширина навигации (см. ui/layout.rs).
+        let bp = Breakpoint::from_width(full.width());
 
         // Порядок важен: сначала панели по краям, потом центральная область.
         egui::Panel::bottom("player_bar")
@@ -184,9 +187,9 @@ impl eframe::App for McrateApp {
             .frame(Frame::NONE.inner_margin(Margin { left: 12, right: 4, top: 12, bottom: 4 }))
             .resizable(false)
             .show_separator_line(false)
-            .exact_size(260.0)
+            .exact_size(bp.rail_width())
             .show(ui, |ui| {
-                theme.surface(ui, Surface::Rail, |ui| self.rail_view(ui, &theme));
+                theme.surface(ui, Surface::Rail, |ui| self.rail_view(ui, &theme, bp.is_compact()));
             });
 
         egui::CentralPanel::default()

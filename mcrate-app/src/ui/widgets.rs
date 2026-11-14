@@ -75,7 +75,8 @@ pub fn pill_button(ui: &mut Ui, theme: &Theme, label: &str, icon: Option<Icon>, 
 }
 
 /// Пункт навигации (ширина = вся доступная, высота 48, форма «таблетка»).
-pub fn nav_item(ui: &mut Ui, theme: &Theme, icon: Icon, label: &str, selected: bool, enabled: bool, trailing: Option<&str>) -> Response {
+/// `compact`: только иконка по центру (узкая панель), подпись показывается во всплывающей подсказке.
+pub fn nav_item(ui: &mut Ui, theme: &Theme, icon: Icon, label: &str, selected: bool, enabled: bool, trailing: Option<&str>, compact: bool) -> Response {
     let p = &theme.palette;
     let size = vec2(ui.available_width(), 48.0);
     let sense = if enabled { Sense::click() } else { Sense::hover() };
@@ -98,11 +99,16 @@ pub fn nav_item(ui: &mut Ui, theme: &Theme, icon: Icon, label: &str, selected: b
     } else if enabled && resp.hovered() {
         painter.rect_filled(rect, 24.0, theme.row_hover_fill());
     }
-    icons::paint(painter, icon, pos2(rect.left() + 28.0, rect.center().y), 22.0, fg);
-    painter.text(pos2(rect.left() + 52.0, rect.center().y), Align2::LEFT_CENTER, label, FontId::proportional(15.0), fg);
-    if let Some(t) = trailing {
-        painter.text(pos2(rect.right() - 14.0, rect.center().y), Align2::RIGHT_CENTER, t, FontId::proportional(11.0), fg);
+    if compact {
+        icons::paint(painter, icon, rect.center(), 22.0, fg);
+    } else {
+        icons::paint(painter, icon, pos2(rect.left() + 28.0, rect.center().y), 22.0, fg);
+        painter.text(pos2(rect.left() + 52.0, rect.center().y), Align2::LEFT_CENTER, label, FontId::proportional(15.0), fg);
+        if let Some(t) = trailing {
+            painter.text(pos2(rect.right() - 14.0, rect.center().y), Align2::RIGHT_CENTER, t, FontId::proportional(11.0), fg);
+        }
     }
+    let resp = if compact { resp.on_hover_text(label) } else { resp };
     if enabled { resp.on_hover_cursor(CursorIcon::PointingHand) } else { resp }
 }
 
