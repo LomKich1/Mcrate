@@ -1,11 +1,54 @@
 //! Дизайн Liquid Glass. Стекло рисует крейт egui_glass (шейдер на wgpu: блюр + преломление
-//! краёв + блик). Ограничение библиотеки: стекло «видит» только заранее загруженные обои
-//! (static backdrop), а не соседние виджеты. Поэтому обои генерируем из цветов палитры.
+//! краёв + блик). Стекло преломляет «живой фон» (LiveBackdrop): страница (обои + основная
+//! панель с содержимым) рисуется ещё раз за кадром, и всё, что лежит под рейкой и панелью
+//! плеера, видно сквозь них, включая текст. Раскладка собрана в `app.rs` (glass_layout),
+//! здесь только кирпичики: обои, основная панель и сами стеклянные поверхности.
 
-use egui::{ColorImage, Margin, Ui};
-use egui_glass::{Glass, GlassStyle};
+use egui::{Color32, ColorImage, Margin, Painter, Rect, Stroke, StrokeKind, TextureId, Ui, pos2, vec2};
+use egui_glass::{Glass, GlassStyle, LiveBackdropQuality};
 
 use super::{Palette, Surface, Theme, material3, with_alpha};
+use crate::settings::GlassQuality;
+
+/// Наши настройки качества -> перечисление библиотеки.
+pub fn lib_quality(q: GlassQuality) -> LiveBackdropQuality {
+    match q {
+        GlassQuality::Full => LiveBackdropQuality::Full,
+        GlassQuality::Balanced => LiveBackdropQuality::Balanced,
+        GlassQuality::Performance => LiveBackdropQuality::Performance,
+    }
+}
+
+/// Нарисовать обои на весь `rect` (с обрезкой по краям, как `background-size: cover`).
+/// Вызывается внутри страницы живого фона, поэтому картинку берём по `TextureId`, который
+/// вернул `set_backdrop`: закадровый контекст знает эти текстуры, а вот состояние
+/// `show_backdrop` в нём не хранится.
+/// `translucent`: включён Mica/Acrylic. Тогда обои полупрозрачные и без сплошной подложки,
+/// и системный материал виден сквозь них.
+pub fn paint_wallpaper(painter: &Painter, rect: Rect, tex: Option<TextureId>, base: Color32, translucent: bool) {
+    let alpha = if translucent { 110 } else { 255 };
+    if !translucent {
+        painter.rect_filled(rect, 0.0, base);
+    }
+    if let Some(id) = tex {
+        let size = vec2(W as f32, H as f32);
+        let scale = (rect.width() / size.x).max(rect.height() / size.y);
+        let img = Rect::from_center_size(rect.center(), size * scale);
+        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+        // from_white_alpha = «премультипликативный» белый: так в egui задаётся прозрачность картинки
+        painter.with_clip_rect(rect).image(id, img, uv, Color32::from_white_alpha(alpha));
+    }
+}
+
+/// Основная панель с содержимым. Плотная (почти непрозрачная), чтобы списки читались,
+/// но не сплошная: сквозь неё слабо проступают обои. Она лежит и под рейкой, и под панелью
+/// плеера, поэтому именно её стекло и преломляет.
+pub fn paint_pane(theme: &Theme, painter: &Painter, rect: Rect) {
+    let p = &theme.palette;
+    let radius = theme.pane_radius() as f32;
+    painter.rect_filled(rect, radius, with_alpha(p.surface_container_low, 226));
+    painter.rect_stroke(rect, radius, Stroke::new(1.0, with_alpha(p.outline_variant, 90)), StrokeKind::Inside);
+}
 
 const W: usize = 512;
 const H: usize = 320;
@@ -41,12 +84,10 @@ pub fn wallpaper(p: &Palette) -> ColorImage {
     img
 }
 
+/// Фон окна, когда стекло НЕ активно (блюр выключен): обычный фон Material 3.
+/// Активное стекло рисует фон само, внутри живой страницы (см. `app.rs`, glass_layout).
 pub fn paint_background(theme: &Theme, ui: &mut Ui, rect: egui::Rect) {
-    if theme.glass_active() {
-        egui_glass::show_backdrop(ui, rect); // рисует загруженные обои на весь rect
-    } else {
-        material3::paint_background(theme, ui, rect);
-    }
+    material3::paint_background(theme, ui, rect);
 }
 
 pub fn surface<R>(theme: &Theme, ui: &mut Ui, role: Surface, add: impl FnOnce(&mut Ui) -> R) -> R {

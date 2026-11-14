@@ -26,11 +26,12 @@
 - Репозиторий LomKich1/Mcrate (приватный), оба с правом записи. Работа на ПК, Windows 11, VS Code.
 - Готово, дорожка A «движок» (делает LomKich):
   - mcrate-core: Track, ProviderKind (Yandex, Vk, SoundCloud, Spotify, Local), StreamSource (DirectUrl, HlsPlaylist, LocalFile), ProviderError, трейт MusicProvider; secrets.rs: TokenStore (keyring 4.x, Windows Credential Manager).
-  - mcrate-audio: AudioPlayer (rodio 0.23: файл, пауза, громкость, перемотка), PlayQueue (очередь, повтор, перемешивание, 7 тестов), PlaybackEngine (контракт ниже).
-  - mcrate-providers: LocalProvider (свои файлы, теги через lofty, библиотека сохраняется в %APPDATA%\Mcrate\library.txt); SoundCloudProvider (поиск, ссылка на поток) и StreamDownloader (скачивание DirectUrl и HLS в память или файл), см. «Принятые решения»; общий HTTP-клиент reqwest 0.13 (native-tls).
-  - Примеры: mcrate-audio/examples/{play,queue}.rs, mcrate-providers/examples/{local,engine_demo,sc_probe,sc_play}.rs (sc_probe печатает, что сейчас отдаёт SoundCloud; sc_play ищет, скачивает и проигрывает трек).
+  - mcrate-audio: AudioPlayer (rodio 0.23: файл, пауза, громкость, перемотка), PlayQueue (очередь, повтор, перемешивание, 7 тестов), PlaybackEngine (контракт ниже): локальные файлы играет сразу, онлайн-треки (DirectUrl и HlsPlaylist) грузит в фоне и кэширует в `%TEMP%\mcrate\stream\`; внутри `stream_cache.rs`.
+  - mcrate-net: общий HTTP-клиент (`http.rs`) и StreamDownloader (`stream.rs`, скачивание DirectUrl и HLS), переехали из mcrate-providers.
+  - mcrate-providers: LocalProvider (свои файлы, теги через lofty, библиотека сохраняется в %APPDATA%\Mcrate\library.txt); SoundCloudProvider (поиск, ссылка на поток), см. «Принятые решения»; `mcrate_providers::StreamDownloader` реэкспортируется из mcrate-net (старый путь работает).
+  - Примеры: mcrate-audio/examples/{play,queue}.rs, mcrate-providers/examples/{local,engine_demo,sc_probe,sc_play,engine_sc}.rs (sc_probe печатает, что сейчас отдаёт SoundCloud; sc_play ищет, скачивает и проигрывает трек напрямую; engine_sc проверяет PlaybackEngine с SoundCloud: пауза и громкость во время загрузки, устаревшие результаты, кэш).
 - Дорожка B (UI), mcrate-app: первая версия есть (файлы прислал P1tr0v1ch, закоммичено одним коммитом от LomKich). Окно на eframe/egui 0.37 (wgpu) + egui_glass 0.2 (Liquid Glass), Material 3 (material-colors), 12 цветовых тем, экран «Моя музыка», плеер-бар, настройки оформления, добавление файлов через rfd и drag&drop. Собирается и запускается на Windows 11 (проверено 14.11.2026). Нужен Rust 1.95+.
-- Не начато: VK, YouTube, Spotify, волна, AmneziaWG. Не подключено к PlaybackEngine: SoundCloud и StreamDownloader пока вызываются только из примера sc_play.
+- Не начато: VK, YouTube, Spotify, волна, AmneziaWG. SoundCloud подключён к PlaybackEngine (пример engine_sc), но UI (`controller.rs`) пока играет в обход движка и онлайн-треки не умеет: это шаг 5c.
 - Yandex Music: полный звук только с платной подпиской, провайдер отложен до появления подписки для тестов.
 
 ## План по шагам
@@ -45,19 +46,21 @@
 
 ## Технический долг
 - `mcrate-app/src/controller.rs` обходит `PlaybackEngine`: держит `AudioPlayer` + `PlayQueue` + `LocalProvider` напрямую и сам дублирует логику движка (смена трека, `prev` с порогом 3 с, перемотка). Это против контракта ниже. Поддержан только `StreamSource::LocalFile`, онлайн-треки так играть не будут.
-- Исправление: Controller становится тонкой обёрткой над `PlaybackEngine` (держит движок, читает `state()` и `poll_events()`), `LocalProvider` переходит на `Arc<LocalProvider>` и делится с движком. Делаем отдельной задачей после SoundCloud (пункт 5 плана).
+- Исправление: Controller становится тонкой обёрткой над `PlaybackEngine` (держит движок, читает `state()` и `poll_events()`), `LocalProvider` переходит на `Arc<LocalProvider>` и делится с движком. Делаем отдельной задачей, шаг 5c плана (движок уже умеет онлайн-треки, шаг 5b готов).
 
 ## Ближайший план (по порядку; не перескакивай)
 1. [A, готово] Библиотека на диске в `LocalProvider` (`with_storage` + `load()`), подключена в `Controller::new`.
 2. [A, готово] Тесты `LocalProvider` на тегах (кириллица, пустое название, несколько исполнителей).
 3. [A, готово 14.11.2026] Разведка: порядок провайдеров SoundCloud, затем VK, YouTube/YouTube Music последним (см. «Принятые решения»).
 4. [A, готово 14.11.2026] SoundCloud: `SoundCloudProvider` + `StreamDownloader` проверены на ПК примером `sc_play`: звук чистый, перемотка работает, скачивание 5,6 МБ за ~60 с на медленном интернете. `client_id` кэшируется в файле.
-5. [A, согласовать с P1tr0v1ch] Перевод `Controller` на `PlaybackEngine` (см. «Технический долг») и подключение скачивания потоков к движку (`StreamSource::DirectUrl` и `HlsPlaylist` сейчас движок не играет). Пока не сделано, `controller.rs` не расширяем.
+5a. [A, готово 14.11.2026] Крейт `mcrate-net`: HTTP-клиент и `StreamDownloader` вынесены из `mcrate-providers`, чтобы движок мог качать без зависимости от провайдеров.
+5b. [A, готово 14.11.2026] `PlaybackEngine` грузит онлайн-треки (`DirectUrl`, `HlsPlaylist`) в фоне, с кэшем (см. «Контракт звука»). Проверка на ПК: пример `engine_sc`.
+5c. [A, согласовать с P1tr0v1ch] Перевод `Controller` на `PlaybackEngine` (см. «Технический долг») и поиск по SoundCloud в окне. Пока не сделано, `controller.rs` не расширяем.
 6. [A] VK Music: свой разбор HLS с шифрованием AES-128 (`StreamDownloader` его пока отклоняет) и вход по кукам.
 7. [B, P1tr0v1ch] Вид интерфейса: темы, экраны, доводка. Разрешено, если не затрагивает пункты выше.
 Открытые вопросы:
 - Сопоставление треков между сервисами. Противоречит решению «трек между сервисами не сопоставляем» (см. ниже) и принципу «нет трека или подписки в одном сервисе, ищем в другом». Решаем после VK.
-- Скачивание целиком до старта. Для 5-минутного трека это ~60 с на медленном интернете LomKich (87 КБ/с), для часового микса намного дольше. Для реального времени AAC 160k нужно ~20 КБ/с, то есть запас в 4 раза: игра на ходу позволила бы стартовать через пару секунд. Нужна загрузка с проигрыванием по мере скачивания (например, играть первые куски, пока качаются следующие).
+- Скачивание целиком до старта (движок теперь не замирает во время загрузки, но звук начинается только после полного скачивания). Для 5-минутного трека это ~60 с на медленном интернете LomKich (87 КБ/с), для часового микса намного дольше. Для реального времени AAC 160k нужно ~20 КБ/с, то есть запас в 4 раза: игра на ходу позволила бы стартовать через пару секунд. Нужна загрузка с проигрыванием по мере скачивания (например, играть первые куски, пока качаются следующие).
 - Запрос трека по id (`/tracks/{id}`) в SoundCloudProvider не реализован: `get_stream` работает только для треков из последнего поиска.
 
 ## Правила для дорожки B (UI, mcrate-app)
@@ -117,15 +120,18 @@ git pull
   - Декодер (rodio 0.23, symphonia 0.5.5) играет склеенный fMP4 (init + куски) и перематывает его (проверено на синтетическом файле такого же формата); общую длину для такого файла не знает (None), берём длину из данных поиска.
   - VK Music (из одного внешнего источника, не проверено нами): приватные методы `api.vk.ru`, вход по кукам `p` и `remixsid`, токен живёт около 15 минут, поток HLS с AES-128 на каждом третьем куске. Нужен отдельный аккаунт (риск бана).
   - YouTube и YouTube Music: PO-токены на каждое видео, принудительный SABR, подпись ссылок решается JS-кодом. Откладываем; возможный путь только внешний `yt-dlp` как необязательный плагин.
+- Фоновая загрузка в движке (5b, 14.11.2026): локальные треки (`ProviderKind::Local`) стартуют сразу, как раньше; остальные грузятся задачей на многопоточной среде tokio внутри движка (`rt-multi-thread`, 2 потока). Ответ возвращается внутренней командой `LoadFinished` с номером запроса; номер растёт при каждом запуске, отмене и стопе, устаревшие ответы выбрасываются, а скачивание прерывается (`abort`), чтобы не тратить трафик. Подряд не запустившиеся треки считаются: когда их стало столько же, сколько в очереди, движок останавливается (иначе повтор очереди при пропавшем интернете крутился бы вечно).
+- Кэш скачанных треков: `%TEMP%\mcrate\stream\<сервис>-<id>.<расширение>` (HLS = `.m4a`), не больше 20 последних (по времени изменения, при попадании в кэш время обновляется). Качаем в `.part` и переименовываем. Повторное воспроизведение берёт файл из кэша без сети и без запроса ссылки. Удаление файла, который сейчас играет, на Windows может не получиться (ошибки игнорируются); при добавлении предзагрузки следующего трека `prune` должен защищать и играющий файл.
 - Скачивание потоков: `StreamDownloader` качает трек целиком (DirectUrl или HLS) и отдаёт байты или файл, плеер играет файл. Шифрованный HLS, живые эфиры и `BYTERANGE` отклоняются с понятной ошибкой.
 - Mica/Acrylic (дорожка B, 14.11.2026): на Windows окно создаётся через DX12 + DirectComposition (`Dx12SwapchainKind::DxgiFromVisual`, см. `platform::wgpu_configuration`). Причина: на обычной цепочке DXGI нет режима прозрачности, egui_wgpu падает на `CompositeAlphaMode::Auto` (непрозрачный), и прозрачный фон выглядит чёрным. Запасной вариант без DX12: переменная окружения `MCRATE_NO_DCOMP=1` (Mica/Acrylic тогда недоступны). Новых зависимостей нет: `wgpu` берётся из `eframe::egui_wgpu`.
 
 ## Контракт звука: PlaybackEngine (mcrate-audio)
 Единая точка входа в звук для UI. Движок живёт в своём потоке; UI шлёт команды, читает события и снимок состояния.
-- Создание: `PlaybackEngine::new(providers: Vec<Arc<dyn MusicProvider>>)`. Звуковое устройство открывается внутри потока движка.
+- Создание: `PlaybackEngine::new(providers: Vec<Arc<dyn MusicProvider>>)`. Звуковое устройство открывается внутри потока движка. `PlaybackEngine::with_stream_cache(providers, cache_dir)` то же с другой папкой кэша (для тестов); `PlaybackEngine::stream_cache_dir()` возвращает папку кэша по умолчанию.
 - Команды (не блокируют UI, берут &self): `play_queue(Vec<Track>, start)`, `add_to_queue(Track)`, `toggle_pause()`, `next()`, `prev()`, `seek(Duration)`, `set_volume(0.0..=1.0)`, `set_shuffle(bool)`, `cycle_repeat()`, `stop()`.
-- События: UI каждый кадр вызывает `poll_events()`. Виды: TrackChanged(Option<Track>), PauseChanged(bool), ModeChanged{shuffle, repeat}, QueueChanged{len}, TrackFailed{track, reason}, QueueEnded, Error(String).
-- Снимок: `state()` возвращает PlaybackState (current, position, duration, is_playing, volume, shuffle, repeat, queue_index, queue_len). Позиция для полосы перемотки берётся из снимка, не из событий.
-- В очереди лежат Track. Ссылку на звук движок запрашивает у провайдера в момент проигрывания (ссылки сервисов протухают). Сейчас поддержан только StreamSource::LocalFile.
+- События: UI каждый кадр вызывает `poll_events()`. Виды: Loading(Track) (онлайн-трек выбран и скачивается, звука ещё нет; дальше придёт TrackChanged(Some) или TrackFailed), TrackChanged(Option<Track>), PauseChanged(bool), ModeChanged{shuffle, repeat}, QueueChanged{len}, TrackFailed{track, reason}, QueueEnded, Error(String).
+- Снимок: `state()` возвращает PlaybackState (current, position, duration, is_playing, is_loading, volume, shuffle, repeat, queue_index, queue_len). Позиция для полосы перемотки берётся из снимка, не из событий. Пока трек грузится: `is_loading = true`, `is_playing = false`, `current` = грузящийся трек, `duration` из метаданных трека, `position` = 0.
+- В очереди лежат Track. Ссылку на звук движок запрашивает у провайдера в момент проигрывания (ссылки сервисов протухают). Поддержаны LocalFile (играется сразу), DirectUrl и HlsPlaylist (скачиваются в фоне, см. «Принятые решения»).
+- Во время загрузки команды работают: `set_volume` запоминается, `toggle_pause` значит «стартовать на паузе» (приходит PauseChanged), `next`/`prev`/`play_queue`/`stop` отменяют загрузку, `seek` игнорируется. Старый трек замолкает сразу, как только выбран онлайн-трек. Новый трек всегда стартует не на паузе (если пауза была нажата для прошлого, UI получает PauseChanged(false)).
 - Битый трек пропускается, причина приходит событием TrackFailed.
 - `prev()`: если трек играет дольше 3 секунд, перезапускает его, иначе переходит к предыдущему.

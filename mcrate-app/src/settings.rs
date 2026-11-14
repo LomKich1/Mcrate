@@ -61,6 +61,27 @@ pub enum WindowBackdrop {
     Acrylic, // полупрозрачный блюр того, что находится за окном
 }
 
+/// Качество «живого» фона стекла: во сколько раз уменьшается закадровая картинка, которую
+/// преломляет стекло. Меньше = быстрее на слабых видеокартах, но стекло чуть «мылит».
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GlassQuality {
+    Full,        // родное разрешение
+    Balanced,    // 0.75 по ширине и высоте
+    Performance, // 0.5 по ширине и высоте
+}
+
+impl GlassQuality {
+    pub const ALL: [GlassQuality; 3] = [Self::Full, Self::Balanced, Self::Performance];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Full => "Полное",
+            Self::Balanced => "Баланс",
+            Self::Performance => "Быстро",
+        }
+    }
+}
+
 /// Всё, что настраивается на экране «Графика».
 /// `#[serde(default)]`: если в старом файле настроек нет нового поля, берём значение по умолчанию.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -81,6 +102,8 @@ pub struct GraphicsSettings {
     pub refraction: f32,
     /// Непрозрачность «плёнки» стекла: 0 = чистый блюр, 1 = плотная заливка.
     pub glass_opacity: f32,
+    /// Качество живого фона стекла (см. `GlassQuality`).
+    pub glass_quality: GlassQuality,
     pub window_backdrop: WindowBackdrop,
 }
 
@@ -95,6 +118,7 @@ impl Default for GraphicsSettings {
             blur_radius: 22.0,
             refraction: 5.0,
             glass_opacity: 0.45,
+            glass_quality: GlassQuality::Balanced,
             window_backdrop: WindowBackdrop::Off,
         }
     }

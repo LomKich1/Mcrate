@@ -5,6 +5,7 @@ pub mod queue;
 pub use queue::{PlayQueue, RepeatMode}; // чтобы писать mcrate_audio::PlayQueue
 pub mod engine;
 pub use engine::{PlaybackEngine, PlaybackEvent, PlaybackState};
+mod stream_cache; // кэш скачанных онлайн-треков (внутренний, наружу не торчит)
 
 use std::fs::File;
 use std::path::Path;

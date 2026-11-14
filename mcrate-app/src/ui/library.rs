@@ -59,14 +59,21 @@ impl McrateApp {
         let playing = self.ctl.is_playing();
         let time = ui.input(|i| i.time);
         let mut clicked: Option<usize> = None;
+        // В Liquid Glass список уходит под плавающую панель плеера: добавляем в конец пустые
+        // «строки-подушку», чтобы последний трек можно было прокрутить выше панели.
+        let spacer_rows = (self.bottom_inset / 56.0).ceil() as usize;
 
         // scope: меняем интервал между строками только для списка.
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = 4.0;
             // show_rows рисует только видимые строки (быстро даже на тысячах треков);
             // для этого высота строки должна быть фиксированной.
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 56.0, count, |ui, range| {
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 56.0, count + spacer_rows, |ui, range| {
                 for i in range {
+                    if i >= count {
+                        ui.allocate_exact_size(Vec2::new(1.0, 56.0), Sense::hover());
+                        continue;
+                    }
                     let track = &self.filtered[i];
                     let is_current = current_id.as_deref() == Some(track.id.as_str());
                     if track_row(ui, theme, i, track, is_current, is_current && playing, time).clicked() {

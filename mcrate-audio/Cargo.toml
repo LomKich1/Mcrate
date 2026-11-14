@@ -5,6 +5,13 @@ edition = "2024"
 
 [dependencies]
 mcrate-core = { version = "0.1.0", path = "../mcrate-core" }
+# Скачивание онлайн-треков (HLS и прямые ссылки) в фоне
+mcrate-net = { version = "0.1.0", path = "../mcrate-net" }
 rodio = "0.23.0"
 thiserror = "2.0.21"
-tokio = { version = "1.54.1", features = ["rt"] }
+# rt-multi-thread: рабочие потоки, на которых идут фоновые загрузки; time: паузы в тестах
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "time"] }
+
+[dev-dependencies]
+# Нужен только тестам: поддельный провайдер с async fn в трейте
+async-trait = "0.1.92"

@@ -22,7 +22,8 @@ impl McrateApp {
 
         ui.vertical_centered(|ui| {
             ui.add_space(12.0);
-            let side = cover_side(ui.available_width(), ui.available_height());
+            // bottom_inset: в Liquid Glass нижняя часть окна закрыта плавающей панелью плеера
+            let side = cover_side(ui.available_width(), ui.available_height() - self.bottom_inset);
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
             cover_tile(ui, theme, rect, &track.id, 36.0);
             ui.add_space(18.0);

@@ -62,9 +62,20 @@ impl Icon {
 /// следит, что после обновления крейта число не изменилось.
 const CRATE_Y_OFFSET: f32 = 0.05;
 
-/// Подключить шрифт иконок. Вызывать ПОСЛЕ `fonts::install`: тот заменяет набор шрифтов целиком.
-pub fn install(ctx: &egui::Context) {
-    egui_material_icons::initialize(ctx);
+/// Добавить шрифт иконок в набор шрифтов (после `fonts::definitions`). Делает то же, что
+/// `egui_material_icons::initialize` (`Context::add_font`), но на уровне `FontDefinitions`:
+/// так один и тот же набор можно отдать и основному, и закадровому контексту стекла.
+pub fn add_to_definitions(fonts: &mut egui::FontDefinitions) {
+    use egui::epaint::text::FontPriority;
+    let insert = egui_material_icons::font_insert();
+    for fam in &insert.families {
+        let list = fonts.families.entry(fam.family.clone()).or_default();
+        match fam.priority {
+            FontPriority::Highest => list.insert(0, insert.name.clone()), // перед всеми остальными
+            FontPriority::Lowest => list.push(insert.name.clone()),       // запасной, в самый конец
+        }
+    }
+    fonts.font_data.insert(insert.name.clone(), std::sync::Arc::new(insert.data));
 }
 
 /// Нарисовать иконку с центром в `center`. `size` = размер шрифта (как «24dp» в Material:
@@ -99,8 +110,9 @@ mod tests {
     fn glyph_offset_matches_constant() {
         let ctx = egui::Context::default();
         // Тот же порядок, что в приложении: сначала свой набор шрифтов, потом иконки.
-        ctx.set_fonts(egui::FontDefinitions::default());
-        install(&ctx);
+        let mut defs = egui::FontDefinitions::default();
+        add_to_definitions(&mut defs);
+        ctx.set_fonts(defs);
 
         let all = [
             Icon::Play, Icon::Pause, Icon::Next, Icon::Prev, Icon::Shuffle, Icon::Repeat, Icon::RepeatOne,

@@ -11,6 +11,7 @@ use mcrate_core::Track;
 use crate::controller::Controller;
 use crate::icons;
 use crate::ui::layout::Breakpoint;
+use crate::ui::transition::ViewTransition;
 use crate::settings::{Design, GraphicsSettings, STORAGE_KEY, ThemePreset, WindowBackdrop};
 use crate::theme::{Surface, Theme, glass, with_alpha};
 use crate::{fonts, platform};
@@ -21,6 +22,19 @@ pub enum View {
     Library,
     NowPlaying,
     Settings,
+}
+
+impl View {
+    /// Порядок экранов в меню сверху вниз. От него зависит направление анимации перехода
+    /// (см. ui/transition.rs): к большему номеру экран выезжает справа, к меньшему слева.
+    /// Новые экраны вставляем сюда в том порядке, в каком они стоят в меню.
+    pub fn order(self) -> u8 {
+        match self {
+            View::Library => 0,
+            View::NowPlaying => 1,
+            View::Settings => 2,
+        }
+    }
 }
 
 pub struct McrateApp {
@@ -36,6 +50,10 @@ pub struct McrateApp {
 
     pub ctl: Controller,
     pub view: View,
+    /// Экран, который показан (или к которому идёт переход). Сравнивается с `view`,
+    /// чтобы заметить смену экрана и запустить анимацию (см. ui/transition.rs).
+    pub shown_view: View,
+    pub transition: Option<ViewTransition>,
     pub search: String,
     pub filtered: Vec<Track>,
     filter_key: Option<(String, usize)>,
@@ -76,6 +94,8 @@ impl McrateApp {
             gpu_backend,
             ctl,
             view: View::Library,
+            shown_view: View::Library,
+            transition: None,
             search: String::new(),
             filtered: Vec::new(),
             filter_key: None,
@@ -171,6 +191,7 @@ impl eframe::App for McrateApp {
         self.handle_input(&ctx);
         self.ctl.tick();
         self.refresh_filter();
+        self.update_transition(&ctx);
 
         // Копия темы нужна, потому что внутри замыканий мы меняем self (borrow checker
         // не даст держать &self.theme и &mut self одновременно).
@@ -202,11 +223,8 @@ impl eframe::App for McrateApp {
         egui::CentralPanel::default()
             .frame(Frame::NONE.inner_margin(Margin { left: 4, right: 12, top: 12, bottom: 4 }))
             .show(ui, |ui| {
-                theme.surface(ui, Surface::Content, |ui| match self.view {
-                    View::Library => self.library_view(ui, &theme),
-                    View::NowPlaying => self.now_playing_view(ui, &theme),
-                    View::Settings => self.settings_view(ui, &theme),
-                });
+                // view_host сам выбирает: один экран или два (во время анимации перехода).
+                theme.surface(ui, Surface::Content, |ui| self.view_host(ui, &theme));
             });
 
         self.paint_drop_overlay(&ctx);

@@ -1,6 +1,7 @@
 //! Экраны и виджеты. Экраны это `impl McrateApp` в отдельных файлах, чтобы app.rs не пух.
 
 pub mod layout;
+pub mod transition;
 pub mod widgets;
 
 mod library;
