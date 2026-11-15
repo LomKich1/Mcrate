@@ -18,21 +18,42 @@ pub const BACKDROP_SUPPORTED: bool = cfg!(windows);
 /// с переменной окружения `MCRATE_NO_DCOMP=1`. Тогда настройки по умолчанию
 /// (Vulkan/DX12 как выберет wgpu), но без Mica/Acrylic.
 pub fn wgpu_configuration() -> eframe::egui_wgpu::WgpuConfiguration {
+    use eframe::egui_wgpu::WgpuSetup;
     #[allow(unused_mut)] // на не-Windows переменная не меняется
     let mut config = eframe::egui_wgpu::WgpuConfiguration::default();
+    if let WgpuSetup::CreateNew(setup) = &mut config.wgpu_setup {
+        economize_memory(setup);
+    }
     #[cfg(windows)]
     {
         if std::env::var_os("MCRATE_NO_DCOMP").is_some() {
             return config;
         }
-        use eframe::egui_wgpu::{WgpuSetup, WgpuSetupCreateNew, wgpu};
+        use eframe::egui_wgpu::{WgpuSetupCreateNew, wgpu};
         // display_handle eframe заполнит сам (см. документацию egui-wgpu).
         let mut setup = WgpuSetupCreateNew::without_display_handle();
         setup.instance_descriptor.backends = wgpu::Backends::DX12;
         setup.instance_descriptor.backend_options.dx12.presentation_system = wgpu::Dx12SwapchainKind::DxgiFromVisual;
+        economize_memory(&mut setup);
         config.wgpu_setup = WgpuSetup::CreateNew(setup);
     }
     config
+}
+
+/// Просим wgpu экономить память, а не гнаться за скоростью выделений.
+///
+/// egui_wgpu создаёт устройство с настройками по умолчанию, то есть `MemoryHints::Performance`.
+/// Для DX12 и Vulkan это значит, что видеопамять резервируется крупными блоками: от 128 до 256 МБ
+/// на ресурсы и от 64 до 128 МБ на загрузку данных, даже если приложению нужны единицы мегабайт
+/// (у нас это несколько текстур стекла и атлас шрифтов). `MemoryUsage` уменьшает блоки до 8-64 МБ и
+/// 4-32 МБ. Для интерфейса, который перерисовывается по событиям, разницы в скорости не заметно.
+fn economize_memory(setup: &mut eframe::egui_wgpu::WgpuSetupCreateNew) {
+    use eframe::egui_wgpu::wgpu;
+    let base = setup.device_descriptor.clone();
+    setup.device_descriptor = std::sync::Arc::new(move |adapter| wgpu::DeviceDescriptor {
+        memory_hints: wgpu::MemoryHints::MemoryUsage,
+        ..base(adapter)
+    });
 }
 
 /// Применить материал окна. На сборках Windows старше 22621 вызов просто не даст эффекта.
