@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+aes = "0.9.4"
+cbc = { version = "0.2.1", features = ["alloc"] } # alloc нужен тестам (encrypt_padded_vec)
 mcrate-core = { version = "0.1.0", path = "../mcrate-core" }
 # HTTP-клиент. native-tls = шифрование HTTPS средствами самой Windows (Schannel),
 # поэтому для сборки не нужен C-компилятор. system-proxy = учитывает системный прокси и VPN.

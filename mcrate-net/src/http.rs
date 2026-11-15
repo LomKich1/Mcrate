@@ -22,7 +22,10 @@ pub fn build_client() -> Result<reqwest::Client, ProviderError> {
 
 /// Ошибка reqwest -> наша ошибка ProviderError::Network.
 pub fn net_err(e: reqwest::Error) -> ProviderError {
-    ProviderError::Network(e.to_string())
+    // Полный адрес в тексте ошибки содержит временные подписи и токены (`?track_authorization=...`,
+    // `client_id=...`). В сообщение кладём только сервер и путь, без `?...`.
+    let place = e.url().map(|u| format!(" ({}{})", u.origin().ascii_serialization(), u.path()));
+    ProviderError::Network(format!("{}{}", e.without_url(), place.unwrap_or_default()))
 }
 
 /// Первые `max` символов строки (по символам, а не по байтам: иначе можно разрезать кириллицу).

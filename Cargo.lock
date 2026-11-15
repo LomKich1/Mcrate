@@ -2357,6 +2357,8 @@ dependencies = [
 name = "mcrate-net"
 version = "0.1.0"
 dependencies = [
+ "aes",
+ "cbc",
  "mcrate-core",
  "reqwest",
 ]

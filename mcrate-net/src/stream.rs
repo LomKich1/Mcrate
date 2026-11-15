@@ -4,15 +4,40 @@
 //! Минус: при длинных треках (часовые миксы) перед стартом придётся подождать.
 //! Плюс: простая перемотка и никаких «докачек» на ходу.
 
+use std::collections::HashMap;
 use std::path::Path;
 
+use aes::Aes128;
+use cbc::cipher::{block_padding::Pkcs7, BlockModeDecrypt, KeyIvInit};
 use mcrate_core::{ProviderError, ProviderResult, StreamSource};
 use reqwest::Url; // Url = разобранный веб-адрес
 
 use crate::http::{build_client, net_err, short};
+use crate::ts;
 
 /// Верхний предел размера одного трека, чтобы по ошибке не забить всю память (300 МБ).
 const MAX_BYTES: usize = 300 * 1024 * 1024;
+
+/// Ключ шифрования куска (HLS, метод AES-128).
+#[derive(Debug, Clone, PartialEq)]
+pub struct HlsKey {
+    /// Откуда скачать 16 байт ключа.
+    pub uri: Url,
+    /// «Вектор инициализации» (IV, 16 байт), если плейлист его задал.
+    /// Если нет, по стандарту IV = номер куска (см. `iv_from_sequence`).
+    pub iv: Option<[u8; 16]>,
+}
+
+/// Один кусок звука.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HlsSegment {
+    pub url: Url,
+    /// Ключ, которым зашифрован именно этот кусок (None = кусок не зашифрован).
+    /// У некоторых сервисов шифруется только часть кусков.
+    pub key: Option<HlsKey>,
+    /// Порядковый номер куска в потоке (EXT-X-MEDIA-SEQUENCE плюс позиция): из него считается IV по умолчанию.
+    pub sequence: u64,
+}
 
 /// «План» HLS-загрузки: что скачать и в каком порядке.
 #[derive(Debug, PartialEq)]
@@ -20,19 +45,76 @@ pub struct HlsPlan {
     /// Общий «заголовок» (EXT-X-MAP), нужен для fMP4. Его кладём в начало файла.
     pub init: Option<Url>,
     /// Куски звука по порядку.
-    pub segments: Vec<Url>,
+    pub segments: Vec<HlsSegment>,
 }
 
-/// Достаёт значение атрибута вида NAME="значение" из строки атрибутов HLS.
+/// Разбирает строку атрибутов HLS вида `A=1,B="текст, с запятой",C=x` в пары (имя, значение).
+/// Кавычки у значений снимаются.
+fn parse_attrs(attrs: &str) -> Vec<(String, String)> {
+    let mut result = Vec::new();
+    let mut rest = attrs.trim();
+    while !rest.is_empty() {
+        let Some((name, after)) = rest.split_once('=') else { break };
+        let (value, remainder) = if let Some(quoted) = after.strip_prefix('"') {
+            // значение в кавычках: до закрывающей кавычки (внутри могут быть запятые)
+            quoted.split_once('"').unwrap_or((quoted, ""))
+        } else {
+            after.split_once(',').unwrap_or((after, ""))
+        };
+        result.push((name.trim().to_string(), value.to_string()));
+        rest = remainder.trim_start_matches(',').trim_start();
+    }
+    result
+}
+
+/// Достаёт значение атрибута (с кавычками или без) из строки атрибутов HLS.
 fn attr_value(attrs: &str, name: &str) -> Option<String> {
-    let key = format!("{name}=\""); // например URI="
-    let start = attrs.find(&key)? + key.len(); // `?` = если не нашли, сразу вернуть None
-    let end = attrs[start..].find('"')?;
-    Some(attrs[start..start + end].to_string())
+    parse_attrs(attrs).into_iter().find(|(key, _)| key == name).map(|(_, value)| value)
+}
+
+/// `0x00112233445566778899AABBCCDDEEFF` -> 16 байт.
+fn parse_iv(text: &str) -> Result<[u8; 16], String> {
+    let hex = text.trim_start_matches("0x").trim_start_matches("0X");
+    if hex.is_empty() || hex.len() > 32 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("плохой IV в #EXT-X-KEY: {}", short(text, 40)));
+    }
+    let padded = format!("{hex:0>32}"); // короче 32 цифр: дополняем нулями слева
+    let mut iv = [0u8; 16];
+    for (i, byte) in iv.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&padded[i * 2..i * 2 + 2], 16).map_err(|e| e.to_string())?;
+    }
+    Ok(iv)
+}
+
+/// IV по умолчанию: номер куска как 16-байтовое число (старший байт первым). Так требует стандарт HLS.
+pub fn iv_from_sequence(sequence: u64) -> [u8; 16] {
+    let mut iv = [0u8; 16];
+    iv[8..].copy_from_slice(&sequence.to_be_bytes());
+    iv
+}
+
+/// Разбирает строку `#EXT-X-KEY`: Ok(None) = «дальше без шифрования», Ok(Some) = «дальше шифруем этим ключом».
+fn parse_key(attrs: &str, base: &Url) -> Result<Option<HlsKey>, String> {
+    let method = attr_value(attrs, "METHOD").ok_or("в #EXT-X-KEY нет METHOD")?;
+    match method.as_str() {
+        "NONE" => Ok(None),
+        "AES-128" => {
+            if let Some(format) = attr_value(attrs, "KEYFORMAT") {
+                if format != "identity" {
+                    return Err(format!("шифрование с KEYFORMAT={format} не поддержано"));
+                }
+            }
+            let uri = attr_value(attrs, "URI").ok_or("в #EXT-X-KEY нет URI")?;
+            let uri = base.join(&uri).map_err(|e| e.to_string())?;
+            let iv = attr_value(attrs, "IV").map(|v| parse_iv(&v)).transpose()?;
+            Ok(Some(HlsKey { uri, iv }))
+        }
+        other => Err(format!("шифрование {other} не поддержано (умеем только AES-128)")),
+    }
 }
 
 /// Разбирает текст HLS-плейлиста. `base` = адрес самого плейлиста: от него считаются
-/// относительные ссылки. Всё, что мы пока не умеем (шифрование, эфиры), сразу отклоняем с понятным текстом.
+/// относительные ссылки. Всё, что мы пока не умеем (другое шифрование, эфиры), сразу отклоняем с понятным текстом.
 pub fn parse_hls(text: &str, base: &Url) -> Result<HlsPlan, String> {
     if !text.trim_start().starts_with("#EXTM3U") {
         return Err("это не HLS-плейлист (нет #EXTM3U в начале)".to_string());
@@ -45,22 +127,26 @@ pub fn parse_hls(text: &str, base: &Url) -> Result<HlsPlan, String> {
     }
 
     let mut init = None;
-    let mut segments = Vec::new();
+    let mut segments: Vec<HlsSegment> = Vec::new();
+    let mut media_sequence: u64 = 0; // номер первого куска
+    let mut key: Option<HlsKey> = None; // действующий ключ: действует на все следующие куски, пока не сменится
     for line in text.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
-        if let Some(attrs) = line.strip_prefix("#EXT-X-KEY:") {
-            // METHOD=NONE значит «этот участок не зашифрован»; всё остальное шифрование
-            if !attrs.contains("METHOD=NONE") {
-                return Err("шифрованный HLS пока не поддержан".to_string());
-            }
+        if let Some(value) = line.strip_prefix("#EXT-X-MEDIA-SEQUENCE:") {
+            media_sequence = value.trim().parse().map_err(|_| format!("плохой #EXT-X-MEDIA-SEQUENCE: {value}"))?;
+        } else if let Some(attrs) = line.strip_prefix("#EXT-X-KEY:") {
+            key = parse_key(attrs, base)?;
         } else if line.starts_with("#EXT-X-BYTERANGE") {
             return Err("HLS с #EXT-X-BYTERANGE (куски внутри одного файла) пока не поддержан".to_string());
         } else if let Some(attrs) = line.strip_prefix("#EXT-X-MAP:") {
-            if attrs.contains("BYTERANGE") {
+            if attr_value(attrs, "BYTERANGE").is_some() {
                 return Err("#EXT-X-MAP с BYTERANGE пока не поддержан".to_string());
+            }
+            if key.is_some() {
+                return Err("зашифрованный #EXT-X-MAP пока не поддержан".to_string());
             }
             let uri = attr_value(attrs, "URI").ok_or("в #EXT-X-MAP нет URI")?;
             init = Some(base.join(&uri).map_err(|e| e.to_string())?);
@@ -68,13 +154,27 @@ pub fn parse_hls(text: &str, base: &Url) -> Result<HlsPlan, String> {
             continue; // остальные служебные строки нам не нужны
         } else {
             // строка без # = адрес куска звука; join склеивает адрес плейлиста и (возможно относительный) путь
-            segments.push(base.join(line).map_err(|e| e.to_string())?);
+            let url = base.join(line).map_err(|e| e.to_string())?;
+            let sequence = media_sequence + segments.len() as u64;
+            segments.push(HlsSegment { url, key: key.clone(), sequence });
         }
     }
     if segments.is_empty() {
         return Err("в плейлисте нет ни одного куска звука".to_string());
     }
     Ok(HlsPlan { init, segments })
+}
+
+/// Расшифровывает один кусок: AES-128 в режиме CBC, добавка PKCS7 (так делает стандарт HLS).
+pub fn decrypt_segment(data: &[u8], key: &[u8; 16], iv: &[u8; 16]) -> Result<Vec<u8>, String> {
+    if data.is_empty() || data.len() % 16 != 0 {
+        return Err(format!("размер зашифрованного куска ({} байт) не кратен 16", data.len()));
+    }
+    let mut buffer = data.to_vec(); // расшифровываем «на месте», поэтому нужна своя копия
+    let plain = cbc::Decryptor::<Aes128>::new(key.into(), iv.into())
+        .decrypt_padded::<Pkcs7>(&mut buffer)
+        .map_err(|_| "не удалось расшифровать кусок (неверный ключ или повреждённые данные)".to_string())?;
+    Ok(plain.to_vec())
 }
 
 /// Скачивает звук из любого `StreamSource`.
@@ -85,6 +185,11 @@ pub struct StreamDownloader {
 impl StreamDownloader {
     pub fn new() -> ProviderResult<Self> {
         Ok(Self { client: build_client()? })
+    }
+
+    /// Загрузчик со своим HTTP-клиентом (например, с куками или заголовками сервиса).
+    pub fn with_client(client: reqwest::Client) -> Self {
+        Self { client }
     }
 
     /// Скачать звук целиком в память.
@@ -114,18 +219,48 @@ impl StreamDownloader {
         if let Some(init) = &plan.init {
             out.extend_from_slice(&self.get_bytes(init.as_str()).await?);
         }
+        let total = plan.segments.len();
+        let mut keys: HashMap<String, [u8; 16]> = HashMap::new(); // уже скачанные ключи (один ключ на много кусков)
         // enumerate даёт пары (номер, элемент): номер нужен для понятного текста ошибки
         for (i, seg) in plan.segments.iter().enumerate() {
-            let bytes = self
-                .get_bytes(seg.as_str())
+            let mut bytes = self
+                .get_bytes(seg.url.as_str())
                 .await
-                .map_err(|e| ProviderError::Network(format!("кусок {} из {}: {e}", i + 1, plan.segments.len())))?;
+                .map_err(|e| ProviderError::Network(format!("кусок {} из {total}: {e}", i + 1)))?;
+            if let Some(key) = &seg.key {
+                let key_bytes = match keys.get(key.uri.as_str()) {
+                    Some(known) => *known,
+                    None => {
+                        let fresh = self.get_key(&key.uri).await?;
+                        keys.insert(key.uri.to_string(), fresh);
+                        fresh
+                    }
+                };
+                // IV из плейлиста или, если его нет, номер куска
+                let iv = key.iv.unwrap_or_else(|| iv_from_sequence(seg.sequence));
+                bytes = decrypt_segment(&bytes, &key_bytes, &iv)
+                    .map_err(|e| ProviderError::UnexpectedResponse(format!("кусок {} из {total}: {e}", i + 1)))?;
+            }
             out.extend_from_slice(&bytes);
             if out.len() > MAX_BYTES {
                 return Err(ProviderError::UnexpectedResponse("трек больше 300 МБ, останавливаемся".to_string()));
             }
         }
+
+        // Звук в MPEG-TS плеер открыть не умеет: достаём из него «голый» поток MP3 или AAC
+        if ts::looks_like_ts(&out) {
+            let (audio, _kind) = ts::extract_audio(&out).map_err(ProviderError::UnexpectedResponse)?;
+            return Ok(audio);
+        }
         Ok(out)
+    }
+
+    /// Скачивает ключ шифрования: ровно 16 байт (иначе это, скорее всего, страница с ошибкой).
+    async fn get_key(&self, uri: &Url) -> ProviderResult<[u8; 16]> {
+        let bytes = self.get_bytes(uri.as_str()).await.map_err(|e| ProviderError::Network(format!("ключ шифрования: {e}")))?;
+        <[u8; 16]>::try_from(bytes.as_slice()).map_err(|_| {
+            ProviderError::UnexpectedResponse(format!("ключ шифрования должен быть 16 байт, пришло {}", bytes.len()))
+        })
     }
 
     /// Один GET-запрос, ответ байтами. Любой код, кроме 2xx, считается ошибкой.
@@ -151,6 +286,7 @@ fn strip_query(url: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cbc::cipher::BlockModeEncrypt;
 
     fn base() -> Url {
         Url::parse("https://cdn.example.com/track/aac_160k/uuid/playlist.m3u8?sig=1").unwrap()
@@ -166,22 +302,21 @@ mod tests {
         let plan = parse_hls(SAMPLE, &base()).unwrap();
         assert_eq!(plan.init.unwrap().as_str(), "https://cdn.example.com/track/init.mp4?sig=1");
         assert_eq!(plan.segments.len(), 2);
-        assert_eq!(plan.segments[0].as_str(), "https://cdn.example.com/track/d0.m4s?sig=1"); // абсолютная ссылка
-        assert_eq!(plan.segments[1].as_str(), "https://cdn.example.com/track/aac_160k/uuid/d1.m4s"); // относительная
+        assert_eq!(plan.segments[0].url.as_str(), "https://cdn.example.com/track/d0.m4s?sig=1"); // абсолютная ссылка
+        assert_eq!(plan.segments[1].url.as_str(), "https://cdn.example.com/track/aac_160k/uuid/d1.m4s"); // относительная
+        assert!(plan.segments.iter().all(|s| s.key.is_none()));
     }
 
     #[test]
     fn rejects_unsupported_playlists() {
-        let enc = SAMPLE.replace("#EXT-X-MAP", "#EXT-X-KEY:METHOD=AES-128,URI=\"k\"\n#EXT-X-MAP");
-        assert!(parse_hls(&enc, &base()).unwrap_err().contains("шифрованный"));
-        let none = SAMPLE.replace("#EXT-X-MAP", "#EXT-X-KEY:METHOD=NONE\n#EXT-X-MAP");
-        assert!(parse_hls(&none, &base()).is_ok()); // METHOD=NONE это не шифрование
         let live = SAMPLE.replace("#EXT-X-ENDLIST\n", "");
         assert!(parse_hls(&live, &base()).unwrap_err().contains("ENDLIST"));
         let master = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nx.m3u8\n#EXT-X-ENDLIST\n";
         assert!(parse_hls(master, &base()).unwrap_err().contains("мастер"));
         assert!(parse_hls("<html>", &base()).is_err());
         assert!(parse_hls("#EXTM3U\n#EXT-X-ENDLIST\n", &base()).is_err()); // нет кусков
+        let range = SAMPLE.replace("#EXTINF:9.98,", "#EXT-X-BYTERANGE:100@0\n#EXTINF:9.98,");
+        assert!(parse_hls(&range, &base()).unwrap_err().contains("BYTERANGE"));
     }
 
     #[test]
@@ -196,5 +331,74 @@ mod tests {
     fn attr_value_works() {
         assert_eq!(attr_value("URI=\"a/b.mp4\",BYTERANGE=\"1\"", "URI"), Some("a/b.mp4".to_string()));
         assert_eq!(attr_value("X=1", "URI"), None);
+        // без кавычек и запятая внутри кавычек
+        assert_eq!(attr_value("METHOD=AES-128,URI=\"k,1\",IV=0x01", "METHOD"), Some("AES-128".to_string()));
+        assert_eq!(attr_value("METHOD=AES-128,URI=\"k,1\",IV=0x01", "URI"), Some("k,1".to_string()));
+        assert_eq!(attr_value("METHOD=AES-128,URI=\"k,1\",IV=0x01", "IV"), Some("0x01".to_string()));
+    }
+
+    // Плейлист, где шифруется только часть кусков (как у некоторых сервисов): ключ действует
+    // до следующей строки #EXT-X-KEY, METHOD=NONE выключает шифрование.
+    const PARTLY_ENCRYPTED: &str = "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:7\n\
+#EXT-X-KEY:METHOD=AES-128,URI=\"key.pub?siren=1\"\n#EXTINF:1,\ns0.ts\n\
+#EXT-X-KEY:METHOD=NONE\n#EXTINF:1,\ns1.ts\n#EXTINF:1,\ns2.ts\n\
+#EXT-X-KEY:METHOD=AES-128,URI=\"https://k.example.com/k2\",IV=0x000102030405060708090A0B0C0D0E0F\n#EXTINF:1,\ns3.ts\n#EXT-X-ENDLIST\n";
+
+    #[test]
+    fn parses_per_segment_keys() {
+        let plan = parse_hls(PARTLY_ENCRYPTED, &base()).unwrap();
+        let keys: Vec<bool> = plan.segments.iter().map(|s| s.key.is_some()).collect();
+        assert_eq!(keys, [true, false, false, true]);
+        // номера кусков считаются от EXT-X-MEDIA-SEQUENCE
+        let seq: Vec<u64> = plan.segments.iter().map(|s| s.sequence).collect();
+        assert_eq!(seq, [7, 8, 9, 10]);
+        // относительный адрес ключа склеился с адресом плейлиста, IV не задан
+        let first = plan.segments[0].key.as_ref().unwrap();
+        assert_eq!(first.uri.as_str(), "https://cdn.example.com/track/aac_160k/uuid/key.pub?siren=1");
+        assert_eq!(first.iv, None);
+        // второй ключ с явным IV
+        let last = plan.segments[3].key.as_ref().unwrap();
+        assert_eq!(last.uri.as_str(), "https://k.example.com/k2");
+        assert_eq!(last.iv, Some([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]));
+    }
+
+    #[test]
+    fn rejects_unsupported_encryption() {
+        let sample_aes = PARTLY_ENCRYPTED.replace("METHOD=AES-128,URI=\"key.pub?siren=1\"", "METHOD=SAMPLE-AES,URI=\"k\"");
+        assert!(parse_hls(&sample_aes, &base()).unwrap_err().contains("SAMPLE-AES"));
+        let drm = PARTLY_ENCRYPTED.replace("URI=\"key.pub?siren=1\"", "URI=\"k\",KEYFORMAT=\"com.apple.streamingkeydelivery\"");
+        assert!(parse_hls(&drm, &base()).unwrap_err().contains("KEYFORMAT"));
+        let no_uri = PARTLY_ENCRYPTED.replace(",URI=\"key.pub?siren=1\"", "");
+        assert!(parse_hls(&no_uri, &base()).unwrap_err().contains("URI"));
+        let bad_iv = PARTLY_ENCRYPTED.replace("0x000102030405060708090A0B0C0D0E0F", "0xZZ");
+        assert!(parse_hls(&bad_iv, &base()).unwrap_err().contains("IV"));
+        // зашифрованный EXT-X-MAP
+        let enc_map = SAMPLE.replace("#EXT-X-MAP", "#EXT-X-KEY:METHOD=AES-128,URI=\"k\"\n#EXT-X-MAP");
+        assert!(parse_hls(&enc_map, &base()).unwrap_err().contains("MAP"));
+        // METHOD=NONE перед MAP это не шифрование
+        let none = SAMPLE.replace("#EXT-X-MAP", "#EXT-X-KEY:METHOD=NONE\n#EXT-X-MAP");
+        assert!(parse_hls(&none, &base()).is_ok());
+    }
+
+    #[test]
+    fn iv_defaults_to_sequence_number() {
+        assert_eq!(iv_from_sequence(0), [0u8; 16]);
+        assert_eq!(iv_from_sequence(0x0102), [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2]);
+        assert_eq!(parse_iv("0x1").unwrap(), iv_from_sequence(1)); // короткий IV дополняется нулями слева
+    }
+
+    #[test]
+    fn decrypts_what_hls_encrypts() {
+        let key = [7u8; 16];
+        let iv = iv_from_sequence(42);
+        let plain: Vec<u8> = (0..1000u32).map(|i| (i % 253) as u8).collect();
+        // Шифруем тем же способом, что делает сервис: AES-128-CBC + PKCS7
+        let encrypted = cbc::Encryptor::<Aes128>::new((&key).into(), (&iv).into()).encrypt_padded_vec::<Pkcs7>(&plain);
+        assert_ne!(encrypted, plain);
+        assert_eq!(decrypt_segment(&encrypted, &key, &iv).unwrap(), plain);
+        // Неверный ключ и неверный размер
+        assert!(decrypt_segment(&encrypted, &[8u8; 16], &iv).is_err());
+        assert!(decrypt_segment(&encrypted[..encrypted.len() - 1], &key, &iv).is_err());
+        assert!(decrypt_segment(&[], &key, &iv).is_err());
     }
 }
