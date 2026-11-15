@@ -1,7 +1,7 @@
 //! Экран «Оформление»: выбор дизайна, цветов и подробные настройки графики.
 
 use egui::collapsing_header::CollapsingState;
-use egui::{Color32, CursorIcon, FontId, Rect, RichText, Sense, Stroke, Ui, Vec2, pos2, vec2};
+use egui::{Color32, CornerRadius, CursorIcon, FontId, Margin, Rect, RichText, Sense, Stroke, Ui, Vec2, pos2, vec2};
 
 use super::widgets::{ButtonKind, pill_button};
 use crate::app::McrateApp;
@@ -44,21 +44,10 @@ impl McrateApp {
 
             // ---------- цвет ----------
             group_title(ui, "Цветовая тема");
-            // Карточки тем в несколько рядов: сколько влезает по ширине.
-            let card_w = 150.0;
-            let gap = ui.spacing().item_spacing.x;
-            let per_row = (((ui.available_width() + gap) / (card_w + gap)).floor() as usize).max(1);
-            for row in ThemePreset::ALL.chunks(per_row) {
-                ui.horizontal(|ui| {
-                    for &preset in row {
-                        if theme_card(ui, theme, preset, &self.settings, self.settings.theme == preset, card_w).clicked() {
-                            self.settings.theme = preset;
-                        }
-                    }
-                });
-            }
+            // Кнопка с названием темы; список раскрывается под ней и сдвигает всё, что ниже.
+            theme_menu(ui, theme, &mut self.settings);
             if self.settings.theme == ThemePreset::Custom {
-                ui.add_space(6.0);
+                ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     let dark = self.settings.dark;
                     let kind = |on: bool| if on { ButtonKind::Filled } else { ButtonKind::Tonal };
@@ -190,6 +179,107 @@ fn expander_header(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str, open
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
 
+const MENU_CORNER: u8 = 24; // скругление кнопки и списка, как MENU_CORNER в sheduleappreload
+const MENU_ROW_H: f32 = 48.0;
+const MENU_BUTTON_H: f32 = 48.0;
+const MENU_MAX_H: f32 = 288.0; // выше этого список прокручивается
+const MENU_MAX_W: f32 = 460.0;
+
+/// Выбор цветовой темы: кнопка на всю ширину блока с названием текущей темы и «приклеенным»
+/// к ней списком (по образцу ThemeMenuButton из sheduleappreload/SettingsScreen.kt).
+/// Отличие от образца: там список это Popup (новый слой поверх экрана), а здесь он раскрывается
+/// прямо в потоке экрана: высота блока плавно растёт, и всё, что ниже, сдвигается вниз.
+/// Пока список открыт, нижние углы кнопки плавно становятся прямыми, а стрелка поворачивается.
+fn theme_menu(ui: &mut Ui, theme: &Theme, s: &mut GraphicsSettings) {
+    // Внутри scope убираем вертикальный зазор, чтобы список прилегал к кнопке без щели.
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        let id = ui.make_persistent_id("theme_menu");
+        let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, false);
+        let openness = state.openness(ui.ctx());
+        let width = ui.available_width().min(MENU_MAX_W);
+
+        if theme_menu_button(ui, theme, s.theme.label(), openness, width).clicked() {
+            state.toggle(ui);
+        }
+
+        let mut picked = None;
+        state.show_body_unindented(ui, |ui| {
+            // Прямые верхние углы (стык с кнопкой) и скруглённые нижние: вместе одна форма.
+            // Отступ 8 px слева, справа и снизу нужен, чтобы подсветка строки не торчала за скруглением.
+            egui::Frame::new()
+                .fill(theme.tonal_fill())
+                .corner_radius(CornerRadius { nw: 0, ne: 0, sw: MENU_CORNER, se: MENU_CORNER })
+                .inner_margin(Margin { left: 8, right: 8, top: 0, bottom: 8 })
+                .show(ui, |ui| {
+                    ui.set_width(width - 16.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(MENU_MAX_H)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            for &preset in ThemePreset::ALL.iter() {
+                                if theme_menu_row(ui, theme, s, preset, s.theme == preset) {
+                                    picked = Some(preset);
+                                }
+                            }
+                        });
+                });
+        });
+        // Выбор применяем после показа списка (внутри замыкания `state` занят) и сворачиваем список.
+        if let Some(preset) = picked {
+            s.theme = preset;
+            state.set_open(false);
+            state.store(ui.ctx());
+        }
+    });
+}
+
+/// Кнопка меню тем: название слева, стрелка справа (▼ закрыто, ▲ открыто).
+fn theme_menu_button(ui: &mut Ui, theme: &Theme, label: &str, openness: f32, width: f32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, MENU_BUTTON_H), Sense::click());
+    let painter = ui.painter();
+    let bottom = (MENU_CORNER as f32 * (1.0 - openness)).round() as u8;
+    let radius = CornerRadius { nw: MENU_CORNER, ne: MENU_CORNER, sw: bottom, se: bottom };
+    painter.rect_filled(rect, radius, theme.tonal_fill());
+    if resp.hovered() {
+        painter.rect_filled(rect, radius, theme.row_hover_fill());
+    }
+    let fg = theme.on_tonal();
+    painter.text(pos2(rect.left() + 20.0, rect.center().y), egui::Align2::LEFT_CENTER, label, FontId::proportional(15.0), fg);
+
+    // Треугольник ▼, поворачивается на 180° по мере раскрытия.
+    let (sin, cos) = (openness * std::f32::consts::PI).sin_cos();
+    let rot = |v: Vec2| vec2(v.x * cos - v.y * sin, v.x * sin + v.y * cos);
+    let c = pos2(rect.right() - 26.0, rect.center().y);
+    let pts: Vec<egui::Pos2> = [vec2(-5.0, -2.5), vec2(5.0, -2.5), vec2(0.0, 3.0)].iter().map(|&v| c + rot(v)).collect();
+    painter.add(egui::Shape::convex_polygon(pts, fg, Stroke::NONE));
+    resp.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// Строка списка: цветная точка темы, название, галочка у выбранной. Возвращает `true` по клику.
+fn theme_menu_row(ui: &mut Ui, theme: &Theme, s: &GraphicsSettings, preset: ThemePreset, selected: bool) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), MENU_ROW_H), Sense::click());
+    let painter = ui.painter();
+    let fg = theme.on_tonal();
+    if selected {
+        painter.rect_filled(rect, 12.0, with_alpha(fg, 26));
+    } else if resp.hovered() {
+        painter.rect_filled(rect, 12.0, theme.row_hover_fill());
+    }
+    // Точка показывает главный цвет самой темы (а не текущей), так темы легко различать.
+    let swatch = Palette::for_preset(preset, s.accent, s.dark).primary;
+    let dot = pos2(rect.left() + 20.0, rect.center().y);
+    painter.circle_filled(dot, 8.0, swatch);
+    painter.circle_stroke(dot, 8.0, Stroke::new(1.0, with_alpha(fg, 70)));
+    painter.text(pos2(rect.left() + 40.0, rect.center().y), egui::Align2::LEFT_CENTER, preset.label(), FontId::proportional(15.0), fg);
+    if selected {
+        let c = pos2(rect.right() - 20.0, rect.center().y);
+        let pts = vec![c + vec2(-5.0, 0.0), c + vec2(-1.5, 4.0), c + vec2(5.0, -4.0)];
+        painter.add(egui::Shape::line(pts, Stroke::new(2.0, fg)));
+    }
+    resp.on_hover_cursor(CursorIcon::PointingHand).clicked()
+}
+
 fn group_title(ui: &mut Ui, text: &str) {
     ui.add_space(14.0);
     ui.label(RichText::new(text).size(18.0).strong());
@@ -274,43 +364,5 @@ fn design_card(ui: &mut Ui, theme: &Theme, design: Design, name: &str, selected:
     if selected {
         painter.circle_filled(pos2(rect.right() - 22.0, rect.bottom() - 20.0), 6.0, p.primary);
     }
-    resp.on_hover_cursor(CursorIcon::PointingHand)
-}
-
-/// Карточка цветовой темы: мини-окно в цветах этой темы + название.
-/// Цвета берём из палитры самой темы, а не текущей, чтобы все карточки выглядели по-разному.
-fn theme_card(ui: &mut Ui, theme: &Theme, preset: ThemePreset, settings: &GraphicsSettings, selected: bool, width: f32) -> egui::Response {
-    let cur = &theme.palette;
-    let pv = Palette::for_preset(preset, settings.accent, settings.dark);
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, 92.0), Sense::click());
-    let painter = ui.painter();
-
-    painter.rect_filled(rect, 16.0, cur.surface_container_high);
-    if resp.hovered() && !selected {
-        painter.rect_filled(rect, 16.0, theme.row_hover_fill());
-    }
-    if selected {
-        painter.rect_stroke(rect, 16.0, egui::Stroke::new(2.5, cur.primary), egui::StrokeKind::Inside);
-    }
-
-    // Мини-окно: фон, боковая панель, основная область, кружок акцента.
-    let win = Rect::from_min_max(rect.min + vec2(8.0, 8.0), pos2(rect.right() - 8.0, rect.bottom() - 28.0));
-    painter.rect_filled(win, 10.0, pv.surface);
-    let side = Rect::from_min_max(win.min + vec2(5.0, 5.0), pos2(win.left() + win.width() * 0.26, win.bottom() - 5.0));
-    painter.rect_filled(side, 6.0, pv.surface_container_high);
-    painter.rect_filled(Rect::from_min_size(side.min + vec2(4.0, 5.0), vec2(side.width() - 8.0, 7.0)), 3.5, pv.secondary_container);
-    let main = Rect::from_min_max(pos2(side.right() + 5.0, win.top() + 5.0), pos2(win.right() - 5.0, win.bottom() - 5.0));
-    painter.rect_filled(main, 6.0, pv.surface_container_low);
-    painter.circle_filled(main.left_top() + vec2(10.0, 10.0), 5.0, pv.primary);
-    painter.rect_filled(Rect::from_min_size(main.left_top() + vec2(20.0, 7.0), vec2(main.width() * 0.4, 6.0)), 3.0, pv.on_surface_variant);
-    painter.rect_filled(Rect::from_min_size(main.left_bottom() + vec2(6.0, -13.0), vec2(main.width() - 12.0, 7.0)), 3.5, pv.primary_container);
-
-    painter.text(
-        pos2(rect.left() + 12.0, rect.bottom() - 14.0),
-        egui::Align2::LEFT_CENTER,
-        preset.label(),
-        FontId::proportional(13.5),
-        cur.on_surface,
-    );
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
