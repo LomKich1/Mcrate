@@ -24,6 +24,8 @@ pub enum Icon {
     Settings,
     Plus,
     Folder,
+    Home,
+    Cloud,
 }
 
 impl Icon {
@@ -43,6 +45,8 @@ impl Icon {
             Icon::Settings => mi::ICON_TUNE,
             Icon::Plus => mi::ICON_ADD,
             Icon::Folder => mi::ICON_FOLDER,
+            Icon::Home => mi::ICON_HOME,
+            Icon::Cloud => mi::ICON_CLOUD,
         }
     }
 
@@ -52,6 +56,7 @@ impl Icon {
         match self {
             Icon::Queue => 0.042,
             Icon::VolumeMute => 0.029,
+            Icon::Home => 0.010,
             _ => 0.0,
         }
     }
@@ -117,6 +122,7 @@ mod tests {
         let all = [
             Icon::Play, Icon::Pause, Icon::Next, Icon::Prev, Icon::Shuffle, Icon::Repeat, Icon::RepeatOne,
             Icon::Volume, Icon::VolumeMute, Icon::Note, Icon::Queue, Icon::Settings, Icon::Plus, Icon::Folder,
+            Icon::Home, Icon::Cloud,
         ];
         let mut failures: Vec<String> = Vec::new();
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {

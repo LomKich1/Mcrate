@@ -4,6 +4,7 @@ pub mod layout;
 pub mod transition;
 pub mod widgets;
 
+mod home;
 mod library;
 mod now_playing;
 mod player_bar;

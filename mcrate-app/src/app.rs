@@ -24,6 +24,7 @@ const EDGE: f32 = 12.0;
 /// Какой экран открыт.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum View {
+    Home,
     Library,
     NowPlaying,
     SoundCloud,
@@ -36,10 +37,11 @@ impl View {
     /// Новые экраны вставляем сюда в том порядке, в каком они стоят в меню.
     pub fn order(self) -> u8 {
         match self {
-            View::Library => 0,
-            View::NowPlaying => 1,
-            View::SoundCloud => 2,
-            View::Settings => 3,
+            View::Home => 0,
+            View::Library => 1,
+            View::NowPlaying => 2,
+            View::SoundCloud => 3,
+            View::Settings => 4,
         }
     }
 }
@@ -113,8 +115,8 @@ impl McrateApp {
             backdrop_error: None,
             gpu_backend,
             ctl,
-            view: View::Library,
-            shown_view: View::Library,
+            view: View::Home,
+            shown_view: View::Home,
             transition: None,
             frame_time: 0.0,
             search: String::new(),
@@ -129,6 +131,7 @@ impl McrateApp {
     /// им пользуется `view_host` (ui/transition.rs), в том числе во время анимации перехода.
     pub fn draw_view(&mut self, ui: &mut egui::Ui, theme: &Theme, view: View) {
         match view {
+            View::Home => self.home_view(ui, theme),
             View::Library => self.library_view(ui, theme),
             View::NowPlaying => self.now_playing_view(ui, theme),
             View::SoundCloud => self.soundcloud_view(ui, theme),
