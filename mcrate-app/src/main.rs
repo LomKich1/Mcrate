@@ -1,6 +1,8 @@
 //! Mcrate: десктопный плеер. Этот крейт = окно и интерфейс (UI).
 //! Ядро (типы, провайдеры, звук) живёт в mcrate-core / mcrate-providers / mcrate-audio.
 
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod app;
 mod controller;
 mod fonts;
