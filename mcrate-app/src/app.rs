@@ -26,6 +26,7 @@ const EDGE: f32 = 12.0;
 pub enum View {
     Library,
     NowPlaying,
+    SoundCloud,
     Settings,
 }
 
@@ -37,7 +38,8 @@ impl View {
         match self {
             View::Library => 0,
             View::NowPlaying => 1,
-            View::Settings => 2,
+            View::SoundCloud => 2,
+            View::Settings => 3,
         }
     }
 }
@@ -129,6 +131,7 @@ impl McrateApp {
         match view {
             View::Library => self.library_view(ui, theme),
             View::NowPlaying => self.now_playing_view(ui, theme),
+            View::SoundCloud => self.soundcloud_view(ui, theme),
             View::Settings => self.settings_view(ui, theme),
         }
     }

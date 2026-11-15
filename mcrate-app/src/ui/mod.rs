@@ -9,3 +9,4 @@ mod now_playing;
 mod player_bar;
 mod rail;
 mod settings_view;
+mod soundcloud_view;

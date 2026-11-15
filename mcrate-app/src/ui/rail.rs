@@ -43,7 +43,11 @@ impl McrateApp {
             section_label(ui, theme, "Сервисы");
         }
         // Провайдеры появятся по шагам плана (CLAUDE.md, п. 3). Пока это заглушки.
-        for name in ["Yandex Music", "VK Music", "SoundCloud", "Spotify"] {
+        // SoundCloud уже открывается (экран-заглушка, см. ui/soundcloud_view.rs), остальные ждут своей очереди.
+        if nav_item(ui, theme, Icon::Note, "SoundCloud", self.view == View::SoundCloud, true, Some("бета"), compact).clicked() {
+            self.view = View::SoundCloud;
+        }
+        for name in ["Yandex Music", "VK Music", "Spotify"] {
             nav_item(ui, theme, Icon::Plus, name, false, false, Some("скоро"), compact);
         }
     }
