@@ -152,11 +152,12 @@ impl DownloadProgress {
         self.inner.changed.notify_all();
     }
 
-    /// «Загрузка оборвалась». Если её отменили, ошибку не запоминаем: отмена и так всё объясняет.
+    /// «Загрузка оборвалась». Ошибку не запоминаем, если загрузку уже отменили (отмена и так
+    /// всё объясняет) или она уже успешно закончилась (иначе дочитываемый файл вдруг стал бы «сломанным»).
     pub fn fail(&self, message: String) {
         {
             let mut s = self.lock();
-            if !s.cancelled {
+            if !s.cancelled && !s.finished {
                 s.error = Some(message);
             }
         }
@@ -239,6 +240,16 @@ mod tests {
         assert_eq!(p.wait_for_bytes(1, LONG), Available::Cancelled); // отмена главнее данных
         p.fail("после отмены".to_string());
         assert_eq!(p.error(), None); // после отмены ошибку не запоминаем
+    }
+
+    #[test]
+    fn fail_after_finish_is_ignored() {
+        let p = DownloadProgress::new();
+        p.add_bytes(5);
+        p.finish();
+        p.fail("поздно".to_string());
+        assert_eq!(p.error(), None);
+        assert_eq!(p.wait_for_bytes(6, LONG), Available::Eof);
     }
 
     #[test]

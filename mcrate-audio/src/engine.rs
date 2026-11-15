@@ -4,6 +4,10 @@
 //! продолжает принимать команды (пауза, громкость, «следующий»). Готовый файл возвращается
 //! в поток движка внутренней командой `LoadFinished` с «номером запроса»: если пользователь
 //! успел переключить трек, результат устарел и выбрасывается.
+//!
+//! Играть начинаем, не дожидаясь конца загрузки: как только скачано `START_BYTES`, фоновая
+//! задача шлёт `StreamReady`, и движок запускает докачиваемый файл (`AudioPlayer::play_stream`),
+//! пока загрузка продолжается. Мелкие файлы и треки из кэша идут по-старому, через `LoadFinished`.
 
 use std::collections::HashMap;
 use std::fs;
@@ -13,13 +17,24 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use mcrate_core::{MusicProvider, ProviderKind, StreamSource, Track};
-use mcrate_net::StreamDownloader;
+use mcrate_net::{DownloadProgress, StreamDownloader};
 
 use crate::stream_cache::{part_path, StreamCache};
 use crate::{AudioError, AudioPlayer, PlayQueue, RepeatMode};
 
 /// Сколько последних скачанных онлайн-треков хранить в кэше (остальные удаляются).
 const MAX_CACHED_TRACKS: usize = 20;
+
+/// Сколько байт должно быть скачано, чтобы начать играть, не дожидаясь конца: 128 КБ это
+/// около 6 с звука AAC 160 кбит/с (на интернете от ~25 КБ/с докачка успевает за воспроизведением).
+const START_BYTES: u64 = 128 * 1024;
+
+/// Как часто фоновая задача проверяет, набралось ли `START_BYTES`.
+const READY_POLL: Duration = Duration::from_millis(50);
+
+/// Перематывать дальше скачанного нельзя (вызов повис бы до прихода данных), поэтому
+/// цель перемотки зажимается в скачанную часть, минус этот запас.
+const SEEK_MARGIN: Duration = Duration::from_secs(3);
 
 /// Команды от UI к движку (внутренние, UI вызывает методы ниже).
 enum Command {
@@ -37,6 +52,9 @@ enum Command {
     /// Внутренняя: фоновая загрузка закончилась. `request` = номер запроса, на который это ответ.
     /// Эту команду шлёт сам движок (из фоновой задачи), UI её не видит.
     LoadFinished { request: u64, result: Result<PathBuf, String> },
+    /// Внутренняя: файл ещё докачивается, но уже скачан запас: можно начинать играть.
+    /// `part` = имя растущего файла, `dest` = итоговое имя (после докачки `part` переименуют в `dest`).
+    StreamReady { request: u64, part: PathBuf, dest: PathBuf, progress: DownloadProgress },
 }
 
 /// События от движка к UI: только дискретные изменения.
@@ -70,6 +88,10 @@ pub struct PlaybackState {
     pub repeat: RepeatMode,
     pub queue_index: usize,
     pub queue_len: usize,
+    /// Доля скачанного 0.0..=1.0, пока трек докачивается во время игры (для полосы «буфер»
+    /// на прогресс-баре). None = докачивать нечего (трек скачан целиком, локальный или ничего не играет)
+    /// либо долю не удалось посчитать.
+    pub download_progress: Option<f32>,
 }
 
 impl PlaybackState {
@@ -85,6 +107,7 @@ impl PlaybackState {
             repeat: RepeatMode::Off,
             queue_index: 0,
             queue_len: 0,
+            download_progress: None,
         }
     }
 }
@@ -169,6 +192,8 @@ impl PlaybackEngine {
                 request: 0,
                 start_paused: false,
                 fail_streak: 0,
+                stream_progress: None,
+                stream_error_reported: false,
             }
             .run(cmd_rx);
         });
@@ -243,6 +268,17 @@ impl LoadGuard {
         self.sent = true;
         let _ = self.tx.send(Command::LoadFinished { request: self.request, result });
     }
+
+    /// Сообщить, что можно играть докачиваемый файл. Сторож остаётся «на посту»: если
+    /// задача потом упадёт, он пошлёт ошибку (движок её проигнорирует как устаревшую).
+    fn stream_ready(&self, part: PathBuf, dest: PathBuf, progress: DownloadProgress) {
+        let _ = self.tx.send(Command::StreamReady { request: self.request, part, dest, progress });
+    }
+
+    /// Ответ уже дан другим способом (`stream_ready`): сторожу больше нечего слать.
+    fn disarm(mut self) {
+        self.sent = true;
+    }
 }
 
 impl Drop for LoadGuard {
@@ -276,6 +312,8 @@ struct Worker {
     request: u64,               // номер текущего запроса; растёт при каждом запуске и отмене
     start_paused: bool,         // пользователь нажал паузу во время загрузки: стартуем на паузе
     fail_streak: usize,         // сколько треков подряд не запустилось (защита от бесконечного цикла)
+    stream_progress: Option<DownloadProgress>, // Some = играет трек, который ещё мог докачиваться
+    stream_error_reported: bool, // про обрыв докачки уже сообщили UI (чтобы не повторять каждые 100 мс)
 }
 
 impl Worker {
@@ -292,6 +330,7 @@ impl Worker {
             if self.loaded && self.player.is_finished() {
                 self.on_track_finished();
             }
+            self.report_stream_error();
             self.publish_state();
         }
         self.cancel_loading();
@@ -357,6 +396,7 @@ impl Worker {
             Command::Seek(pos) => {
                 // Пока трек грузится, перематывать нечего: команду пропускаем
                 if self.loaded {
+                    let pos = self.clamp_seek(pos);
                     if let Err(e) = self.player.seek(pos) {
                         self.emit(PlaybackEvent::Error(format!("перемотка не удалась: {e}")));
                     }
@@ -377,6 +417,9 @@ impl Worker {
             }
             Command::Stop => self.set_idle(),
             Command::LoadFinished { request, result } => self.on_load_finished(request, result),
+            Command::StreamReady { request, part, dest, progress } => {
+                self.on_stream_ready(request, part, dest, progress)
+            }
             Command::Shutdown => {} // обрабатывается в run()
         }
     }
@@ -470,8 +513,11 @@ impl Worker {
         let cache = self.cache.clone();
         let task_track = track.clone();
         let handle = self.runtime.spawn(async move {
-            let result = load_online(provider, downloader, cache, task_track).await;
-            guard.finish(result);
+            match load_online(provider, downloader, cache, task_track, &guard).await {
+                Ok(Loaded::File(path)) => guard.finish(Ok(path)),
+                Ok(Loaded::Streamed) => guard.disarm(), // ответ (StreamReady) уже отправлен
+                Err(reason) => guard.finish(Err(reason)),
+            }
         });
         self.load_task = Some(handle);
 
@@ -516,7 +562,31 @@ impl Worker {
             },
             Err(reason) => Err(reason),
         };
+        self.finish_loaded(track, outcome);
+    }
 
+    /// Файл ещё докачивается, но запас скачан: начинаем играть.
+    fn on_stream_ready(&mut self, request: u64, part: PathBuf, dest: PathBuf, progress: DownloadProgress) {
+        // Устаревший ответ (трек уже сменили): фоновую задачу при смене отменили, ничего не делаем
+        if request != self.request || !self.loading {
+            return;
+        }
+        self.loading = false;
+        // Ручку фоновой задачи НЕ сбрасываем: она ещё докачивает файл, и при смене трека её надо отменить
+        let Some(track) = self.loading_track.take() else {
+            self.set_idle();
+            return;
+        };
+        let outcome = self.player.play_stream(&part, &dest, &progress).map_err(|e| e.to_string());
+        if outcome.is_ok() {
+            self.stream_progress = Some(progress);
+            self.stream_error_reported = false;
+        }
+        self.finish_loaded(track, outcome);
+    }
+
+    /// Общий конец запуска онлайн-трека: звук пошёл или трек не удался (тогда пропускаем его).
+    fn finish_loaded(&mut self, track: Track, outcome: Result<Option<Duration>, String>) {
         match outcome {
             Ok(duration) => {
                 self.player.set_volume(self.volume);
@@ -538,6 +608,29 @@ impl Worker {
         }
     }
 
+    /// Не даёт перемотать дальше скачанного: иначе вызов ждал бы данные и подвесил движок.
+    fn clamp_seek(&self, pos: Duration) -> Duration {
+        match &self.stream_progress {
+            Some(progress) if !progress.is_finished() => {
+                let total = self.duration.unwrap_or(Duration::ZERO);
+                let downloaded = total.mul_f32(progress.fraction().unwrap_or(0.0));
+                pos.min(downloaded.saturating_sub(SEEK_MARGIN))
+            }
+            _ => pos,
+        }
+    }
+
+    /// Если докачка оборвалась во время игры, один раз сообщаем UI (трек доиграет скачанное и закончится).
+    fn report_stream_error(&mut self) {
+        if self.stream_error_reported {
+            return;
+        }
+        if let Some(error) = self.stream_progress.as_ref().and_then(|p| p.error()) {
+            self.stream_error_reported = true;
+            self.emit(PlaybackEvent::Error(format!("загрузка трека оборвалась: {error}")));
+        }
+    }
+
     /// Отменить текущую загрузку (если она идёт) и объявить все её будущие ответы устаревшими.
     fn cancel_loading(&mut self) {
         if let Some(task) = self.load_task.take() {
@@ -546,6 +639,7 @@ impl Worker {
         self.request += 1;
         self.loading = false;
         self.loading_track = None;
+        self.stream_progress = None;
     }
 
     fn on_track_finished(&mut self) {
@@ -586,44 +680,119 @@ impl Worker {
             repeat: self.queue.repeat(),
             queue_index: self.queue.index(),
             queue_len: self.queue.len(),
+            download_progress: self
+                .stream_progress
+                .as_ref()
+                .filter(|p| !p.is_finished())
+                .and_then(|p| p.fraction()),
         };
         *self.state.lock().unwrap() = snapshot; // lock() = взять замок, чтобы записать безопасно
     }
 }
 
+/// Чем кончилась фоновая задача загрузки.
+enum Loaded {
+    /// Файл целиком готов (из кэша, локальный или быстро скачался): отвечаем `LoadFinished`.
+    File(PathBuf),
+    /// Скачали, пока играл трек: ответ `StreamReady` ушёл раньше.
+    Streamed,
+}
+
+/// Отменяет загрузку, если задачу прервали (`abort`): иначе вложенная задача скачивания
+/// продолжила бы качать трек, который уже никому не нужен. После успешного конца «снимаем с поста»
+/// (`disarm`), иначе отмена обрезала бы звук у играющего готового файла.
+struct DownloadGuard {
+    progress: DownloadProgress,
+    task: tokio::task::JoinHandle<Result<(), mcrate_core::ProviderError>>,
+    part: PathBuf, // недокачанный файл: при отмене его удаляем, чтобы не копить мусор в кэше
+    armed: bool,
+}
+
+impl Drop for DownloadGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.progress.cancel(); // читатель файла проснётся и закончит трек
+            self.task.abort();
+            // Ошибку игнорируем: файл мог быть уже удалён или (на других ОС) занят плеером
+            let _ = fs::remove_file(&self.part);
+        }
+    }
+}
+
 /// Фоновая загрузка онлайн-трека. Идёт на рабочем потоке среды tokio, поток движка не блокирует.
-/// Порядок: кэш -> ссылка от провайдера -> скачивание -> файл в кэше. Возвращает путь к файлу.
+/// Порядок: кэш -> ссылка от провайдера -> скачивание -> файл в кэше.
+///
+/// Скачивание идёт в отдельной вложенной задаче. Пока набирается `START_BYTES`, мы ждём;
+/// набралось и загрузка ещё идёт: шлём движку `StreamReady` (пусть начинает играть), и дальше
+/// ждём конца загрузки, чтобы переименовать файл и прибрать кэш.
 async fn load_online(
     provider: Arc<dyn MusicProvider>,
     downloader: Arc<StreamDownloader>,
     cache: StreamCache,
     track: Track,
-) -> Result<PathBuf, String> {
+    guard: &LoadGuard,
+) -> Result<Loaded, String> {
     // 1. Уже скачан раньше? Тогда без сети и без запроса ссылки (ссылки сервисов всё равно протухают)
     let stem = StreamCache::stem(&track);
     if let Some(hit) = cache.find(&stem) {
-        return Ok(hit);
+        return Ok(Loaded::File(hit));
     }
 
     // 2. Просим у провайдера источник звука
     let source = provider.get_stream(&track).await.map_err(|e| e.to_string())?;
     if let StreamSource::LocalFile(path) = source {
-        return Ok(path); // провайдер уже держит файл на диске: качать нечего
+        return Ok(Loaded::File(path)); // провайдер уже держит файл на диске: качать нечего
     }
 
     // 3. Качаем во временный файл `.part` и переименовываем: недокачанный файл не примут за готовый
     let dest = cache.target(&stem, &source);
     let part = part_path(&dest);
     fs::create_dir_all(cache.dir()).map_err(|e| format!("папка кэша {}: {e}", cache.dir().display()))?;
-    if let Err(e) = downloader.download_to_file(&source, &part).await {
-        let _ = fs::remove_file(&part); // убрать недокачанное
-        return Err(e.to_string());
+
+    let progress = DownloadProgress::new();
+    let task = {
+        let (downloader, progress, part, source) = (Arc::clone(&downloader), progress.clone(), part.clone(), source);
+        tokio::spawn(async move { downloader.download_progressive(&source, &part, &progress).await })
+    };
+    let mut download = DownloadGuard { progress: progress.clone(), task, part: part.clone(), armed: true };
+
+    // 4. Ждём, пока скачается запас, загрузка не закончится или не оборвётся
+    while progress.written() < START_BYTES && !progress.is_finished() && progress.error().is_none() {
+        tokio::time::sleep(READY_POLL).await;
     }
+    if let Some(error) = progress.error() {
+        let _ = fs::remove_file(&part); // убрать недокачанное
+        return Err(error);
+    }
+
+    // 5. Если загрузка ещё идёт, сообщаем движку: можно играть
+    let streaming = !progress.is_finished();
+    if streaming {
+        guard.stream_ready(part.clone(), dest.clone(), progress.clone());
+    }
+
+    // 6. Дожидаемся конца загрузки (для быстрых и мелких файлов это сразу)
+    let outcome = (&mut download.task).await;
+    match outcome {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            let _ = fs::remove_file(&part);
+            return Err(e.to_string());
+        }
+        Err(e) => {
+            let _ = fs::remove_file(&part);
+            return Err(format!("загрузка прервана: {e}"));
+        }
+    }
+    download.armed = false; // всё скачано, отмена больше не нужна
+
+    // 7. Переименовываем. На Windows открытый плеером файл переименовать можно (Rust открывает
+    //    файлы с общим доступом), и плеер продолжит читать тот же файл.
     fs::rename(&part, &dest).map_err(|e| format!("не удалось сохранить {}: {e}", dest.display()))?;
 
-    // 4. Подчищаем старые файлы кэша (только что скачанный не трогаем)
+    // 8. Подчищаем старые файлы кэша (только что скачанный не трогаем)
     cache.prune(&dest);
-    Ok(dest)
+    Ok(if streaming { Loaded::Streamed } else { Loaded::File(dest) })
 }
 
 #[cfg(test)]
