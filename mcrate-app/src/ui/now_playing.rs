@@ -73,7 +73,7 @@ impl McrateApp {
 
         // Состояние (высота каждого столбика и «музыкальное время») храним в памяти egui.
         // Так не нужно добавлять поля в McrateApp, а состояние у каждого экрана своё.
-        let id = ui.id().with("visualizer");
+        let id = ui.scope_id().with("visualizer");
         let mut st: VisState = ui.ctx().data_mut(|d| d.get_temp(id)).unwrap_or_default();
         if st.bars.len() != n {
             st.bars = vec![0.0; n];
