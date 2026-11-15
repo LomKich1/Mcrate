@@ -16,6 +16,7 @@
 use std::collections::HashMap;
 use std::f64::consts::{PI, TAU};
 use std::sync::Arc;
+use std::time::Duration;
 
 use egui::{
     Align, Color32, CornerRadius, CursorIcon, FontId, Frame, Key, Layout, Margin, Painter, Rect, Response, RichText, ScrollArea,
@@ -23,7 +24,7 @@ use egui::{
 };
 use mcrate_core::Track;
 
-use super::widgets::{ButtonKind, artists_text, cover_tile, icon_button, pill_button, track_row};
+use super::widgets::{ButtonKind, artists_text, cover_tile, glide_begin, glide_end, icon_button, pill_button, track_row};
 use crate::app::{McrateApp, View};
 use crate::icons::{self, Icon};
 use crate::theme::{Theme, with_alpha};
@@ -102,12 +103,14 @@ impl McrateApp {
         let playing = self.ctl.is_playing();
         let has_music = !self.ctl.library.is_empty();
         // Время берём у основного контекста (в закадровом проходе стекла свои часы).
-        let now = if self.frame_time > 0.0 { self.frame_time } else { ui.input(|i| i.time) };
+        let ctx_time = ui.input(|i| i.time);
+        let now = if self.frame_time > 0.0 { self.frame_time } else { ctx_time };
+        // Закадровый проход стекла (его часы не совпадают с основными) рисует облегчённую волну: через стекло видно только размытое пятно.
+        let backdrop_pass = (ctx_time - now).abs() > 1e-3;
         let wave_id = ui.scope_id().with("wave_state");
         let mut st: WaveState = ui.ctx().data_mut(|d| d.get_temp(wave_id)).unwrap_or_default();
         // Анимация идёт ВСЕГДА (и на паузе, и без музыки); музыка только добавляет размах.
         let amp = ui.ctx().animate_value_with_time(wave_id.with("amp"), if playing { 1.0 } else { 0.7 }, 0.6);
-        ui.ctx().request_repaint();
 
         // Шапка: текст слева, кнопки справа.
         let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), 64.0), Sense::hover());
@@ -133,10 +136,20 @@ impl McrateApp {
 
         // Холст волны слушает курсор (hover) и клик.
         let (canvas, resp) = ui.allocate_exact_size(vec2(ui.available_width(), WAVE_H), Sense::click());
+        // Волна прокручена за экран (или скрыта): не считаем и не рисуем, и не просим перерисовку.
+        if !ui.is_rect_visible(canvas) {
+            return;
+        }
+        if !backdrop_pass {
+            // ~60 кадров в секунду, а не по частоте монитора: волне хватает, видеокарта и процессор отдыхают.
+            ui.ctx().request_repaint_after(Duration::from_millis(16));
+        }
         st.update(now, resp.hover_pos().map(|p| p - canvas.min), resp.clicked());
         ui.ctx().data_mut(|d| d.insert_temp(wave_id, st));
         let look = WaveLook { time: now, amp, base: p.on_surface, accent: p.primary };
-        paint_wave(ui.painter(), canvas, &look, &st);
+        let n = ((canvas.width() * 0.9 / 20.0).round() as usize * 20).clamp(240, 1100); // точек на ленту: меньше окно, меньше точек
+        let table = wave_table(ui.ctx(), n);
+        paint_wave(ui.painter(), canvas, &look, &st, &table, if backdrop_pass { 3 } else { 1 });
     }
 
     /// Пустая библиотека: подсказка вместо полок.
@@ -255,12 +268,20 @@ impl McrateApp {
         ui.add_space(10.0);
 
         let mut play_index: Option<usize> = None;
+        // Тёмная подсветка под курсором скользит между строками (см. widgets::glide_end).
+        let glide_slot = glide_begin(ui);
+        let mut hovered = None;
         for (idx, track) in &rows {
             let is_current = current_id.as_deref() == Some(track.id.as_str());
-            if track_row(ui, theme, *idx, track, is_current, is_current && playing, time).clicked() {
+            let resp = track_row(ui, theme, *idx, track, is_current, is_current && playing, time);
+            if resp.hovered() {
+                hovered = Some((egui::Id::unique(&track.id).value(), resp.rect));
+            }
+            if resp.clicked() {
                 play_index = Some(*idx);
             }
         }
+        glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_home_tracks"), hovered, 18.0);
         if count > CHART_COUNT {
             ui.add_space(4.0);
             if pill_button(ui, theme, "Показать всё", None, ButtonKind::Tonal).clicked() {
@@ -414,6 +435,9 @@ fn state_layer(painter: &Painter, rect: Rect, radius: f32, resp: &Response, cont
 fn media_card(ui: &mut Ui, theme: &Theme, card: &MediaCard, is_current: bool, is_playing: bool, time: f64) -> Response {
     let p = &theme.palette;
     let (rect, resp) = ui.allocate_exact_size(vec2(card.w, card.h), Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return resp; // карточка за краем полки или экрана: не рисуем
+    }
     let radius = 16.0; // M3 shape: large
     let (container, on_container, on_variant) = if is_current {
         (p.secondary_container, p.on_secondary_container, with_alpha(p.on_secondary_container, 200))
@@ -510,73 +534,129 @@ struct WaveLook {
     accent: Color32,
 }
 
+const RIBBONS: usize = 3;
+
+/// То, что у точки не меняется от кадра к кадру: считается один раз (таблица), а не 3300 раз за кадр.
+/// Синусы углов `u * TAU * f + сдвиг` хранятся как пары (sin, cos): тогда `sin(угол + фаза)` в кадре
+/// это 2 умножения и сложение по формуле синуса суммы, без вызова `sin`.
+#[derive(Clone, Copy)]
+struct WaveDot {
+    u: f32,
+    envelope: f32,
+    a: (f32, f32), // (sin, cos) статической части первой синусоиды
+    b: (f32, f32),
+    c: (f32, f32),
+    spread: f32,     // разброс вокруг линии, -1..1
+    alpha_base: f32, // 0..1, «яркость» точки
+    jitter: f32,     // сдвиг по X, px
+}
+
+struct WaveTable {
+    n: usize,
+    dots: Vec<WaveDot>, // RIBBONS лент по n точек подряд
+}
+
+/// Таблица для `n` точек на ленту. Лежит в памяти egui; пересобирается только при смене `n` (размера окна).
+fn wave_table(ctx: &egui::Context, n: usize) -> Arc<WaveTable> {
+    let id = egui::Id::NULL.with("wave_table");
+    if let Some(t) = ctx.data_mut(|d| d.get_temp::<Arc<WaveTable>>(id)) {
+        if t.n == n {
+            return t;
+        }
+    }
+    let mut dots = Vec::with_capacity(RIBBONS * n);
+    for k in 0..RIBBONS as u64 {
+        let kf = k as f64;
+        for i in 0..n as u64 {
+            let u = i as f64 / (n - 1) as f64;
+            let sc = |angle: f64| (angle.sin() as f32, angle.cos() as f32);
+            let (n1, n2, n3) = (hash01(k * 7919, i), hash01(k * 7919, i + 100_000), hash01(k * 7919, i + 200_000));
+            dots.push(WaveDot {
+                u: u as f32,
+                envelope: (u * PI).sin().powf(0.6) as f32,
+                a: sc(u * TAU * 1.3 + kf * 1.7),
+                b: sc(u * TAU * 2.7 + kf * 0.9),
+                c: sc(u * TAU * 0.6 + kf),
+                spread: (n1 + n2 - 1.0) as f32,
+                alpha_base: n2 as f32,
+                jitter: (n3 as f32 - 0.5) * 4.0,
+            });
+        }
+    }
+    let t = Arc::new(WaveTable { n, dots });
+    ctx.data_mut(|d| d.insert_temp(id, t.clone()));
+    t
+}
+
 /// Три ленты точек, которые плывут по синусоидам. Время идёт всегда. Курсор:
 ///  - притягивает гребень волны к себе по вертикали;
 ///  - раздвигает точки вокруг (пузырь) и пускает по ним круговую рябь, сильнее при быстром движении;
 ///  - подкрашивает ближние точки акцентным цветом;
 /// клик пускает от места нажатия расходящееся кольцо.
-fn paint_wave(painter: &Painter, rect: Rect, look: &WaveLook, st: &WaveState) {
-    const RIBBONS: u64 = 3;
-    const DOTS: u64 = 1100;
+/// `step`: рисовать каждую `step`-ю точку (1 = все; в закадровом проходе стекла 3).
+fn paint_wave(painter: &Painter, rect: Rect, look: &WaveLook, st: &WaveState, table: &WaveTable, step: usize) {
     const SIGMA: f32 = 110.0; // радиус влияния курсора, px
-    let t = look.time;
-    let phase = t * 0.8;
-    let cy = rect.height() / 2.0; // считаем в координатах холста, потом сдвигаем на rect.min
+    let phase = look.time * 0.8;
+    // Фазовые множители считаем в f64 (время растёт неограниченно), в кадре дальше f32.
+    let (s_a, c_a) = ((phase * 0.9).sin() as f32, (phase * 0.9).cos() as f32);
+    let (s_b, c_b) = ((phase * 0.6).sin() as f32, (phase * 0.6).cos() as f32);
+    let (s_c, c_c) = ((phase * 0.4).sin() as f32, (phase * 0.4).cos() as f32);
+    let cy = rect.height() / 2.0;
     let amp = look.amp * (1.0 + 0.35 * st.burst + 0.25 * st.energy * st.hover);
-    let mut mesh = egui::Mesh::default();
-    mesh.reserve_triangles((RIBBONS * DOTS * 2) as usize);
-    mesh.reserve_vertices((RIBBONS * DOTS * 4) as usize);
+    let (w, hgt) = (rect.width(), rect.height());
+    let interact = st.hover > 0.002;
+    let ring_on = st.burst > 0.01;
     let cur = st.cursor;
-    let tf = t as f32;
-    for k in 0..RIBBONS {
-        let kf = k as f64;
-        for i in 0..DOTS {
-            let u = i as f64 / (DOTS - 1) as f64;
-            let a = (u * TAU * 1.3 + phase * 0.9 + kf * 1.7).sin();
-            let b = (u * TAU * 2.7 - phase * 0.6 + kf * 0.9).sin() * 0.5;
-            let c = (u * TAU * 0.6 + phase * 0.4 + kf).sin() * 0.7;
-            let envelope = (u * PI).sin().powf(0.6);
-            let center_y = cy + (((a + b + c) / 1.8 * envelope) as f32) * amp * rect.height() * 0.32;
+    let tf = look.time as f32;
+    let size_base = 1.4 * step as f32 * 0.7 + 0.7; // при step=3 точки крупнее, чтобы пятно не «рассыпалось»
 
-            let (n1, n2, n3) = (hash01(k * 7919, i), hash01(k * 7919, i + 100_000), hash01(k * 7919, i + 200_000));
-            let spread = ((n1 + n2) - 1.0) as f32;
-            let thickness = rect.height() * 0.17 * (0.3 + 0.7 * a.abs() as f32) * (0.4 + 0.6 * amp.min(1.3));
-            let mut x = (u as f32) * rect.width() + (n3 as f32 - 0.5) * 4.0;
-            let mut y = center_y + spread * thickness;
-            let mut tint = 0.0_f32;
+    let count = table.dots.len() / step + 1;
+    let mut mesh = egui::Mesh::default();
+    mesh.reserve_triangles(count * 2);
+    mesh.reserve_vertices(count * 4);
+    for dot in table.dots.iter().step_by(step) {
+        // sin(A + фаза) = sinA*cosФ + cosA*sinФ; у второй синусоиды фаза идёт в обратную сторону.
+        let a = dot.a.0 * c_a + dot.a.1 * s_a;
+        let b = (dot.b.0 * c_b - dot.b.1 * s_b) * 0.5;
+        let c = (dot.c.0 * c_c + dot.c.1 * s_c) * 0.7;
+        let center_y = cy + ((a + b + c) / 1.8 * dot.envelope) * amp * hgt * 0.32;
+        let thickness = hgt * 0.17 * (0.3 + 0.7 * a.abs()) * (0.4 + 0.6 * amp.min(1.3));
+        let mut x = dot.u * w + dot.jitter;
+        let mut y = center_y + dot.spread * thickness;
+        let mut tint = 0.0_f32;
 
-            if st.hover > 0.002 || st.burst > 0.01 {
-                if st.hover > 0.002 {
-                    let (dx, dy) = (x - cur.x, y - cur.y);
-                    let d = (dx * dx + dy * dy).sqrt().max(0.001);
-                    let infl = (-(d * d) / (2.0 * SIGMA * SIGMA)).exp() * st.hover;
-                    y += (cur.y - y) * infl * 0.22; // гребень тянется к курсору
-                    let push = infl * (22.0 + 38.0 * st.energy); // пузырь вокруг курсора
-                    x += dx / d * push;
-                    y += dy / d * push * 0.7;
-                    y += (d * 0.07 - tf * 5.0).sin() * infl * (3.0 + 9.0 * st.energy); // рябь
-                    tint = infl;
-                }
-                if st.burst > 0.01 {
-                    // Кольцо от клика: радиус растёт по мере затухания вспышки.
-                    let (dx, dy) = (x - st.burst_pos.x, y - st.burst_pos.y);
-                    let d = (dx * dx + dy * dy).sqrt().max(0.001);
-                    let r = (1.0 - st.burst) * 520.0;
-                    let ring = (-((d - r) / 38.0).powi(2)).exp() * st.burst;
-                    x += dx / d * ring * 26.0;
-                    y += dy / d * ring * 26.0;
-                    tint = tint.max(ring);
-                }
+        if interact {
+            let (dx, dy) = (x - cur.x, y - cur.y);
+            let d2 = dx * dx + dy * dy;
+            // Далеко от курсора (дальше 3 сигм) влияние ~0: пропускаем дорогие sqrt и exp.
+            if d2 < (3.0 * SIGMA) * (3.0 * SIGMA) {
+                let d = d2.sqrt().max(0.001);
+                let infl = (-d2 / (2.0 * SIGMA * SIGMA)).exp() * st.hover;
+                y += (cur.y - y) * infl * 0.22; // гребень тянется к курсору
+                let push = infl * (22.0 + 38.0 * st.energy); // пузырь вокруг курсора
+                x += dx / d * push;
+                y += dy / d * push * 0.7;
+                y += (d * 0.07 - tf * 5.0).sin() * infl * (3.0 + 9.0 * st.energy); // рябь
+                tint = infl;
             }
-
-            let color = look.base.lerp_to_gamma(look.accent, tint.min(1.0));
-            let alpha = ((40.0 + 170.0 * n2 as f32 * (1.0 - spread.abs() * 0.5)) * (1.0 + 0.7 * tint)).clamp(0.0, 255.0) as u8;
-            let size = 1.4 + 1.6 * tint;
-            mesh.add_colored_rect(Rect::from_center_size(rect.min + vec2(x, y), vec2(size, size)), with_alpha(color, alpha));
         }
+        if ring_on {
+            // Кольцо от клика: радиус растёт по мере затухания вспышки.
+            let (dx, dy) = (x - st.burst_pos.x, y - st.burst_pos.y);
+            let d = (dx * dx + dy * dy).sqrt().max(0.001);
+            let r = (1.0 - st.burst) * 520.0;
+            let ring = (-((d - r) / 38.0).powi(2)).exp() * st.burst;
+            x += dx / d * ring * 26.0;
+            y += dy / d * ring * 26.0;
+            tint = tint.max(ring);
+        }
+
+        let color = if tint > 0.003 { look.base.lerp_to_gamma(look.accent, tint.min(1.0)) } else { look.base };
+        let alpha = ((40.0 + 170.0 * dot.alpha_base * (1.0 - dot.spread.abs() * 0.5)) * (1.0 + 0.7 * tint)).clamp(0.0, 255.0) as u8;
+        let size = size_base + 1.6 * tint;
+        mesh.add_colored_rect(Rect::from_center_size(rect.min + vec2(x, y), vec2(size, size)), with_alpha(color, alpha));
     }
-    let painter = painter.with_clip_rect(rect);
-    painter.add(Shape::mesh(mesh));
+    painter.with_clip_rect(rect).add(Shape::mesh(mesh));
 }
 
 /// Псевдослучайное число 0..1 из (seed, i): один и тот же вход всегда даёт один и тот же результат.
@@ -586,4 +666,35 @@ fn hash01(seed: u64, i: u64) -> f64 {
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^= z >> 31;
     (z >> 11) as f64 / (1u64 << 53) as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Таблица + формула синуса суммы должны давать те же значения, что и прямой расчёт `sin` (как было до оптимизации).
+    #[test]
+    fn wave_table_matches_direct_sines() {
+        let ctx = egui::Context::default();
+        let n = 240;
+        let table = wave_table(&ctx, n);
+        for phase_t in [0.0_f64, 1.7, 123.456, 90_000.0] {
+            let phase = phase_t * 0.8;
+            let (s_a, c_a) = ((phase * 0.9).sin() as f32, (phase * 0.9).cos() as f32);
+            let (s_b, c_b) = ((phase * 0.6).sin() as f32, (phase * 0.6).cos() as f32);
+            let (s_c, c_c) = ((phase * 0.4).sin() as f32, (phase * 0.4).cos() as f32);
+            for k in 0..RIBBONS {
+                for i in (0..n).step_by(17) {
+                    let d = table.dots[k * n + i];
+                    let (u, kf) = (i as f64 / (n - 1) as f64, k as f64);
+                    let a = (u * TAU * 1.3 + phase * 0.9 + kf * 1.7).sin() as f32;
+                    let b = ((u * TAU * 2.7 - phase * 0.6 + kf * 0.9).sin() * 0.5) as f32;
+                    let c = ((u * TAU * 0.6 + phase * 0.4 + kf).sin() * 0.7) as f32;
+                    assert!((d.a.0 * c_a + d.a.1 * s_a - a).abs() < 1e-4);
+                    assert!(((d.b.0 * c_b - d.b.1 * s_b) * 0.5 - b).abs() < 1e-4);
+                    assert!(((d.c.0 * c_c + d.c.1 * s_c) * 0.7 - c).abs() < 1e-4);
+                }
+            }
+        }
+    }
 }

@@ -2,7 +2,7 @@
 
 use egui::{Align, Layout, RichText, Sense, Ui, Vec2};
 
-use super::widgets::{ButtonKind, pill_button, track_row};
+use super::widgets::{ButtonKind, glide_begin, glide_end, pill_button, track_row};
 use crate::app::McrateApp;
 use crate::icons::{self, Icon};
 use crate::theme::Theme;
@@ -69,6 +69,9 @@ impl McrateApp {
             // show_rows рисует только видимые строки (быстро даже на тысячах треков);
             // для этого высота строки должна быть фиксированной.
             egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 56.0, count + spacer_rows, |ui, range| {
+                // Тёмная подсветка под курсором скользит между строками (см. widgets::glide_end).
+                let glide_slot = glide_begin(ui);
+                let mut hovered = None;
                 for i in range {
                     if i >= count {
                         ui.allocate_exact_size(Vec2::new(1.0, 56.0), Sense::hover());
@@ -76,10 +79,15 @@ impl McrateApp {
                     }
                     let track = &self.filtered[i];
                     let is_current = current_id.as_deref() == Some(track.id.as_str());
-                    if track_row(ui, theme, i, track, is_current, is_current && playing, time).clicked() {
+                    let resp = track_row(ui, theme, i, track, is_current, is_current && playing, time);
+                    if resp.hovered() {
+                        hovered = Some((egui::Id::unique(&track.id).value(), resp.rect));
+                    }
+                    if resp.clicked() {
                         clicked = Some(i);
                     }
                 }
+                glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_library"), hovered, 18.0);
             });
         });
 

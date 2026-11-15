@@ -1,13 +1,16 @@
-//! Экраны и виджеты. Экраны это `impl McrateApp` в отдельных файлах, чтобы app.rs не пух.
+//! Экраны и общие виджеты.
+//!
+//! Каждый файл ниже добавляет свои методы к `McrateApp` (`home_view`, `rail_view`,
+//! `player_bar`, `view_host` и остальные). Тип приложения и раскладка окна — в `app.rs`.
+//! Цвета, стекло и Material 3 живут в `crate::theme`, не здесь.
 
+pub mod home;
 pub mod layout;
+pub mod library;
+pub mod now_playing;
+pub mod player_bar;
+pub mod rail;
+pub mod settings_view;
+pub mod soundcloud_view;
 pub mod transition;
 pub mod widgets;
-
-mod home;
-mod library;
-mod now_playing;
-mod player_bar;
-mod rail;
-mod settings_view;
-mod soundcloud_view;
