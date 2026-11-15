@@ -29,9 +29,17 @@ pub enum View {
     NowPlaying,
     SoundCloud,
     Settings,
+    SettingsAppearance,
+    SettingsWindow,
+    SettingsAbout,
 }
 
 impl View {
+    /// Относится ли экран к настройкам (для подсветки пункта «Настройки» в меню).
+    pub fn is_settings(self) -> bool {
+        matches!(self, View::Settings | View::SettingsAppearance | View::SettingsWindow | View::SettingsAbout)
+    }
+
     /// Порядок экранов в меню сверху вниз. От него зависит направление анимации перехода
     /// (см. ui/transition.rs): к большему номеру экран выезжает справа, к меньшему слева.
     /// Новые экраны вставляем сюда в том порядке, в каком они стоят в меню.
@@ -42,6 +50,10 @@ impl View {
             View::NowPlaying => 2,
             View::SoundCloud => 3,
             View::Settings => 4,
+            // Подэкраны настроек идут сразу за главным экраном настроек: «внутрь» = вправо, «назад» = влево.
+            View::SettingsAppearance => 5,
+            View::SettingsWindow => 6,
+            View::SettingsAbout => 7,
         }
     }
 }
@@ -136,6 +148,9 @@ impl McrateApp {
             View::NowPlaying => self.now_playing_view(ui, theme),
             View::SoundCloud => self.soundcloud_view(ui, theme),
             View::Settings => self.settings_view(ui, theme),
+            View::SettingsAppearance => self.settings_appearance_view(ui, theme),
+            View::SettingsWindow => self.settings_window_view(ui, theme),
+            View::SettingsAbout => self.settings_about_view(ui, theme),
         }
     }
 

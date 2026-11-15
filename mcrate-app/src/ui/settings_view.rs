@@ -1,19 +1,58 @@
-//! Экран «Оформление»: выбор дизайна, цветов и подробные настройки графики.
+//! Экраны настроек: главный список разделов и подэкраны «Оформление», «Окно», «О приложении».
 
 use egui::collapsing_header::CollapsingState;
 use egui::{Color32, CornerRadius, CursorIcon, FontId, Margin, Rect, RichText, Sense, Stroke, Ui, Vec2, pos2, vec2};
 
 use super::widgets::{ButtonKind, pill_button};
-use crate::app::McrateApp;
+use crate::app::{McrateApp, View};
 use crate::platform;
 use crate::settings::{Design, GlassQuality, GraphicsSettings, ThemePreset, WindowBackdrop};
 use crate::theme::Palette;
 use crate::theme::{Theme, with_alpha};
 
 impl McrateApp {
+    /// Главный экран настроек: список разделов. Каждый раздел это отдельный экран (`View::Settings*`),
+    /// переход между ними анимируется так же, как между вкладками меню (ui/transition.rs).
     pub fn settings_view(&mut self, ui: &mut Ui, theme: &Theme) {
+        ui.heading("Настройки");
+        ui.add_space(8.0);
+
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            let design = match self.settings.design {
+                Design::Material3 => "Material 3",
+                Design::LiquidGlass => "Liquid Glass",
+            };
+            let backdrop = match self.settings.window_backdrop {
+                WindowBackdrop::Off => "выкл",
+                WindowBackdrop::Mica => "Mica",
+                WindowBackdrop::Acrylic => "Acrylic",
+            };
+            let rows = [
+                (View::SettingsAppearance, "Оформление", format!("{design}, тема «{}»", self.settings.theme.label())),
+                (View::SettingsWindow, "Окно", format!("Материал окна: {backdrop}")),
+                (View::SettingsAbout, "О приложении", format!("Версия {}", env!("CARGO_PKG_VERSION"))),
+            ];
+            for (view, title, subtitle) in rows {
+                if settings_nav_row(ui, theme, title, &subtitle).clicked() {
+                    self.view = view;
+                }
+                ui.add_space(8.0);
+            }
+
+            ui.add_space(12.0);
+            if pill_button(ui, theme, "Сбросить все настройки", None, ButtonKind::Tonal).clicked() {
+                self.settings = GraphicsSettings::default();
+            }
+            ui.add_space(8.0 + self.bottom_inset); // подушка под плавающую панель плеера (Liquid Glass)
+        });
+    }
+
+    /// Подэкран «Оформление»: дизайн, параметры стекла, цветовая тема.
+    pub fn settings_appearance_view(&mut self, ui: &mut Ui, theme: &Theme) {
         let p = &theme.palette;
-        ui.heading("Оформление и графика");
+        if settings_header(ui, theme, "Оформление") {
+            self.view = View::Settings;
+        }
         ui.add_space(4.0);
 
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -67,8 +106,19 @@ impl McrateApp {
                     .size(12.5)
                     .color(p.on_surface_variant),
             );
+            ui.add_space(8.0 + self.bottom_inset); // подушка под плавающую панель плеера (Liquid Glass)
+        });
+    }
 
-            // ---------- окно ----------
+    /// Подэкран «Окно»: материал окна Windows 11 и диагностика графического API.
+    pub fn settings_window_view(&mut self, ui: &mut Ui, theme: &Theme) {
+        let p = &theme.palette;
+        if settings_header(ui, theme, "Окно") {
+            self.view = View::Settings;
+        }
+        ui.add_space(4.0);
+
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             group_title(ui, "Материал окна (Windows 11)");
             ui.add_enabled_ui(platform::BACKDROP_SUPPORTED, |ui| {
                 ui.horizontal(|ui| {
@@ -96,14 +146,71 @@ impl McrateApp {
                 )
             };
             ui.label(RichText::new(diag).size(12.5).color(if ok { p.on_surface_variant } else { p.error }));
-
-            ui.add_space(16.0);
-            if pill_button(ui, theme, "Сбросить настройки", None, ButtonKind::Tonal).clicked() {
-                self.settings = GraphicsSettings::default();
-            }
-            ui.add_space(8.0 + self.bottom_inset); // подушка под плавающую панель плеера (Liquid Glass)
+            ui.add_space(8.0 + self.bottom_inset);
         });
     }
+
+    /// Подэкран «О приложении»: версия и сведения об окружении.
+    pub fn settings_about_view(&mut self, ui: &mut Ui, theme: &Theme) {
+        let p = &theme.palette;
+        if settings_header(ui, theme, "О приложении") {
+            self.view = View::Settings;
+        }
+        ui.add_space(4.0);
+
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            group_title(ui, "Mcrate");
+            ui.label(RichText::new("Музыкальный плеер на Rust и egui.").color(p.on_surface_variant));
+            ui.add_space(12.0);
+            egui::Grid::new("about_grid").num_columns(2).spacing([24.0, 8.0]).show(ui, |ui| {
+                for (key, value) in [
+                    ("Версия", env!("CARGO_PKG_VERSION").to_string()),
+                    ("Графический API", self.gpu_backend.clone()),
+                    ("Система", std::env::consts::OS.to_string()),
+                ] {
+                    ui.label(RichText::new(key).color(p.on_surface_variant));
+                    ui.label(value);
+                    ui.end_row();
+                }
+            });
+            ui.add_space(8.0 + self.bottom_inset);
+        });
+    }
+}
+
+/// Шапка подэкрана настроек: круглая кнопка «назад» и заголовок. Возвращает `true`, если нажали «назад».
+fn settings_header(ui: &mut Ui, theme: &Theme, title: &str) -> bool {
+    ui.horizontal(|ui| {
+        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::click());
+        let painter = ui.painter();
+        if resp.hovered() {
+            painter.circle_filled(rect.center(), 20.0, theme.row_hover_fill());
+        }
+        // Шеврон «<» рисуем линиями, отдельная иконка не нужна.
+        let c = rect.center();
+        let pts = vec![c + vec2(2.5, -6.0), c + vec2(-3.5, 0.0), c + vec2(2.5, 6.0)];
+        painter.add(egui::Shape::line(pts, Stroke::new(2.5, theme.palette.on_surface)));
+        ui.heading(title);
+        resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text("Назад").clicked()
+    })
+    .inner
+}
+
+/// Строка-переход главного экрана настроек: название, подпись и шеврон «>» справа.
+fn settings_nav_row(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str) -> egui::Response {
+    let p = &theme.palette;
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width().min(700.0), 64.0), Sense::click());
+    let painter = ui.painter();
+    painter.rect_filled(rect, 16.0, p.surface_container_high);
+    if resp.hovered() {
+        painter.rect_filled(rect, 16.0, theme.row_hover_fill());
+    }
+    painter.text(pos2(rect.left() + 18.0, rect.center().y - 10.0), egui::Align2::LEFT_CENTER, title, FontId::proportional(16.0), p.on_surface);
+    painter.text(pos2(rect.left() + 18.0, rect.center().y + 12.0), egui::Align2::LEFT_CENTER, subtitle, FontId::proportional(12.5), p.on_surface_variant);
+    let c = pos2(rect.right() - 26.0, rect.center().y);
+    let pts = vec![c + vec2(-3.0, -6.0), c + vec2(3.0, 0.0), c + vec2(-3.0, 6.0)];
+    painter.add(egui::Shape::line(pts, Stroke::new(2.0, p.on_surface_variant)));
+    resp.on_hover_cursor(CursorIcon::PointingHand)
 }
 
 /// Раскрывающийся блок «Параметры стекла»: строка-заголовок и под ней настройки.

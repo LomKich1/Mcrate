@@ -30,7 +30,6 @@ impl McrateApp {
             (View::Home, Icon::Home, "Главная"),
             (View::Library, Icon::Note, "Моя музыка"),
             (View::NowPlaying, Icon::Queue, "Сейчас играет"),
-            (View::Settings, Icon::Settings, "Оформление"),
         ] {
             if nav_item(ui, theme, icon, label, self.view == view, true, None, compact).clicked() {
                 self.view = view;
@@ -50,6 +49,12 @@ impl McrateApp {
         }
         for name in ["Yandex Music", "VK Music", "Spotify"] {
             nav_item(ui, theme, Icon::Plus, name, false, false, Some("скоро"), compact);
+        }
+
+        // «Настройки» стоят под сервисами и подсвечены на любом из своих подэкранов.
+        ui.add_space(10.0);
+        if nav_item(ui, theme, Icon::Settings, "Настройки", self.view.is_settings(), true, None, compact).clicked() {
+            self.view = View::Settings; // из подэкрана вернёт на список разделов
         }
     }
 }
