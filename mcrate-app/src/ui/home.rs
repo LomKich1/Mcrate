@@ -10,19 +10,20 @@
 //!
 //! Блоков «Для вас», «Новые релизы», «Популярные артисты» и настоящего чарта здесь нет: у ядра пока нет ни подборок,
 //! ни обложек, ни истории (см. AUDIT_UI_vs_core.md). Когда они появятся, это ещё одна полка через `shelf`.
-//! Волна пока чисто декоративная: когда у движка появится спектр (spectrum_request_for_LomKich.md),
-//! её амплитуду можно привязать к нему.
+//! Волна всегда анимирована и реагирует на курсор (притяжение, пузырь, рябь, кольцо от клика). К звуку пока не
+//! привязана: когда у движка появится спектр (spectrum_request_for_LomKich.md), амплитуду можно взять оттуда.
 
 use std::collections::HashMap;
 use std::f64::consts::{PI, TAU};
+use std::sync::Arc;
 
 use egui::{
-    Align, Align2, Color32, CursorIcon, FontId, Key, Layout, Margin, Painter, Rect, Response, RichText, ScrollArea, Sense, Shape, Stroke,
-    StrokeKind, Ui, UiBuilder, Vec2, pos2, vec2,
+    Align, Color32, CornerRadius, CursorIcon, FontId, Frame, Key, Layout, Margin, Painter, Rect, Response, RichText, ScrollArea,
+    Sense, Shape, Stroke, Ui, UiBuilder, Vec2, pos2, vec2,
 };
 use mcrate_core::Track;
 
-use super::widgets::{ButtonKind, artists_text, cover_tile, fmt_time, icon_button, pill_button};
+use super::widgets::{ButtonKind, artists_text, cover_tile, icon_button, pill_button, track_row};
 use crate::app::{McrateApp, View};
 use crate::icons::{self, Icon};
 use crate::theme::{Theme, with_alpha};
@@ -30,10 +31,10 @@ use crate::theme::{Theme, with_alpha};
 const WAVE_H: f32 = 200.0; // высота волны
 const SHELF_GAP: f32 = 12.0; // зазор между карточками на полке
 const SHELF_STEP: f32 = 420.0; // на сколько пикселей прокручивает стрелка
-const QUICK_W: f32 = 132.0; // карточка «Быстрого выбора»
-const QUICK_H: f32 = 178.0;
-const ARTIST_W: f32 = 150.0; // карточка исполнителя
-const ARTIST_H: f32 = 200.0;
+const QUICK_W: f32 = 160.0; // карточка «Быстрого выбора» (M3 card: обложка 144 + подпись)
+const QUICK_H: f32 = 214.0;
+const ARTIST_W: f32 = 144.0; // исполнитель: круглый аватар 128 + подпись по центру
+const ARTIST_H: f32 = 190.0;
 const QUICK_COUNT: usize = 12; // сколько треков на полке «Быстрый выбор»
 const ARTISTS_COUNT: usize = 12; // сколько исполнителей на полке
 const CHART_COUNT: usize = 10; // строк в списке «Мои треки»
@@ -42,12 +43,36 @@ impl McrateApp {
     pub fn home_view(&mut self, ui: &mut Ui, theme: &Theme) {
         ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             // ---------- поиск ----------
-            let search = ui.add(
-                egui::TextEdit::singleline(&mut self.search)
-                    .hint_text("Поиск по названию и исполнителю")
-                    .desired_width(f32::INFINITY)
-                    .margin(Margin::symmetric(16, 10)),
-            );
+            // M3 Search bar: «таблетка» высотой 56, заливка surface_container_high, значок слева, без рамки.
+            let search = {
+                let p = &theme.palette;
+                Frame::new().fill(p.surface_container_high).corner_radius(CornerRadius::same(28)).inner_margin(Margin::symmetric(20, 0)).show(ui, |ui| {
+                    ui.set_min_size(vec2(ui.available_width(), 56.0));
+                    // Убираем рамку и заливку самого поля: их рисует контейнер выше.
+                    let v = ui.visuals_mut();
+                    v.extreme_bg_color = Color32::TRANSPARENT;
+                    v.selection.stroke = Stroke::NONE;
+                    for w in [&mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
+                        w.bg_fill = Color32::TRANSPARENT;
+                        w.weak_bg_fill = Color32::TRANSPARENT;
+                        w.bg_stroke = Stroke::NONE;
+                    }
+                    ui.horizontal(|ui| {
+                        ui.set_min_height(56.0);
+                        let (icon_rect, _) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::hover());
+                        icons::paint(ui.painter(), Icon::Search, icon_rect.center(), 24.0, p.on_surface_variant);
+                        ui.add_space(8.0);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.search)
+                                .hint_text("Поиск по названию и исполнителю")
+                                .desired_width(f32::INFINITY)
+                                .margin(Margin::symmetric(0, 0)),
+                        )
+                    })
+                    .inner
+                })
+                .inner
+            };
             // Enter в поле: результаты показывает экран «Моя музыка» (там же будут и сервисы).
             if search.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !self.search.trim().is_empty() {
                 self.view = View::Library;
@@ -76,17 +101,13 @@ impl McrateApp {
         let p = &theme.palette;
         let playing = self.ctl.is_playing();
         let has_music = !self.ctl.library.is_empty();
-        let dt = ui.input(|i| i.stable_dt).min(0.1) as f64;
-
-        // Фаза волны хранится в памяти egui; бежит только пока играет музыка (на паузе волна замирает и не грузит видеокарту).
-        let id = ui.scope_id().with("wave_phase");
-        let mut phase: f64 = ui.ctx().data_mut(|d| d.get_temp(id)).unwrap_or(0.0);
-        if playing {
-            phase += dt * 0.8;
-            ui.ctx().request_repaint();
-        }
-        ui.ctx().data_mut(|d| d.insert_temp(id, phase));
-        let amp = ui.ctx().animate_value_with_time(id.with("amp"), if playing { 1.0 } else { 0.5 }, 0.5);
+        // Время берём у основного контекста (в закадровом проходе стекла свои часы).
+        let now = if self.frame_time > 0.0 { self.frame_time } else { ui.input(|i| i.time) };
+        let wave_id = ui.scope_id().with("wave_state");
+        let mut st: WaveState = ui.ctx().data_mut(|d| d.get_temp(wave_id)).unwrap_or_default();
+        // Анимация идёт ВСЕГДА (и на паузе, и без музыки); музыка только добавляет размах.
+        let amp = ui.ctx().animate_value_with_time(wave_id.with("amp"), if playing { 1.0 } else { 0.7 }, 0.6);
+        ui.ctx().request_repaint();
 
         // Шапка: текст слева, кнопки справа.
         let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), 64.0), Sense::hover());
@@ -110,8 +131,12 @@ impl McrateApp {
             }
         });
 
-        let (canvas, _) = ui.allocate_exact_size(vec2(ui.available_width(), WAVE_H), Sense::hover());
-        paint_wave(ui.painter(), canvas, phase, amp, p.on_surface);
+        // Холст волны слушает курсор (hover) и клик.
+        let (canvas, resp) = ui.allocate_exact_size(vec2(ui.available_width(), WAVE_H), Sense::click());
+        st.update(now, resp.hover_pos().map(|p| p - canvas.min), resp.clicked());
+        ui.ctx().data_mut(|d| d.insert_temp(wave_id, st));
+        let look = WaveLook { time: now, amp, base: p.on_surface, accent: p.primary };
+        paint_wave(ui.painter(), canvas, &look, &st);
     }
 
     /// Пустая библиотека: подсказка вместо полок.
@@ -150,7 +175,7 @@ impl McrateApp {
             for (idx, track) in &recents {
                 let is_current = current_id.as_deref() == Some(track.id.as_str());
                 let artists = artists_text(track);
-                let card = MediaCard { seed: &track.id, title: &track.title, subtitle: &artists, upper: false, w: QUICK_W, h: QUICK_H };
+                let card = MediaCard { seed: &track.id, title: &track.title, subtitle: &artists, round: false, w: QUICK_W, h: QUICK_H };
                 if media_card(ui, theme, &card, is_current, playing, time).clicked() {
                     play_index = Some(*idx);
                 }
@@ -174,7 +199,7 @@ impl McrateApp {
         shelf(ui, theme, "artists", "Ваши исполнители", "Из вашей библиотеки, больше всего треков сверху", |ui| {
             for (name, count) in &artists {
                 let sub = format!("{count} {}", tracks_word(*count));
-                let card = MediaCard { seed: name, title: name, subtitle: &sub, upper: true, w: ARTIST_W, h: ARTIST_H };
+                let card = MediaCard { seed: name, title: name, subtitle: &sub, round: true, w: ARTIST_W, h: ARTIST_H };
                 if media_card(ui, theme, &card, false, false, time).clicked() {
                     play_artist = Some(name.clone());
                 }
@@ -232,10 +257,9 @@ impl McrateApp {
         let mut play_index: Option<usize> = None;
         for (idx, track) in &rows {
             let is_current = current_id.as_deref() == Some(track.id.as_str());
-            if chart_row(ui, theme, idx + 1, track, is_current, playing, time).clicked() {
+            if track_row(ui, theme, *idx, track, is_current, is_current && playing, time).clicked() {
                 play_index = Some(*idx);
             }
-            ui.add_space(8.0);
         }
         if count > CHART_COUNT {
             ui.add_space(4.0);
@@ -282,7 +306,7 @@ fn shelf(ui: &mut Ui, theme: &Theme, id: &str, title: &str, subtitle: &str, add_
     let now = ui.input(|i| i.time);
 
     // Шапка: текст слева, стрелки справа.
-    let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), 52.0), Sense::hover());
+    let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), 64.0), Sense::hover());
     let text_rect = Rect::from_min_max(head.min, pos2((head.right() - 100.0).max(head.left() + 80.0), head.bottom()));
     ui.scope_builder(UiBuilder::new().max_rect(text_rect), |ui| {
         ui.add(egui::Label::new(RichText::new(title).size(22.0).strong()).truncate());
@@ -351,7 +375,7 @@ fn arrow_button(ui: &mut Ui, theme: &Theme, right: bool, enabled: bool) -> Respo
 }
 
 // ============================================================================================
-// Карточки и строки
+// Карточки и строки (Material 3)
 // ============================================================================================
 
 /// Что показать на карточке полки.
@@ -360,131 +384,199 @@ struct MediaCard<'a> {
     seed: &'a str,
     title: &'a str,
     subtitle: &'a str,
-    /// Название заглавными буквами (так у исполнителей).
-    upper: bool,
+    /// Круглая картинка (исполнитель) вместо скруглённого квадрата (трек).
+    round: bool,
     w: f32,
     h: f32,
 }
 
-/// Высокая карточка: плитка на всю карточку, внизу затемнение и подпись белым.
+/// Текст в одну строку с многоточием, если не влез. `max_w` в пикселях.
+fn elided(painter: &Painter, text: &str, font: FontId, color: Color32, max_w: f32) -> Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple(text.to_owned(), font, color, max_w);
+    job.wrap.max_rows = 1;
+    job.wrap.break_anywhere = true;
+    job.wrap.overflow_character = Some('…');
+    painter.layout_job(job)
+}
+
+/// «Слой состояния» M3: наведение 8%, нажатие 12% цвета контента поверх контейнера.
+fn state_layer(painter: &Painter, rect: Rect, radius: f32, resp: &Response, content: Color32) {
+    let a = if resp.is_pointer_button_down_on() { 31 } else if resp.hovered() { 20 } else { 0 };
+    if a > 0 {
+        painter.rect_filled(rect, radius, with_alpha(content, a));
+    }
+}
+
+/// Карточка M3 (filled card): контейнер surface_container_highest, внутри обложка, ниже заголовок
+/// (title) и подзаголовок (supporting text). Без рамок, без градиента поверх картинки.
+/// Выбранный (играющий) трек получает secondary_container. При наведении на обложке появляется
+/// маленькая FAB-кнопка «играть», как в карточках M3.
 fn media_card(ui: &mut Ui, theme: &Theme, card: &MediaCard, is_current: bool, is_playing: bool, time: f64) -> Response {
     let p = &theme.palette;
     let (rect, resp) = ui.allocate_exact_size(vec2(card.w, card.h), Sense::click());
-    let radius = 16.0;
-    cover_tile(ui, theme, rect, card.seed, radius);
+    let radius = 16.0; // M3 shape: large
+    let (container, on_container, on_variant) = if is_current {
+        (p.secondary_container, p.on_secondary_container, with_alpha(p.on_secondary_container, 200))
+    } else {
+        (p.surface_container_highest, p.on_surface, p.on_surface_variant)
+    };
+    ui.painter().rect_filled(rect, radius, container);
+
+    // Обложка: у трека скруглённый квадрат (12), у исполнителя круг.
+    let pad = 8.0;
+    let side = card.w - pad * 2.0;
+    let cover = Rect::from_min_size(rect.min + vec2(pad, pad), Vec2::splat(side));
+    let cover_radius = if card.round { side / 2.0 } else { 12.0 };
+    cover_tile(ui, theme, cover, card.seed, cover_radius);
 
     let painter = ui.painter();
-    paint_bottom_gradient(painter, rect, radius, 84.0, 215);
     if is_current {
-        painter.rect_filled(rect, radius, Color32::from_black_alpha(90));
-        icons::paint_equalizer(painter, rect.center() - vec2(0.0, 18.0), 28.0, Color32::WHITE, time, is_playing);
+        painter.rect_filled(cover, cover_radius, Color32::from_black_alpha(100));
+        icons::paint_equalizer(painter, cover.center(), 32.0, Color32::WHITE, time, is_playing);
     } else if resp.hovered() {
-        painter.rect_filled(rect, radius, Color32::from_black_alpha(60));
-        painter.circle_filled(rect.center() - vec2(0.0, 18.0), 22.0, p.primary);
-        icons::paint(painter, Icon::Play, rect.center() - vec2(0.0, 18.0), 26.0, p.on_primary);
+        // Small FAB: 40x40, форма medium (12), цвета primary_container / on_primary_container.
+        let fab = Rect::from_min_size(pos2(cover.right() - 8.0 - 40.0, cover.bottom() - 8.0 - 40.0), Vec2::splat(40.0));
+        painter.rect_filled(fab, 12.0, p.primary_container);
+        icons::paint(painter, Icon::Play, fab.center(), 26.0, p.on_primary_container);
     }
-    let title = if card.upper { card.title.to_uppercase() } else { card.title.to_string() };
-    let clip = painter.with_clip_rect(rect.shrink2(vec2(8.0, 0.0)));
-    clip.text(pos2(rect.left() + 10.0, rect.bottom() - 32.0), Align2::LEFT_CENTER, title, FontId::proportional(13.5), Color32::WHITE);
-    clip.text(pos2(rect.left() + 10.0, rect.bottom() - 14.0), Align2::LEFT_CENTER, card.subtitle, FontId::proportional(11.5), Color32::from_white_alpha(190));
-    // Тонкая рамка, как на скриншоте.
-    painter.rect_stroke(rect, radius, Stroke::new(1.0, with_alpha(p.on_surface, 28)), StrokeKind::Inside);
-    resp.on_hover_cursor(CursorIcon::PointingHand)
-}
 
-/// Тёмный градиент по нижней кромке карточки. Рисуется полосками по 2 px; на последних строках
-/// полоски сужаются по дуге скругления, чтобы градиент не торчал из углов.
-fn paint_bottom_gradient(painter: &Painter, rect: Rect, radius: f32, height: f32, max_alpha: u8) {
-    let top = rect.bottom() - height;
-    let mut mesh = egui::Mesh::default();
-    let step = 2.0;
-    let mut y = top;
-    while y < rect.bottom() {
-        let y2 = (y + step).min(rect.bottom());
-        let inset = |yy: f32| {
-            let d = yy - (rect.bottom() - radius);
-            if d > 0.0 { radius - (radius * radius - d * d).max(0.0).sqrt() } else { 0.0 }
-        };
-        let alpha = |yy: f32| {
-            let t = ((yy - top) / height).clamp(0.0, 1.0);
-            Color32::from_black_alpha((max_alpha as f32 * t.powf(1.4)) as u8)
-        };
-        let (i1, i2) = (inset(y), inset(y2));
-        let base = mesh.vertices.len() as u32;
-        mesh.colored_vertex(pos2(rect.left() + i1, y), alpha(y));
-        mesh.colored_vertex(pos2(rect.right() - i1, y), alpha(y));
-        mesh.colored_vertex(pos2(rect.left() + i2, y2), alpha(y2));
-        mesh.colored_vertex(pos2(rect.right() - i2, y2), alpha(y2));
-        mesh.add_triangle(base, base + 1, base + 2);
-        mesh.add_triangle(base + 1, base + 3, base + 2);
-        y = y2;
-    }
-    painter.add(Shape::mesh(mesh));
-}
+    // Подписи: title (14, средний), supporting text (12).
+    let text_w = card.w - pad * 2.0 - 4.0;
+    let ty = cover.bottom() + 10.0;
+    let title = elided(painter, card.title, FontId::proportional(14.5), on_container, text_w);
+    let sub = elided(painter, card.subtitle, FontId::proportional(12.0), on_variant, text_w);
+    let tx = rect.left() + pad + 2.0;
+    painter.galley(pos2(tx, ty), title.clone(), on_container);
+    painter.galley(pos2(tx, ty + title.size().y + 2.0), sub, on_variant);
 
-/// Строка списка «Мои треки»: номер, обложка, название, исполнитель, длительность; тонкая рамка.
-fn chart_row(ui: &mut Ui, theme: &Theme, number: usize, track: &Track, is_current: bool, is_playing: bool, time: f64) -> Response {
-    let p = &theme.palette;
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 64.0), Sense::click());
-    let painter = ui.painter();
-    if is_current {
-        painter.rect_filled(rect, 14.0, with_alpha(p.primary, if p.dark { 34 } else { 28 }));
-    } else if resp.hovered() {
-        painter.rect_filled(rect, 14.0, theme.row_hover_fill());
-    }
-    painter.rect_stroke(rect, 14.0, Stroke::new(1.0, with_alpha(p.on_surface, 26)), StrokeKind::Inside);
-
-    painter.text(pos2(rect.left() + 28.0, rect.center().y), Align2::CENTER_CENTER, number.to_string(), FontId::proportional(14.0), p.on_surface_variant);
-    let cover = Rect::from_center_size(pos2(rect.left() + 82.0, rect.center().y), Vec2::splat(48.0));
-    cover_tile(ui, theme, cover, &track.id, 10.0);
-    let painter = ui.painter();
-    if is_current {
-        painter.rect_filled(cover, 10.0, Color32::from_black_alpha(110));
-        icons::paint_equalizer(painter, cover.center(), 20.0, Color32::WHITE, time, is_playing);
-    }
-    let text_left = cover.right() + 16.0;
-    let dur_x = rect.right() - 18.0;
-    let clip = painter.with_clip_rect(Rect::from_min_max(pos2(text_left, rect.top()), pos2(dur_x - 56.0, rect.bottom())));
-    let title_color = if is_current { p.primary } else { p.on_surface };
-    clip.text(pos2(text_left, rect.center().y - 10.0), Align2::LEFT_CENTER, &track.title, FontId::proportional(15.0), title_color);
-    clip.text(pos2(text_left, rect.center().y + 11.0), Align2::LEFT_CENTER, artists_text(track), FontId::proportional(13.0), p.on_surface_variant);
-    painter.text(pos2(dur_x, rect.center().y), Align2::RIGHT_CENTER, fmt_time(track.duration_secs as u64), FontId::proportional(13.0), p.on_surface_variant);
+    state_layer(painter, rect, radius, &resp, on_container);
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
 
 // ============================================================================================
-// Волна из точек
+// Волна из точек: всегда анимирована, реагирует на курсор
 // ============================================================================================
 
-/// Три ленты точек, которые плывут по синусоидам. `phase` растёт со временем, `amp` 0..1 задаёт размах.
-/// Это украшение: к звуку не привязано.
-fn paint_wave(painter: &Painter, rect: Rect, phase: f64, amp: f32, color: Color32) {
+/// Состояние взаимодействия волны с курсором (хранится в памяти egui между кадрами).
+#[derive(Clone, Copy, Default)]
+struct WaveState {
+    t_prev: f64,
+    /// Сглаженная позиция курсора в координатах холста.
+    cursor: Vec2,
+    /// 0..1: насколько курсор «над волной» (плавно появляется и исчезает).
+    hover: f32,
+    /// 0..1: энергия от скорости курсора (быстрое движение сильнее будоражит волну).
+    energy: f32,
+    /// 0..1: затухающая «вспышка» от клика и точка, откуда она расходится кольцом.
+    burst: f32,
+    burst_pos: Vec2,
+}
+
+impl WaveState {
+    /// Один шаг по времени. Повторный вызов с тем же временем (второй проход стекла) ничего не меняет.
+    fn update(&mut self, now: f64, pointer: Option<Vec2>, clicked: bool) {
+        let dt = ((now - self.t_prev) as f32).clamp(0.0, 0.1);
+        self.t_prev = now;
+        if dt <= 0.0 {
+            return;
+        }
+        match pointer {
+            Some(p) => {
+                if self.hover < 0.02 {
+                    self.cursor = p; // курсор только что вошёл: не тянем волну через весь холст
+                }
+                let prev = self.cursor;
+                self.cursor += (p - self.cursor) * (1.0 - (-dt * 14.0).exp()); // сглаживание движения
+                let speed = (self.cursor - prev).length() / dt; // пикс/сек
+                self.energy = self.energy.max((speed / 900.0).min(1.0));
+                self.hover += (1.0 - self.hover) * (1.0 - (-dt * 8.0).exp());
+                if clicked {
+                    self.burst = 1.0;
+                    self.burst_pos = p;
+                }
+            }
+            None => self.hover -= self.hover * (1.0 - (-dt * 4.0).exp()),
+        }
+        self.energy *= (-dt * 2.2).exp();
+        self.burst *= (-dt * 1.4).exp();
+    }
+}
+
+/// Внешний вид волны на этот кадр.
+struct WaveLook {
+    time: f64,
+    amp: f32,
+    base: Color32,
+    accent: Color32,
+}
+
+/// Три ленты точек, которые плывут по синусоидам. Время идёт всегда. Курсор:
+///  - притягивает гребень волны к себе по вертикали;
+///  - раздвигает точки вокруг (пузырь) и пускает по ним круговую рябь, сильнее при быстром движении;
+///  - подкрашивает ближние точки акцентным цветом;
+/// клик пускает от места нажатия расходящееся кольцо.
+fn paint_wave(painter: &Painter, rect: Rect, look: &WaveLook, st: &WaveState) {
     const RIBBONS: u64 = 3;
     const DOTS: u64 = 1100;
-    let cy = rect.center().y;
-    let mut shapes: Vec<Shape> = Vec::with_capacity((RIBBONS * DOTS) as usize);
+    const SIGMA: f32 = 110.0; // радиус влияния курсора, px
+    let t = look.time;
+    let phase = t * 0.8;
+    let cy = rect.height() / 2.0; // считаем в координатах холста, потом сдвигаем на rect.min
+    let amp = look.amp * (1.0 + 0.35 * st.burst + 0.25 * st.energy * st.hover);
+    let mut mesh = egui::Mesh::default();
+    mesh.reserve_triangles((RIBBONS * DOTS * 2) as usize);
+    mesh.reserve_vertices((RIBBONS * DOTS * 4) as usize);
+    let cur = st.cursor;
+    let tf = t as f32;
     for k in 0..RIBBONS {
         let kf = k as f64;
         for i in 0..DOTS {
-            let u = i as f64 / (DOTS - 1) as f64; // 0..1 по ширине
-            // Три синусоиды с разной скоростью дают плавную «живую» волну.
+            let u = i as f64 / (DOTS - 1) as f64;
             let a = (u * TAU * 1.3 + phase * 0.9 + kf * 1.7).sin();
             let b = (u * TAU * 2.7 - phase * 0.6 + kf * 0.9).sin() * 0.5;
             let c = (u * TAU * 0.6 + phase * 0.4 + kf).sin() * 0.7;
-            let envelope = (u * PI).sin().powf(0.6); // к краям волна затухает
+            let envelope = (u * PI).sin().powf(0.6);
             let center_y = cy + (((a + b + c) / 1.8 * envelope) as f32) * amp * rect.height() * 0.32;
 
-            // Разброс точек вокруг линии: чем ближе к гребню, тем облако толще.
             let (n1, n2, n3) = (hash01(k * 7919, i), hash01(k * 7919, i + 100_000), hash01(k * 7919, i + 200_000));
-            let spread = ((n1 + n2) - 1.0) as f32; // -1..1, чаще около нуля
-            let thickness = rect.height() * 0.17 * (0.3 + 0.7 * a.abs() as f32) * (0.4 + 0.6 * amp);
-            let x = rect.left() + (u as f32) * rect.width() + (n3 as f32 - 0.5) * 4.0;
-            let y = center_y + spread * thickness;
-            let alpha = (40.0 + 170.0 * n2 as f32 * (1.0 - spread.abs() * 0.5)).clamp(0.0, 255.0) as u8;
-            shapes.push(Shape::rect_filled(Rect::from_center_size(pos2(x, y), vec2(1.4, 1.4)), 0.7, with_alpha(color, alpha)));
+            let spread = ((n1 + n2) - 1.0) as f32;
+            let thickness = rect.height() * 0.17 * (0.3 + 0.7 * a.abs() as f32) * (0.4 + 0.6 * amp.min(1.3));
+            let mut x = (u as f32) * rect.width() + (n3 as f32 - 0.5) * 4.0;
+            let mut y = center_y + spread * thickness;
+            let mut tint = 0.0_f32;
+
+            if st.hover > 0.002 || st.burst > 0.01 {
+                if st.hover > 0.002 {
+                    let (dx, dy) = (x - cur.x, y - cur.y);
+                    let d = (dx * dx + dy * dy).sqrt().max(0.001);
+                    let infl = (-(d * d) / (2.0 * SIGMA * SIGMA)).exp() * st.hover;
+                    y += (cur.y - y) * infl * 0.22; // гребень тянется к курсору
+                    let push = infl * (22.0 + 38.0 * st.energy); // пузырь вокруг курсора
+                    x += dx / d * push;
+                    y += dy / d * push * 0.7;
+                    y += (d * 0.07 - tf * 5.0).sin() * infl * (3.0 + 9.0 * st.energy); // рябь
+                    tint = infl;
+                }
+                if st.burst > 0.01 {
+                    // Кольцо от клика: радиус растёт по мере затухания вспышки.
+                    let (dx, dy) = (x - st.burst_pos.x, y - st.burst_pos.y);
+                    let d = (dx * dx + dy * dy).sqrt().max(0.001);
+                    let r = (1.0 - st.burst) * 520.0;
+                    let ring = (-((d - r) / 38.0).powi(2)).exp() * st.burst;
+                    x += dx / d * ring * 26.0;
+                    y += dy / d * ring * 26.0;
+                    tint = tint.max(ring);
+                }
+            }
+
+            let color = look.base.lerp_to_gamma(look.accent, tint.min(1.0));
+            let alpha = ((40.0 + 170.0 * n2 as f32 * (1.0 - spread.abs() * 0.5)) * (1.0 + 0.7 * tint)).clamp(0.0, 255.0) as u8;
+            let size = 1.4 + 1.6 * tint;
+            mesh.add_colored_rect(Rect::from_center_size(rect.min + vec2(x, y), vec2(size, size)), with_alpha(color, alpha));
         }
     }
-    painter.with_clip_rect(rect).extend(shapes);
+    let painter = painter.with_clip_rect(rect);
+    painter.add(Shape::mesh(mesh));
 }
 
 /// Псевдослучайное число 0..1 из (seed, i): один и тот же вход всегда даёт один и тот же результат.
