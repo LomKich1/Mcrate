@@ -1,10 +1,14 @@
 //! Загрузка звука по ссылке. Умеет прямые ссылки на файл и HLS-плейлисты (звук, нарезанный на куски).
 //!
-//! Идея: скачать трек целиком в память или в файл, а дальше его играет обычный плеер.
-//! Минус: при длинных треках (часовые миксы) перед стартом придётся подождать.
-//! Плюс: простая перемотка и никаких «докачек» на ходу.
+//! Два режима:
+//!   - `download_bytes` / `download_to_file`: скачать трек целиком, потом играть. Просто и надёжно,
+//!     но перед стартом приходится ждать (на медленном интернете минуту и больше).
+//!   - `download_progressive`: качать в файл кусками и сообщать о прогрессе (`DownloadProgress`),
+//!     чтобы плеер начал играть, пока файл ещё растёт.
 
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::Write;
 use std::path::Path;
 
 use aes::Aes128;
@@ -13,6 +17,7 @@ use mcrate_core::{ProviderError, ProviderResult, StreamSource};
 use reqwest::Url; // Url = разобранный веб-адрес
 
 use crate::http::{build_client, net_err, short};
+use crate::progress::DownloadProgress;
 use crate::ts;
 
 /// Верхний предел размера одного трека, чтобы по ошибке не забить всю память (300 МБ).
@@ -37,6 +42,9 @@ pub struct HlsSegment {
     pub key: Option<HlsKey>,
     /// Порядковый номер куска в потоке (EXT-X-MEDIA-SEQUENCE плюс позиция): из него считается IV по умолчанию.
     pub sequence: u64,
+    /// Длительность куска в секундах из `#EXTINF` (0.0, если в плейлисте её нет).
+    /// Нужна, чтобы считать долю скачанного трека.
+    pub duration: f64,
 }
 
 /// «План» HLS-загрузки: что скачать и в каком порядке.
@@ -129,6 +137,7 @@ pub fn parse_hls(text: &str, base: &Url) -> Result<HlsPlan, String> {
     let mut init = None;
     let mut segments: Vec<HlsSegment> = Vec::new();
     let mut media_sequence: u64 = 0; // номер первого куска
+    let mut next_duration: f64 = 0.0; // длительность из последнего #EXTINF: относится к следующему куску
     let mut key: Option<HlsKey> = None; // действующий ключ: действует на все следующие куски, пока не сменится
     for line in text.lines() {
         let line = line.trim();
@@ -150,13 +159,18 @@ pub fn parse_hls(text: &str, base: &Url) -> Result<HlsPlan, String> {
             }
             let uri = attr_value(attrs, "URI").ok_or("в #EXT-X-MAP нет URI")?;
             init = Some(base.join(&uri).map_err(|e| e.to_string())?);
+        } else if let Some(value) = line.strip_prefix("#EXTINF:") {
+            // формат: `#EXTINF:10.0078,необязательное название`; нужно число до запятой
+            let number = value.split(',').next().unwrap_or("").trim();
+            next_duration = number.parse().unwrap_or(0.0);
         } else if line.starts_with('#') {
             continue; // остальные служебные строки нам не нужны
         } else {
             // строка без # = адрес куска звука; join склеивает адрес плейлиста и (возможно относительный) путь
             let url = base.join(line).map_err(|e| e.to_string())?;
             let sequence = media_sequence + segments.len() as u64;
-            segments.push(HlsSegment { url, key: key.clone(), sequence });
+            segments.push(HlsSegment { url, key: key.clone(), sequence, duration: next_duration });
+            next_duration = 0.0;
         }
     }
     if segments.is_empty() {
@@ -209,38 +223,56 @@ impl StreamDownloader {
         std::fs::write(dest, bytes).map_err(|e| ProviderError::LocalFile(format!("{}: {e}", dest.display())))
     }
 
-    async fn download_hls(&self, url: &str) -> ProviderResult<Vec<u8>> {
+    /// Скачивает плейлист и разбирает его в план.
+    async fn load_plan(&self, url: &str) -> ProviderResult<HlsPlan> {
         let base = Url::parse(url).map_err(|e| ProviderError::UnexpectedResponse(format!("плохой адрес плейлиста: {e}")))?;
         let playlist = self.get_bytes(url).await?;
         let text = String::from_utf8_lossy(&playlist); // байты -> текст (нечитаемые байты заменятся на �)
-        let plan = parse_hls(&text, &base).map_err(ProviderError::UnexpectedResponse)?;
+        parse_hls(&text, &base).map_err(ProviderError::UnexpectedResponse)
+    }
+
+    /// Скачивает один кусок и, если он зашифрован, расшифровывает.
+    /// `keys` = уже скачанные ключи (один ключ обычно на много кусков), `i` и `total` нужны для понятного текста ошибки.
+    async fn fetch_segment(
+        &self,
+        seg: &HlsSegment,
+        i: usize,
+        total: usize,
+        keys: &mut HashMap<String, [u8; 16]>,
+    ) -> ProviderResult<Vec<u8>> {
+        let mut bytes = self
+            .get_bytes(seg.url.as_str())
+            .await
+            .map_err(|e| ProviderError::Network(format!("кусок {} из {total}: {e}", i + 1)))?;
+        if let Some(key) = &seg.key {
+            let key_bytes = match keys.get(key.uri.as_str()) {
+                Some(known) => *known,
+                None => {
+                    let fresh = self.get_key(&key.uri).await?;
+                    keys.insert(key.uri.to_string(), fresh);
+                    fresh
+                }
+            };
+            // IV из плейлиста или, если его нет, номер куска
+            let iv = key.iv.unwrap_or_else(|| iv_from_sequence(seg.sequence));
+            bytes = decrypt_segment(&bytes, &key_bytes, &iv)
+                .map_err(|e| ProviderError::UnexpectedResponse(format!("кусок {} из {total}: {e}", i + 1)))?;
+        }
+        Ok(bytes)
+    }
+
+    async fn download_hls(&self, url: &str) -> ProviderResult<Vec<u8>> {
+        let plan = self.load_plan(url).await?;
 
         let mut out: Vec<u8> = Vec::new();
         if let Some(init) = &plan.init {
             out.extend_from_slice(&self.get_bytes(init.as_str()).await?);
         }
         let total = plan.segments.len();
-        let mut keys: HashMap<String, [u8; 16]> = HashMap::new(); // уже скачанные ключи (один ключ на много кусков)
+        let mut keys: HashMap<String, [u8; 16]> = HashMap::new();
         // enumerate даёт пары (номер, элемент): номер нужен для понятного текста ошибки
         for (i, seg) in plan.segments.iter().enumerate() {
-            let mut bytes = self
-                .get_bytes(seg.url.as_str())
-                .await
-                .map_err(|e| ProviderError::Network(format!("кусок {} из {total}: {e}", i + 1)))?;
-            if let Some(key) = &seg.key {
-                let key_bytes = match keys.get(key.uri.as_str()) {
-                    Some(known) => *known,
-                    None => {
-                        let fresh = self.get_key(&key.uri).await?;
-                        keys.insert(key.uri.to_string(), fresh);
-                        fresh
-                    }
-                };
-                // IV из плейлиста или, если его нет, номер куска
-                let iv = key.iv.unwrap_or_else(|| iv_from_sequence(seg.sequence));
-                bytes = decrypt_segment(&bytes, &key_bytes, &iv)
-                    .map_err(|e| ProviderError::UnexpectedResponse(format!("кусок {} из {total}: {e}", i + 1)))?;
-            }
+            let bytes = self.fetch_segment(seg, i, total, &mut keys).await?;
             out.extend_from_slice(&bytes);
             if out.len() > MAX_BYTES {
                 return Err(ProviderError::UnexpectedResponse("трек больше 300 МБ, останавливаемся".to_string()));
@@ -255,6 +287,115 @@ impl StreamDownloader {
         Ok(out)
     }
 
+    // ---------- загрузка с прогрессом (играть, пока качается) ----------
+
+    /// Качает звук в файл `dest` по кускам и сообщает о ходе дел через `progress`.
+    /// Данные видны читателю файла сразу после записи каждого куска (файл не буферизуется).
+    ///
+    /// Что в `progress` к концу: `finish()` при успехе или `fail(текст)` при ошибке. Отмена:
+    /// `progress.cancel()`, загрузка остановится на ближайшем куске с ошибкой «загрузка отменена».
+    ///
+    /// Особый случай: HLS с кусками в MPEG-TS (VK). Из TS звук вынимается только целиком
+    /// (потоковый разбор пока не написан), поэтому такой трек копится в памяти и записывается
+    /// в файл в самом конце, как раньше: игра по мере скачивания для него пока не работает.
+    pub async fn download_progressive(
+        &self,
+        source: &StreamSource,
+        dest: &Path,
+        progress: &DownloadProgress,
+    ) -> ProviderResult<()> {
+        let result = match source {
+            StreamSource::DirectUrl(url) => self.progressive_direct(url, dest, progress).await,
+            StreamSource::HlsPlaylist(url) => self.progressive_hls(url, dest, progress).await,
+            StreamSource::LocalFile(path) => std::fs::copy(path, dest)
+                .map(|n| progress.add_bytes(n))
+                .map_err(|e| ProviderError::LocalFile(format!("{}: {e}", path.display()))),
+        };
+        match &result {
+            Ok(()) => progress.finish(),
+            Err(e) => progress.fail(e.to_string()),
+        }
+        result
+    }
+
+    /// Прямая ссылка: читаем тело ответа порциями и сразу пишем в файл.
+    async fn progressive_direct(&self, url: &str, dest: &Path, progress: &DownloadProgress) -> ProviderResult<()> {
+        let mut resp = self.client.get(url).send().await.map_err(net_err)?;
+        check_status(resp.status(), url)?;
+        let total = resp.content_length().filter(|n| *n > 0); // общий размер, если сервер его сообщил
+        let mut file = File::create(dest).map_err(|e| local_err(dest, e))?;
+        let mut written: u64 = 0;
+        // chunk() отдаёт тело ответа по частям, по мере прихода из сети (None = тело кончилось)
+        while let Some(chunk) = resp.chunk().await.map_err(net_err)? {
+            if progress.is_cancelled() {
+                return Err(cancelled());
+            }
+            written += chunk.len() as u64;
+            if written > MAX_BYTES as u64 {
+                return Err(ProviderError::UnexpectedResponse("файл больше 300 МБ, останавливаемся".to_string()));
+            }
+            file.write_all(&chunk).map_err(|e| local_err(dest, e))?;
+            progress.add_bytes(chunk.len() as u64);
+            if let Some(total) = total {
+                progress.set_fraction(written as f32 / total as f32);
+            }
+        }
+        Ok(())
+    }
+
+    /// HLS: после каждого куска дописываем его в файл. Для fMP4 это init + куски подряд.
+    async fn progressive_hls(&self, url: &str, dest: &Path, progress: &DownloadProgress) -> ProviderResult<()> {
+        let plan = self.load_plan(url).await?;
+        let mut file = File::create(dest).map_err(|e| local_err(dest, e))?;
+        let mut total_bytes: usize = 0;
+
+        if let Some(init) = &plan.init {
+            let bytes = self.get_bytes(init.as_str()).await?;
+            total_bytes += bytes.len();
+            file.write_all(&bytes).map_err(|e| local_err(dest, e))?;
+            progress.add_bytes(bytes.len() as u64);
+        }
+
+        let total = plan.segments.len();
+        let total_secs: f64 = plan.segments.iter().map(|s| s.duration).sum();
+        let mut done_secs = 0.0;
+        let mut keys: HashMap<String, [u8; 16]> = HashMap::new();
+        // Some(...) = куски оказались MPEG-TS: копим всё в памяти (см. описание функции выше)
+        let mut ts_buffer: Option<Vec<u8>> = None;
+
+        for (i, seg) in plan.segments.iter().enumerate() {
+            if progress.is_cancelled() {
+                return Err(cancelled());
+            }
+            let bytes = self.fetch_segment(seg, i, total, &mut keys).await?;
+            total_bytes += bytes.len();
+            if total_bytes > MAX_BYTES {
+                return Err(ProviderError::UnexpectedResponse("трек больше 300 МБ, останавливаемся".to_string()));
+            }
+            if i == 0 && plan.init.is_none() && ts::looks_like_ts(&bytes) {
+                ts_buffer = Some(Vec::new());
+            }
+            match &mut ts_buffer {
+                Some(buffer) => buffer.extend_from_slice(&bytes),
+                None => {
+                    file.write_all(&bytes).map_err(|e| local_err(dest, e))?;
+                    progress.add_bytes(bytes.len() as u64);
+                }
+            }
+            // Доля: по длительности кусков, а если в плейлисте нет EXTINF, по числу кусков
+            done_secs += seg.duration;
+            let fraction = if total_secs > 0.0 { done_secs / total_secs } else { (i + 1) as f64 / total as f64 };
+            progress.set_fraction(fraction as f32);
+        }
+
+        if let Some(buffer) = ts_buffer {
+            let (audio, _kind) = ts::extract_audio(&buffer).map_err(ProviderError::UnexpectedResponse)?;
+            file.write_all(&audio).map_err(|e| local_err(dest, e))?;
+            progress.add_bytes(audio.len() as u64);
+        }
+        Ok(())
+    }
+
     /// Скачивает ключ шифрования: ровно 16 байт (иначе это, скорее всего, страница с ошибкой).
     async fn get_key(&self, uri: &Url) -> ProviderResult<[u8; 16]> {
         let bytes = self.get_bytes(uri.as_str()).await.map_err(|e| ProviderError::Network(format!("ключ шифрования: {e}")))?;
@@ -266,16 +407,31 @@ impl StreamDownloader {
     /// Один GET-запрос, ответ байтами. Любой код, кроме 2xx, считается ошибкой.
     async fn get_bytes(&self, url: &str) -> ProviderResult<Vec<u8>> {
         let resp = self.client.get(url).send().await.map_err(net_err)?;
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(ProviderError::Network(format!("код {status} для {}", short(strip_query(url), 100))));
-        }
+        check_status(resp.status(), url)?;
         let bytes = resp.bytes().await.map_err(net_err)?;
         if bytes.len() > MAX_BYTES {
             return Err(ProviderError::UnexpectedResponse("файл больше 300 МБ, останавливаемся".to_string()));
         }
         Ok(bytes.to_vec())
     }
+}
+
+/// Любой код ответа, кроме 2xx, считается ошибкой (адрес в тексте без `?...`).
+fn check_status(status: reqwest::StatusCode, url: &str) -> ProviderResult<()> {
+    if status.is_success() {
+        Ok(())
+    } else {
+        Err(ProviderError::Network(format!("код {status} для {}", short(strip_query(url), 100))))
+    }
+}
+
+/// Ошибка записи в файл `path`.
+fn local_err(path: &Path, e: std::io::Error) -> ProviderError {
+    ProviderError::LocalFile(format!("{}: {e}", path.display()))
+}
+
+fn cancelled() -> ProviderError {
+    ProviderError::Network("загрузка отменена".to_string())
 }
 
 /// Адрес без хвоста после `?` (в хвосте временные подписи, в сообщения об ошибках их не пишем).
@@ -305,6 +461,18 @@ mod tests {
         assert_eq!(plan.segments[0].url.as_str(), "https://cdn.example.com/track/d0.m4s?sig=1"); // абсолютная ссылка
         assert_eq!(plan.segments[1].url.as_str(), "https://cdn.example.com/track/aac_160k/uuid/d1.m4s"); // относительная
         assert!(plan.segments.iter().all(|s| s.key.is_none()));
+    }
+
+    #[test]
+    fn reads_segment_durations() {
+        let plan = parse_hls(SAMPLE, &base()).unwrap();
+        assert_eq!(plan.segments[0].duration, 10.0078);
+        assert_eq!(plan.segments[1].duration, 9.98);
+        // нет #EXTINF = длительность 0, плохое число тоже
+        let text = "#EXTM3U\n#EXTINF:abc,\na.mp3\nb.mp3\n#EXT-X-ENDLIST\n";
+        let plan = parse_hls(text, &base()).unwrap();
+        assert_eq!(plan.segments[0].duration, 0.0);
+        assert_eq!(plan.segments[1].duration, 0.0);
     }
 
     #[test]
