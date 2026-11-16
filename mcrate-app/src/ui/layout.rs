@@ -115,15 +115,37 @@ pub fn bleed_clip(ui: &mut Ui, bleed: Bleed) {
     ui.set_clip_rect(bleed.expand(c));
 }
 
-/// Прокрутка, растянутая до краёв панели: рамка `ScrollArea` и её полоса прокрутки лежат на самом
-/// краю панели, а прежний отступ возвращён полем содержимого (`content_margin`). Положение
-/// виджетов не меняется, но при прокрутке они уходят под край панели, а не обрезаются в отступе.
+/// Геометрия прокрутки внутри скруглённой поверхности. Содержимое сохраняет прежнее начало,
+/// но сама область ScrollArea отступает от верхнего и нижнего края: вертикальный бегунок больше
+/// не попадает в закруглённые углы поверхности. Правый отступ бегунка задаётся через ScrollStyle.
+const SCROLLBAR_END_INSET: f32 = 20.0;
+
+fn pane_scroll_geometry(page: Rect, bleed: Bleed) -> (Rect, Margin) {
+    let expanded = bleed.expand(page);
+    let end_inset = SCROLLBAR_END_INSET.min((expanded.height() * 0.5).max(0.0));
+    let scroll_rect = Rect::from_min_max(
+        pos2(expanded.left(), expanded.top() + end_inset),
+        pos2(expanded.right(), expanded.bottom() - end_inset),
+    );
+
+    // Компенсируем верхний inset, чтобы первый виджет не сдвинулся вниз.
+    // `Margin` хранит i8, а величины Bleed заданы в целых логических пикселях.
+    let top = (bleed.top - end_inset).max(0.0) as i8;
+    let margin = Margin {
+        left: bleed.left.max(0.0) as i8,
+        right: bleed.right.max(0.0) as i8,
+        top,
+        bottom: 0,
+    };
+    (scroll_rect, margin)
+}
+
+/// Область прокрутки занимает поверхность по ширине, но отступает от её верхнего и нижнего
+/// скруглений. Тонкий бегунок расположен в свободном правом поле и не перекрывает содержимое.
 /// Закрытие получает готовую `ScrollArea` и вызывает у неё `show` или `show_rows`.
 pub fn pane_scroll<R>(ui: &mut Ui, bleed: Bleed, area: ScrollArea, show: impl FnOnce(ScrollArea, &mut Ui) -> R) -> R {
-    let wide = bleed.expand(ui.available_rect_before_wrap());
-    // Нижнее поле не нужно: конец страницы даёт `scroll_end_padding`. `as i8`: Margin хранит i8.
-    let margin = Margin { left: bleed.left as i8, right: bleed.right as i8, top: bleed.top as i8, bottom: 0 };
-    ui.scope_builder(UiBuilder::new().max_rect(wide).layout(Layout::top_down(Align::Min)), |ui| {
+    let (scroll_rect, margin) = pane_scroll_geometry(ui.available_rect_before_wrap(), bleed);
+    ui.scope_builder(UiBuilder::new().max_rect(scroll_rect).layout(Layout::top_down(Align::Min)), |ui| {
         show(area.content_margin(margin), ui)
     })
     .inner
@@ -168,6 +190,30 @@ mod tests {
         let c = bar_columns(696.0, 8.0);
         assert_eq!(c.center, 360.0);
         assert_eq!(c.side, 160.0);
+    }
+
+    #[test]
+    fn pane_scrollbar_stays_inside_rounded_surface_without_shifting_content() {
+        let page = Rect::from_min_max(pos2(20.0, 20.0), pos2(780.0, 580.0));
+        let (scroll, margin) = pane_scroll_geometry(page, Bleed::same(20.0));
+
+        // The viewport is inset from the pane's top/bottom, and the content still begins
+        // at the same coordinates as before the scrollbar was moved inward.
+        assert_eq!(scroll.top(), 12.0);
+        assert_eq!(scroll.bottom(), 588.0);
+        assert_eq!(scroll.left(), 0.0);
+        assert_eq!(scroll.right(), 800.0);
+        assert_eq!(margin.top, 8);
+        assert_eq!(scroll.top() + margin.top as f32, page.top());
+        assert_eq!(margin.left, 20);
+        assert_eq!(margin.right, 20);
+
+        // В Liquid Glass нижний Bleed равен нулю, но бегунок всё равно остаётся
+        // внутри скруглённой поверхности; верхнее положение содержимого сохраняется.
+        let glass = Bleed { left: 20.0, top: 20.0, right: 20.0, bottom: 0.0 };
+        let (glass_scroll, glass_margin) = pane_scroll_geometry(page, glass);
+        assert_eq!(glass_scroll.top() + glass_margin.top as f32, page.top());
+        assert_eq!(glass_scroll.bottom(), page.bottom() - SCROLLBAR_END_INSET);
     }
 
     #[test]

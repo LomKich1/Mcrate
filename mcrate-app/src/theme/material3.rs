@@ -21,7 +21,7 @@ pub fn surface<R>(theme: &Theme, ui: &mut Ui, role: Surface, add: impl FnOnce(&m
 
     let (fill, margin, stroke) = match role {
         // Навигация сливается с фоном (как в проводнике Windows 11).
-        Surface::Rail => (Color32::TRANSPARENT, Margin::symmetric(8, 8), Stroke::NONE),
+        Surface::Rail => (Color32::TRANSPARENT, Margin::symmetric(12, 14), Stroke::NONE),
         Surface::Content => (p.surface_container_low, Margin::same(20), Stroke::NONE),
         Surface::PlayerBar => (p.surface_container_high, Margin::symmetric(22, 12), Stroke::NONE),
         Surface::Dialog => (p.surface_container_high, Margin::same(24), Stroke::new(1.0, p.outline_variant)),

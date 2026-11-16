@@ -208,22 +208,27 @@ impl McrateApp {
         self.applied = Some(self.settings.clone());
     }
 
-    /// Обычная раскладка (Material 3 и Liquid Glass с выключенным блюром): панели по краям,
-    /// потом центральная область. Все поверхности плотные.
+    /// Плотная раскладка Material 3 (и Liquid Glass с выключенным стеклом). Контентная
+    /// поверхность занимает центральную область, а мини-плеер рисуется поверх неё отдельной
+    /// плавающей карточкой — с той же геометрией, что и в Liquid Glass.
     fn panel_layout(&mut self, ui: &mut egui::Ui, theme: &Theme, full: Rect, rail_width: f32, compact: bool) {
         theme.paint_background(ui, full);
 
-        // Порядок важен: сначала панели по краям, потом центральная область.
-        egui::Panel::bottom("player_bar")
-            .frame(Frame::NONE.inner_margin(Margin { left: 12, right: 12, top: 4, bottom: 12 }))
-            .resizable(false)
-            .show_separator_line(false)
-            .show(ui, |ui| {
-                theme.surface(ui, Surface::PlayerBar, |ui| self.player_bar(ui, theme));
-            });
+        // Центральная поверхность заканчивается на том же нижнем inset, что и в Liquid Glass;
+        // плеер лежит поверх неё отдельной карточкой.
+        let content_pane = Rect::from_min_max(
+            pos2(full.left() + rail_width + 4.0, full.top() + 12.0),
+            pos2(full.right() - 12.0, full.bottom() - 12.0),
+        );
+        let bar = Rect::from_min_max(
+            pos2(content_pane.left() + GLASS_BAR_SIDE_INSET, full.bottom() - GLASS_BAR_BOTTOM_GAP - GLASS_BAR_H),
+            pos2(content_pane.right() - GLASS_BAR_SIDE_INSET, full.bottom() - GLASS_BAR_BOTTOM_GAP),
+        );
+        self.bottom_inset = content_pane.bottom() - bar.top() + 4.0;
 
+        // Порядок важен: сначала боковая навигация, затем контентная поверхность.
         egui::Panel::left("rail")
-            .frame(Frame::NONE.inner_margin(Margin { left: 12, right: 4, top: 12, bottom: 4 }))
+            .frame(Frame::NONE.inner_margin(Margin { left: 12, right: 4, top: 12, bottom: 12 }))
             .resizable(false)
             .show_separator_line(false)
             .exact_size(rail_width)
@@ -232,10 +237,17 @@ impl McrateApp {
             });
 
         egui::CentralPanel::default()
-            .frame(Frame::NONE.inner_margin(Margin { left: 4, right: 12, top: 12, bottom: 4 }))
+            .frame(Frame::NONE.inner_margin(Margin { left: 4, right: 12, top: 12, bottom: 12 }))
             .show(ui, |ui| {
                 theme.surface(ui, Surface::Content, |ui| self.screen(ui, theme));
             });
+
+        // Плавающая карточка: 16 px бокового inset и 28 px от нижнего края окна,
+        // как у Liquid Glass. Внутренние отступы Surface::PlayerBar оставляют 80 px
+        // под органы управления (52 + 4 + 24).
+        ui.scope_builder(UiBuilder::new().max_rect(bar), |ui| {
+            theme.surface(ui, Surface::PlayerBar, |ui| self.player_bar(ui, theme));
+        });
     }
 
     /// Раскладка Liquid Glass. Слева рейка плавает над обоями; справа лежит плотная
@@ -369,7 +381,6 @@ impl eframe::App for McrateApp {
         if theme.glass_active() {
             self.glass_layout(ui, &theme, full, rail_width, compact);
         } else {
-            self.bottom_inset = 0.0;
             // Рамка Surface::Content (material3.rs) даёт 20 px со всех сторон.
             self.bleed = Bleed::same(20.0);
             self.panel_layout(ui, &theme, full, rail_width, compact);

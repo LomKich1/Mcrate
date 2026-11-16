@@ -279,6 +279,24 @@ impl Theme {
             style.spacing.item_spacing = egui::vec2(10.0, 8.0);
             style.spacing.button_padding = egui::vec2(16.0, 8.0);
             style.spacing.interact_size.y = if self.glass_active() { 36.0 } else { 40.0 };
+
+            // Тонкий бегунок лежит в свободном правом поле и не перекрывает строки/карточки.
+            // Геометрия ScrollArea дополнительно отступает от верхнего и нижнего скруглений;
+            // отдельную тень для бегунка не рисуем, чтобы он оставался частью основной поверхности.
+            let mut scroll = egui::style::ScrollStyle::floating();
+            scroll.bar_width = 8.0;
+            scroll.floating_width = 3.0;
+            scroll.floating_allocated_width = 0.0;
+            scroll.handle_min_length = 30.0;
+            scroll.bar_inner_margin = 3.0;
+            scroll.bar_outer_margin = 0.0;
+            scroll.dormant_handle_opacity = 0.38;
+            scroll.active_handle_opacity = 0.72;
+            scroll.interact_handle_opacity = 1.0;
+            scroll.dormant_background_opacity = 0.0;
+            scroll.active_background_opacity = 0.12;
+            scroll.interact_background_opacity = 0.22;
+            style.spacing.scroll = scroll;
         });
     }
 
