@@ -2,7 +2,8 @@
 //! Всё в «точках» egui (логических пикселях), поэтому масштаб Windows (125%, 150%) учитывается сам.
 //! Правила собраны здесь, а не размазаны по экранам: так их проще менять и проверять тестами.
 
-use egui::{Align, Layout, Margin, Rect, ScrollArea, Ui, UiBuilder, pos2, vec2};
+use egui::epaint::{Mesh, Vertex};
+use egui::{Align, Color32, Layout, Margin, Rect, ScrollArea, Ui, UiBuilder, Shape, pos2, vec2};
 
 /// Размерный класс окна (в Material 3 это называется window size class).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -115,10 +116,11 @@ pub fn bleed_clip(ui: &mut Ui, bleed: Bleed) {
     ui.set_clip_rect(bleed.expand(c));
 }
 
-/// Геометрия прокрутки внутри скруглённой поверхности. Содержимое сохраняет прежнее начало,
-/// но сама область ScrollArea отступает от верхнего и нижнего края: вертикальный бегунок больше
-/// не попадает в закруглённые углы поверхности. Правый отступ бегунка задаётся через ScrollStyle.
-const SCROLLBAR_END_INSET: f32 = 20.0;
+/// Геометрия прокрутки внутри поверхности. Содержимое сохраняет прежнее начало, а область
+/// ScrollArea занимает поверхность целиком, до всех четырёх краёв (раньше она отступала на 20 px
+/// сверху и снизу, и прокручиваемое содержимое обрезалось жёсткой линией внутри панели).
+/// Если понадобится вернуть отступ бегунка от скруглений, это константа ниже.
+const SCROLLBAR_END_INSET: f32 = 0.0;
 
 fn pane_scroll_geometry(page: Rect, bleed: Bleed) -> (Rect, Margin) {
     let expanded = bleed.expand(page);
@@ -140,15 +142,65 @@ fn pane_scroll_geometry(page: Rect, bleed: Bleed) -> (Rect, Margin) {
     (scroll_rect, margin)
 }
 
-/// Область прокрутки занимает поверхность по ширине, но отступает от её верхнего и нижнего
-/// скруглений. Тонкий бегунок расположен в свободном правом поле и не перекрывает содержимое.
-/// Закрытие получает готовую `ScrollArea` и вызывает у неё `show` или `show_rows`.
-pub fn pane_scroll<R>(ui: &mut Ui, bleed: Bleed, area: ScrollArea, show: impl FnOnce(ScrollArea, &mut Ui) -> R) -> R {
+/// Область прокрутки занимает поверхность целиком (до всех четырёх краёв), поэтому содержимое
+/// можно прокручивать под самый край панели. Бегунок при этом остаётся ВНУТРИ скруглений:
+/// его дорожка короче области прокрутки на `corner` px сверху и снизу (`scroll_bar_rect`).
+/// Если задан `mask`, в четырёх скруглённых углах поверх содержимого рисуется заливка цветом фона
+/// за панелью: прямоугольная область прокрутки иначе показывала бы «квадратные» углы у карточек,
+/// которые доходят до краёв. Закрытие получает готовую `ScrollArea` и вызывает у неё `show` или `show_rows`.
+pub fn pane_scroll<R>(
+    ui: &mut Ui,
+    bleed: Bleed,
+    corner: f32,
+    mask: Option<Color32>,
+    area: ScrollArea,
+    show: impl FnOnce(ScrollArea, &mut Ui) -> R,
+) -> R {
     let (scroll_rect, margin) = pane_scroll_geometry(ui.available_rect_before_wrap(), bleed);
-    ui.scope_builder(UiBuilder::new().max_rect(scroll_rect).layout(Layout::top_down(Align::Min)), |ui| {
-        show(area.content_margin(margin), ui)
-    })
-    .inner
+    let bar_rect = Rect::from_min_max(
+        pos2(scroll_rect.left(), scroll_rect.top() + corner),
+        pos2(scroll_rect.right(), scroll_rect.bottom() - corner),
+    );
+    let out = ui
+        .scope_builder(UiBuilder::new().max_rect(scroll_rect).layout(Layout::top_down(Align::Min)), |ui| {
+            show(area.content_margin(margin).scroll_bar_rect(bar_rect), ui)
+        })
+        .inner;
+    if let Some(color) = mask {
+        paint_corner_masks(&ui.painter().with_clip_rect(scroll_rect), scroll_rect, corner, color);
+    }
+    out
+}
+
+/// Заливает «пустоты» между углом прямоугольника и дугой скругления радиуса `r` цветом `color`.
+/// В каждом углу пустота это фигура между вершиной угла и четвертью окружности; её можно
+/// разбить веером треугольников из вершины угла по точкам дуги.
+pub fn paint_corner_masks(painter: &egui::Painter, rect: Rect, r: f32, color: Color32) {
+    const STEPS: usize = 12;
+    if r < 1.0 {
+        return;
+    }
+    // (вершина угла, центр окружности, начальный угол дуги). Углы считаются по часовой стрелке в экранных осях.
+    let corners = [
+        (rect.left_top(), rect.left_top() + vec2(r, r), std::f32::consts::PI),
+        (rect.right_top(), rect.right_top() + vec2(-r, r), std::f32::consts::PI * 1.5),
+        (rect.right_bottom(), rect.right_bottom() + vec2(-r, -r), 0.0),
+        (rect.left_bottom(), rect.left_bottom() + vec2(r, -r), std::f32::consts::PI * 0.5),
+    ];
+    let mut mesh = Mesh::default();
+    for (corner, center, start) in corners {
+        let base = mesh.vertices.len() as u32;
+        mesh.vertices.push(Vertex { pos: corner, uv: egui::epaint::WHITE_UV, color });
+        for i in 0..=STEPS {
+            let a = start + std::f32::consts::FRAC_PI_2 * i as f32 / STEPS as f32;
+            let pos = center + vec2(a.cos(), a.sin()) * r;
+            mesh.vertices.push(Vertex { pos, uv: egui::epaint::WHITE_UV, color });
+        }
+        for i in 0..STEPS as u32 {
+            mesh.indices.extend_from_slice(&[base, base + 1 + i, base + 2 + i]);
+        }
+    }
+    painter.add(Shape::mesh(mesh));
 }
 
 /// Единый запас в конце прокручиваемых страниц. В Material 3 это небольшой край,
@@ -193,27 +245,21 @@ mod tests {
     }
 
     #[test]
-    fn pane_scrollbar_stays_inside_rounded_surface_without_shifting_content() {
+    fn pane_scroll_fills_surface_without_shifting_content() {
         let page = Rect::from_min_max(pos2(20.0, 20.0), pos2(780.0, 580.0));
         let (scroll, margin) = pane_scroll_geometry(page, Bleed::same(20.0));
 
-        // The viewport is inset from the pane's top/bottom, and the content still begins
-        // at the same coordinates as before the scrollbar was moved inward.
-        assert_eq!(scroll.top(), 12.0);
-        assert_eq!(scroll.bottom(), 588.0);
-        assert_eq!(scroll.left(), 0.0);
-        assert_eq!(scroll.right(), 800.0);
-        assert_eq!(margin.top, 8);
+        // Область прокрутки доходит до краёв панели, а содержимое начинается там же, где и раньше.
+        assert_eq!(scroll, Rect::from_min_max(pos2(0.0, 0.0), pos2(800.0, 600.0)));
         assert_eq!(scroll.top() + margin.top as f32, page.top());
         assert_eq!(margin.left, 20);
         assert_eq!(margin.right, 20);
 
-        // В Liquid Glass нижний Bleed равен нулю, но бегунок всё равно остаётся
-        // внутри скруглённой поверхности; верхнее положение содержимого сохраняется.
+        // В Liquid Glass нижнего Bleed нет: прокрутка заканчивается на низу страницы.
         let glass = Bleed { left: 20.0, top: 20.0, right: 20.0, bottom: 0.0 };
         let (glass_scroll, glass_margin) = pane_scroll_geometry(page, glass);
         assert_eq!(glass_scroll.top() + glass_margin.top as f32, page.top());
-        assert_eq!(glass_scroll.bottom(), page.bottom() - SCROLLBAR_END_INSET);
+        assert_eq!(glass_scroll.bottom(), page.bottom());
     }
 
     #[test]

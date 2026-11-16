@@ -285,6 +285,10 @@ impl Theme {
             scroll.dormant_background_opacity = 0.0;
             scroll.active_background_opacity = 0.12;
             scroll.interact_background_opacity = 0.22;
+            // Встроенное «затухание» краёв ScrollArea (egui 0.37, по умолчанию 50% на 20 px) выключено:
+            // у горизонтальной полки оно затемняло правый край карточки до границы страницы, и дальше
+            // карточка выглядела светлее, как полоса-тень у края панели.
+            scroll.fade = egui::style::ScrollFadeStyle { strength: 0.0, size: 0.0 };
             style.spacing.scroll = scroll;
         });
     }

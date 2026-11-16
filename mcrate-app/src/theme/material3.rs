@@ -30,8 +30,8 @@ pub fn surface<R>(theme: &Theme, ui: &mut Ui, role: Surface, add: impl FnOnce(&m
     };
 
     let mut frame = Frame::new().fill(fill).corner_radius(radius).inner_margin(margin).stroke(stroke);
-    // Плавающие элементы получают мягкую тень; тёмной теме нужна чуть плотнее.
-    if matches!(role, Surface::PlayerBar | Surface::Dialog) {
+    // Мягкую тень получают только диалоги; у плеера тени нет (она ложилась на край панели справа).
+    if matches!(role, Surface::Dialog) {
         frame = frame.shadow(egui::Shadow {
             offset: [0, 4],
             blur: 18,

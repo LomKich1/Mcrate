@@ -29,6 +29,7 @@ use super::layout::{Bleed, bleed_clip, pane_scroll, scroll_end_padding};
 use super::widgets::{ButtonKind, artists_text, cover_tile, glide_begin, glide_end, icon_button, pill_button, search_bar, track_row};
 use crate::app::{McrateApp, View};
 use crate::icons::{self, Icon};
+use crate::settings::Design;
 use crate::theme::{TextRole, Theme, with_alpha};
 
 const WAVE_H: f32 = 200.0; // высота волны
@@ -47,7 +48,11 @@ impl McrateApp {
         let bleed = self.bleed;
         // Прокрутка растянута до краёв панели: полоса прокрутки лежит на самом краю, а карточки
         // и заголовки уходят под край, а не режутся в отступе от него (см. `pane_scroll`).
-        pane_scroll(ui, bleed, ScrollArea::vertical().auto_shrink([false, false]), |area, ui| area.show(ui, |ui| {
+        // Скругление панели: бегунок отступает от углов на этот радиус, а в углах (только Material 3
+        // без Mica/Acrylic, где за панелью сплошной цвет `surface`) закрашиваются квадратные «пустоты».
+        let corner = theme.pane_radius() as f32;
+        let mask = (theme.settings.design == Design::Material3 && !theme.window_backdrop_active()).then_some(theme.palette.surface);
+        pane_scroll(ui, bleed, corner, mask, ScrollArea::vertical().auto_shrink([false, false]), |area, ui| area.show(ui, |ui| {
             // ---------- поиск ----------
             let search = search_bar(ui, theme, &mut self.search, "Поиск по названию и исполнителю");
             // Enter в поле: результаты показывает экран «Ваши загрузки» (свои файлы).
@@ -110,9 +115,9 @@ impl McrateApp {
 
         // Холст волны слушает курсор (hover), нажатие и клик.
         let wave_height = if ui.clip_rect().height() < 640.0 { 148.0 } else { WAVE_H };
-        // В Liquid Glass волна идёт от края до края панели: холст шире страницы на её отступы.
+        // Волна идёт от края до края панели в обеих темах: холст шире страницы на её боковые отступы.
         // Нажатие и наведение ловим на всём широком холсте (`interact`), а не на узкой рамке.
-        let wave_bleed = if theme.glass_active() { self.bleed.left.min(self.bleed.right) } else { 0.0 };
+        let wave_bleed = self.bleed.left.min(self.bleed.right);
         let (page_rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), wave_height), Sense::hover());
         let canvas = page_rect.expand2(vec2(wave_bleed, 0.0));
         let resp = ui.interact(canvas, wave_id.with("hit"), Sense::click());
@@ -247,18 +252,18 @@ impl McrateApp {
 
     /// Список «Мои треки»: первые 10 треков библиотеки, как список чарта.
     fn home_chart(&mut self, ui: &mut Ui, theme: &Theme) {
-        let p = &theme.palette;
-        let count = self.ctl.library.len();
         let rows: Vec<(usize, Track)> = self.ctl.library.iter().cloned().enumerate().take(CHART_COUNT).collect();
         let current_id = self.ctl.now.as_ref().map(|t| t.id.clone());
         let playing = self.ctl.is_playing();
         let time = ui.input(|i| i.time);
 
+        // Заголовок и кнопка «Показать всё» в одной строке: кнопка стоит рядом с названием
+        // (раньше здесь была ссылка «вся музыка →», а кнопка лежала под списком).
         ui.horizontal(|ui| {
             ui.label(RichText::new("Мои треки").size(theme.text_size(TextRole::TitleLarge)).strong());
-            ui.add_space(12.0);
-            let link = ui.add(egui::Label::new(RichText::new("вся музыка →").size(13.0).color(p.on_surface_variant)).sense(Sense::click()));
-            if link.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+            ui.add_space(8.0);
+            let kind = if theme.glass_active() { ButtonKind::Tonal } else { ButtonKind::Text };
+            if pill_button(ui, theme, "Показать всё", None, kind).clicked() {
                 self.view = View::Library;
             }
         });
@@ -279,13 +284,6 @@ impl McrateApp {
             }
         }
         glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_home_tracks"), hovered, 18.0);
-        if count > CHART_COUNT {
-            ui.add_space(4.0);
-            let kind = if theme.glass_active() { ButtonKind::Tonal } else { ButtonKind::Text };
-            if pill_button(ui, theme, "Показать всё", None, kind).clicked() {
-                self.view = View::Library;
-            }
-        }
         if let Some(i) = play_index {
             let items = self.ctl.library.clone();
             self.ctl.play_list(items, i);
@@ -294,7 +292,7 @@ impl McrateApp {
 }
 
 /// «трек», «трека», «треков» по правилам русского языка.
-fn tracks_word(n: usize) -> &'static str {
+pub(super) fn tracks_word(n: usize) -> &'static str {
     match (n % 10, n % 100) {
         (_, 11..=14) => "треков",
         (1, _) => "трек",

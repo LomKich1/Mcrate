@@ -252,10 +252,23 @@ pub(super) fn settings_header(ui: &mut Ui, theme: &Theme, title: &str) -> bool {
 }
 
 /// Строка-переход главного экрана настроек: название, подпись и шеврон «>» справа.
+/// Ширина ограничена 700 px, как и раньше.
 pub(super) fn settings_nav_row(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str) -> egui::Response {
+    let width = ui.available_width().min(700.0);
+    nav_row_impl(ui, theme, title, subtitle, width, true)
+}
+
+/// Та же строка, но без шеврона и на всю доступную ширину (экраны раздела «Библиотека»):
+/// так её края совпадают с краями строк треков под ней.
+pub(super) fn plain_nav_row(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str) -> egui::Response {
+    let width = ui.available_width();
+    nav_row_impl(ui, theme, title, subtitle, width, false)
+}
+
+fn nav_row_impl(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str, width: f32, chevron: bool) -> egui::Response {
     let p = &theme.palette;
     let row_height = if theme.glass_active() { 64.0 } else { theme.list_item_height(2) };
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width().min(700.0), row_height), Sense::click());
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, row_height), Sense::click());
     let painter = ui.painter();
     if theme.glass_active() {
         if resp.hovered() {
@@ -264,7 +277,7 @@ pub(super) fn settings_nav_row(ui: &mut Ui, theme: &Theme, title: &str, subtitle
         }
         painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(0.7, with_alpha(p.on_surface, 22)));
     } else {
-            painter.rect_filled(rect, theme.shape_radius(ShapeRole::Large), p.surface_container_high);
+        painter.rect_filled(rect, theme.shape_radius(ShapeRole::Large), p.surface_container_high);
         if resp.hovered() {
             painter.rect_filled(rect, theme.shape_radius(ShapeRole::Large), theme.row_hover_fill());
         }
@@ -273,9 +286,11 @@ pub(super) fn settings_nav_row(ui: &mut Ui, theme: &Theme, title: &str, subtitle
     let subtitle_size = if theme.glass_active() { 12.5 } else { theme.text_size(TextRole::BodySmall) };
     painter.text(pos2(rect.left() + 18.0, rect.center().y - 10.0), egui::Align2::LEFT_CENTER, title, FontId::proportional(title_size), p.on_surface);
     painter.text(pos2(rect.left() + 18.0, rect.center().y + 12.0), egui::Align2::LEFT_CENTER, subtitle, FontId::proportional(subtitle_size), p.on_surface_variant);
-    let c = pos2(rect.right() - 26.0, rect.center().y);
-    let pts = vec![c + vec2(-3.0, -6.0), c + vec2(3.0, 0.0), c + vec2(-3.0, 6.0)];
-    painter.add(egui::Shape::line(pts, Stroke::new(2.0, p.on_surface_variant)));
+    if chevron {
+        let c = pos2(rect.right() - 26.0, rect.center().y);
+        let pts = vec![c + vec2(-3.0, -6.0), c + vec2(3.0, 0.0), c + vec2(-3.0, 6.0)];
+        painter.add(egui::Shape::line(pts, Stroke::new(2.0, p.on_surface_variant)));
+    }
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
 

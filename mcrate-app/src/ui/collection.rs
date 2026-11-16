@@ -11,7 +11,7 @@ use egui::{RichText, ScrollArea, Sense, Ui, Vec2};
 use mcrate_core::Track;
 
 use super::layout::{bleed_clip, centered_column, scroll_end_padding};
-use super::settings_view::{settings_header, settings_nav_row};
+use super::settings_view::{plain_nav_row, settings_header};
 use super::widgets::{ButtonKind, glide_begin, glide_end, pill_button, track_row};
 use crate::app::{McrateApp, View};
 use crate::icons::{self, Icon};
@@ -39,7 +39,7 @@ impl McrateApp {
                     (View::Library, "Ваши загрузки", uploads),
                 ];
                 for (view, title, subtitle) in rows {
-                    if settings_nav_row(ui, theme, title, &subtitle).clicked() {
+                    if plain_nav_row(ui, theme, title, &subtitle).clicked() {
                         self.view = view;
                     }
                     ui.add_space(8.0);

@@ -5,7 +5,7 @@
 //! Поверх неё располагаются карточка трека и анимируемая панель текста.
 
 use egui::{
-    Align, Layout, Rect, RichText, ScrollArea, Sense, Shape, Stroke, Ui,
+    Align, Layout, Pos2, Rect, RichText, ScrollArea, Sense, Shape, Stroke, Ui,
     pos2, vec2,
 };
 
@@ -19,7 +19,11 @@ use super::layout::cover_side;
 const PANEL_GAP: f32 = 16.0;
 const LEFT_MIN: f32 = 280.0;
 const RIGHT_MIN: f32 = 250.0;
-const FOOTER_HEIGHT: f32 = 48.0;
+/// Кнопка «скрыть/показать текст» стоит в правом верхнем углу области страницы: при открытом тексте
+/// это шапка карточки текста, при закрытом — угол карточки трека (место на экране одно и то же).
+const TOGGLE_SIZE: f32 = 32.0;
+const TOGGLE_INSET_RIGHT: f32 = 14.0;
+const TOGGLE_INSET_TOP: f32 = 10.0;
 /// Пружина двигает число от 0 до этого значения (а не до 1): у `spring_step` порог остановки
 /// 0,05 задан для пикселей, и на шкале 0..1 пружина «замирала» бы, не дойдя 5% до цели.
 const SPRING_SCALE: f32 = 100.0;
@@ -35,6 +39,8 @@ pub struct NpLayout {
     pub lyrics: Rect,
     /// `false`, когда карточка текста уехала за правый край окна целиком (рисовать нечего).
     pub lyrics_visible: bool,
+    /// Центр кнопки «скрыть/показать текст».
+    pub toggle_center: Pos2,
 }
 
 /// Состояние экрана. Лежит в `McrateApp`, а не во временной памяти egui: страница в Liquid Glass
@@ -85,7 +91,24 @@ fn np_layout(body: Rect, shown: f32, window_right: f32) -> NpLayout {
     // Сдвиг вправо: при `shown = 1` нулевой, при `shown = 0` левый край карточки как раз у края окна.
     let shift = (1.0 - shown) * (window_right - final_lyrics.left()).max(0.0);
     let lyrics = final_lyrics.translate(vec2(shift, 0.0));
-    NpLayout { left, lyrics, lyrics_visible: lyrics.left() < window_right - 0.5 && lyrics.height() > 1.0 }
+    // Кнопка текста. В обычной раскладке стоит в правом верхнем углу области. В узкой карточка текста
+    // снизу, поэтому кнопка плавно ездит вместе с её открытием: от угла области к шапке карточки.
+    let button_top = if side_by_side {
+        body.top()
+    } else {
+        let t = shown.clamp(0.0, 1.0);
+        body.top() + (final_lyrics.top() - body.top()) * t
+    };
+    let toggle_center = pos2(
+        body.right() - TOGGLE_INSET_RIGHT - TOGGLE_SIZE / 2.0,
+        button_top + TOGGLE_INSET_TOP + TOGGLE_SIZE / 2.0,
+    );
+    NpLayout {
+        left,
+        lyrics,
+        lyrics_visible: lyrics.left() < window_right - 0.5 && lyrics.height() > 1.0,
+        toggle_center,
+    }
 }
 
 impl McrateApp {
@@ -109,11 +132,9 @@ impl McrateApp {
         }
     }
 
-    /// Страница экрана: волна, заголовок, кнопка текста и раскладка. Сами карточки она рисует
+    /// Страница экрана: волна, заголовок и раскладка. Сами карточки она рисует
     /// только без Liquid Glass; в Liquid Glass их рисует `now_playing_glass_cards` поверх страницы.
     pub fn now_playing_view(&mut self, ui: &mut Ui, theme: &Theme) {
-        let p = &theme.palette;
-
         // Волна рисуется первой: все карточки и надписи останутся поверх неё.
         self.paint_background_wave(ui, theme);
 
@@ -122,55 +143,15 @@ impl McrateApp {
 
         let available = ui.available_rect_before_wrap();
         let content_bottom = (available.bottom() - self.bottom_inset).max(available.top() + 180.0);
-        let footer_top = (content_bottom - FOOTER_HEIGHT).max(available.top() + 120.0);
-        let footer_rect = Rect::from_min_max(
-            pos2(available.left(), footer_top),
-            pos2(available.right(), content_bottom),
-        );
-        let body_bottom = (footer_top - 8.0).max(available.top() + 100.0);
-        let body = Rect::from_min_max(available.min, pos2(available.right(), body_bottom));
-
-        // Кнопка находится в одном и том же месте и при открытом, и при закрытом тексте.
-        let lyrics_open = self.np.lyrics_open;
-        let mut toggle_clicked = false;
-        let mut footer_ui = ui.new_child(
-            egui::UiBuilder::new()
-                .id_salt("now-playing-lyrics-toggle")
-                .max_rect(footer_rect)
-                .layout(Layout::top_down(Align::Center)),
-        );
-        footer_ui.horizontal(|ui| {
-            if icon_button(
-                ui,
-                theme,
-                Icon::Note,
-                38.0,
-                ButtonKind::Tonal,
-                false,
-                if lyrics_open { "Скрыть текст трека" } else { "Показать текст трека" },
-            )
-            .clicked()
-            {
-                toggle_clicked = true;
-            }
-            ui.label(
-                RichText::new(if lyrics_open { "Скрыть текст" } else { "Показать текст" })
-                    .size(13.0)
-                    .color(p.on_surface_variant),
-            );
-        });
-        if toggle_clicked {
-            self.np.lyrics_open = !self.np.lyrics_open;
-            ui.ctx().request_repaint(); // чтобы анимация началась в следующем кадре без задержки
-        }
+        let body = Rect::from_min_max(available.min, pos2(available.right(), content_bottom));
 
         let window_right = ui.ctx().viewport_rect().right();
         let layout = np_layout(body, self.np.lyrics_pos / SPRING_SCALE, window_right);
         self.np.layout = Some(layout);
 
         // Liquid Glass: карточки нарисует стеклянный слой (он лежит над страницей и преломляет её).
-        if !theme.glass_active() {
-            self.draw_np_cards(ui, theme, layout, false);
+        if !theme.glass_active() && self.draw_np_cards(ui, theme, layout, false) {
+            self.toggle_lyrics(ui.ctx());
         }
     }
 
@@ -181,13 +162,21 @@ impl McrateApp {
             return;
         }
         if let Some(layout) = self.np.layout {
-            self.draw_np_cards(ui, theme, layout, true);
+            if self.draw_np_cards(ui, theme, layout, true) {
+                self.toggle_lyrics(ui.ctx());
+            }
         }
+    }
+
+    fn toggle_lyrics(&mut self, ctx: &egui::Context) {
+        self.np.lyrics_open = !self.np.lyrics_open;
+        ctx.request_repaint(); // чтобы анимация началась в следующем кадре без задержки
     }
 
     /// Нарисовать обе карточки. `shield` = поставить невидимый щит под каждой, чтобы клики и
     /// прокрутка не проваливались в страницу под стеклом (как у рейки и плеера).
-    fn draw_np_cards(&self, ui: &mut Ui, theme: &Theme, layout: NpLayout, shield: bool) {
+    /// Кнопка «скрыть/показать текст» рисуется поверх карточек; `true` = её нажали.
+    fn draw_np_cards(&self, ui: &mut Ui, theme: &Theme, layout: NpLayout, shield: bool) -> bool {
         let track = self.ctl.now.clone();
 
         if shield {
@@ -213,6 +202,24 @@ impl McrateApp {
             );
             self.lyrics_panel(&mut lyrics_ui, theme, track.as_ref());
         }
+
+        let lyrics_open = self.np.lyrics_open;
+        let mut toggle_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("now-playing-lyrics-toggle")
+                .max_rect(Rect::from_center_size(layout.toggle_center, vec2(TOGGLE_SIZE, TOGGLE_SIZE)))
+                .layout(Layout::top_down(Align::Min)),
+        );
+        icon_button(
+            &mut toggle_ui,
+            theme,
+            Icon::Note,
+            TOGGLE_SIZE,
+            ButtonKind::Tonal,
+            false,
+            if lyrics_open { "Скрыть текст трека" } else { "Показать текст трека" },
+        )
+        .clicked()
     }
 
     fn track_panel(&self, ui: &mut Ui, theme: &Theme, track: Option<&mcrate_core::Track>) {
@@ -430,3 +437,4 @@ mod tests {
         }
     }
 }
+
