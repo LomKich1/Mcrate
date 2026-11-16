@@ -3,6 +3,7 @@
 use egui::collapsing_header::CollapsingState;
 use egui::{Color32, CornerRadius, CursorIcon, FontId, Margin, Rect, RichText, Sense, Stroke, Ui, Vec2, pos2, vec2};
 
+use super::layout::{centered_column, scroll_end_padding};
 use super::widgets::{ButtonKind, pill_button};
 use crate::app::{McrateApp, View};
 use crate::platform;
@@ -14,168 +15,170 @@ impl McrateApp {
     /// Главный экран настроек: список разделов. Каждый раздел это отдельный экран (`View::Settings*`),
     /// переход между ними анимируется так же, как между вкладками меню (ui/transition.rs).
     pub fn settings_view(&mut self, ui: &mut Ui, theme: &Theme) {
-        ui.heading("Настройки");
-        ui.add_space(8.0);
+        centered_column(ui, 760.0, |ui| {
+            ui.heading("Настройки");
+            ui.add_space(8.0);
 
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            let design = match self.settings.design {
-                Design::Material3 => "Material 3",
-                Design::LiquidGlass => "Liquid Glass",
-            };
-            let backdrop = match self.settings.window_backdrop {
-                WindowBackdrop::Off => "выкл",
-                WindowBackdrop::Mica => "Mica",
-                WindowBackdrop::Acrylic => "Acrylic",
-            };
-            let rows = [
-                (View::SettingsAppearance, "Оформление", format!("{design}, тема «{}»", self.settings.theme.label())),
-                (View::SettingsWindow, "Окно", format!("Материал окна: {backdrop}")),
-                (View::SettingsAbout, "О приложении", format!("Версия {}", env!("CARGO_PKG_VERSION"))),
-            ];
-            for (view, title, subtitle) in rows {
-                if settings_nav_row(ui, theme, title, &subtitle).clicked() {
-                    self.view = view;
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                let design = match self.settings.design {
+                    Design::Material3 => "Material 3",
+                    Design::LiquidGlass => "Liquid Glass",
+                };
+                let backdrop = match self.settings.window_backdrop {
+                    WindowBackdrop::Off => "выкл",
+                    WindowBackdrop::Mica => "Mica",
+                    WindowBackdrop::Acrylic => "Acrylic",
+                };
+                let rows = [
+                    (View::SettingsAppearance, "Оформление", format!("{design}, тема «{}»", self.settings.theme.label())),
+                    (View::SettingsWindow, "Окно", format!("Материал окна: {backdrop}")),
+                    (View::SettingsAbout, "О приложении", format!("Версия {}", env!("CARGO_PKG_VERSION"))),
+                ];
+                for (view, title, subtitle) in rows {
+                    if settings_nav_row(ui, theme, title, &subtitle).clicked() {
+                        self.view = view;
+                    }
+                    ui.add_space(8.0);
                 }
-                ui.add_space(8.0);
-            }
 
-            ui.add_space(12.0);
-            if pill_button(ui, theme, "Сбросить все настройки", None, ButtonKind::Tonal).clicked() {
-                self.settings = GraphicsSettings::default();
-            }
-            ui.add_space(8.0 + self.bottom_inset); // подушка под плавающую панель плеера (Liquid Glass)
+                ui.add_space(12.0);
+                if pill_button(ui, theme, "Сбросить все настройки", None, ButtonKind::Tonal).clicked() {
+                    self.settings = GraphicsSettings::default();
+                }
+                scroll_end_padding(ui, self.bottom_inset);
+            });
         });
     }
 
     /// Подэкран «Оформление»: дизайн, параметры стекла, цветовая тема.
     pub fn settings_appearance_view(&mut self, ui: &mut Ui, theme: &Theme) {
         let p = &theme.palette;
-        if settings_header(ui, theme, "Оформление") {
-            self.view = View::Settings;
-        }
-        ui.add_space(4.0);
+        centered_column(ui, 760.0, |ui| {
+            if settings_header(ui, theme, "Оформление") {
+                self.view = View::Settings;
+            }
+            ui.add_space(4.0);
 
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            // ---------- дизайн ----------
-            group_title(ui, "Дизайн");
-            let w = ((ui.available_width() - 14.0) / 2.0).min(340.0);
-            ui.horizontal(|ui| {
-                for (design, name) in [(Design::Material3, "Material 3"), (Design::LiquidGlass, "Liquid Glass")] {
-                    if design_card(ui, theme, design, name, self.settings.design == design, w).clicked() {
-                        self.settings.design = design;
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                group_title(ui, "Дизайн");
+                let w = ((ui.available_width() - 14.0) / 2.0).min(340.0);
+                ui.horizontal(|ui| {
+                    for (design, name) in [(Design::Material3, "Material 3"), (Design::LiquidGlass, "Liquid Glass")] {
+                        if design_card(ui, theme, design, name, self.settings.design == design, w).clicked() {
+                            self.settings.design = design;
+                        }
                     }
-                }
-            });
+                });
 
-            // ---------- параметры стекла ----------
-            // Блюр и стекло включаются вместе с Liquid Glass; их настройки прячутся в строку,
-            // которая раскрывается по нажатию и сдвигает всё, что ниже (как строки настроек в iOS).
-            ui.add_space(10.0);
-            if self.settings.design == Design::LiquidGlass {
-                glass_options(ui, theme, &mut self.settings);
-            } else {
+                ui.add_space(10.0);
+                if self.settings.design == Design::LiquidGlass {
+                    glass_options(ui, theme, &mut self.settings);
+                } else {
+                    ui.label(
+                        RichText::new("Блюр и стекло включаются вместе с дизайном Liquid Glass. Material 3 использует плотные поверхности.")
+                            .size(12.5)
+                            .color(p.on_surface_variant),
+                    );
+                }
+
+                group_title(ui, "Цветовая тема");
+                theme_menu(ui, theme, &mut self.settings);
+                if self.settings.theme == ThemePreset::Custom {
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        let dark = self.settings.dark;
+                        let kind = |on: bool| if on { ButtonKind::Filled } else { ButtonKind::Tonal };
+                        if pill_button(ui, theme, "Светлая", None, kind(!dark)).clicked() {
+                            self.settings.dark = false;
+                        }
+                        if pill_button(ui, theme, "Тёмная", None, kind(dark)).clicked() {
+                            self.settings.dark = true;
+                        }
+                        ui.label("Цвет:");
+                        ui.color_edit_button_srgb(&mut self.settings.accent);
+                    });
+                }
+                ui.add_space(4.0);
                 ui.label(
-                    RichText::new("Блюр и стекло включаются вместе с дизайном Liquid Glass. Material 3 использует плотные поверхности.")
+                    RichText::new("Готовые темы совпадают с приложением расписания. «Свой цвет» строит палитру из одного цвета.")
                         .size(12.5)
                         .color(p.on_surface_variant),
                 );
-            }
-
-            // ---------- цвет ----------
-            group_title(ui, "Цветовая тема");
-            // Кнопка с названием темы; список раскрывается под ней и сдвигает всё, что ниже.
-            theme_menu(ui, theme, &mut self.settings);
-            if self.settings.theme == ThemePreset::Custom {
-                ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    let dark = self.settings.dark;
-                    let kind = |on: bool| if on { ButtonKind::Filled } else { ButtonKind::Tonal };
-                    if pill_button(ui, theme, "Светлая", None, kind(!dark)).clicked() {
-                        self.settings.dark = false;
-                    }
-                    if pill_button(ui, theme, "Тёмная", None, kind(dark)).clicked() {
-                        self.settings.dark = true;
-                    }
-                    ui.label("Цвет:");
-                    ui.color_edit_button_srgb(&mut self.settings.accent);
-                });
-            }
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new("Готовые темы совпадают с приложением расписания. «Свой цвет» строит палитру из одного цвета.")
-                    .size(12.5)
-                    .color(p.on_surface_variant),
-            );
-            ui.add_space(8.0 + self.bottom_inset); // подушка под плавающую панель плеера (Liquid Glass)
+                scroll_end_padding(ui, self.bottom_inset);
+            });
         });
     }
 
     /// Подэкран «Окно»: материал окна Windows 11 и диагностика графического API.
     pub fn settings_window_view(&mut self, ui: &mut Ui, theme: &Theme) {
         let p = &theme.palette;
-        if settings_header(ui, theme, "Окно") {
-            self.view = View::Settings;
-        }
-        ui.add_space(4.0);
-
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            group_title(ui, "Материал окна (Windows 11)");
-            ui.add_enabled_ui(platform::BACKDROP_SUPPORTED, |ui| {
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.settings.window_backdrop, WindowBackdrop::Off, "Выкл");
-                    ui.selectable_value(&mut self.settings.window_backdrop, WindowBackdrop::Mica, "Mica");
-                    ui.selectable_value(&mut self.settings.window_backdrop, WindowBackdrop::Acrylic, "Acrylic");
-                });
-            });
-            let note = if platform::BACKDROP_SUPPORTED {
-                "Нужна Windows 11 сборки 22621+. Материал виден там, где панели не закрашены: в Material 3 это фон под навигацией."
-            } else {
-                "Недоступно на этой ОС."
-            };
-            ui.label(RichText::new(note).size(12.5).color(p.on_surface_variant));
-            if let Some(err) = &self.backdrop_error {
-                ui.label(RichText::new(err).size(12.5).color(p.error));
+        centered_column(ui, 760.0, |ui| {
+            if settings_header(ui, theme, "Окно") {
+                self.view = View::Settings;
             }
-            // Диагностика: без DX12 (DirectComposition) окно не прозрачное, и материал не виден.
-            let (diag, ok) = if self.gpu_backend == "Dx12" {
-                ("Графический API: DX12 (прозрачность окна доступна).".to_string(), true)
-            } else {
-                (
-                    format!("Графический API: {}. Для Mica/Acrylic нужен DX12 (см. MCRATE_NO_DCOMP в CLAUDE.md).", self.gpu_backend),
-                    !platform::BACKDROP_SUPPORTED,
-                )
-            };
-            ui.label(RichText::new(diag).size(12.5).color(if ok { p.on_surface_variant } else { p.error }));
-            ui.add_space(8.0 + self.bottom_inset);
+            ui.add_space(4.0);
+
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                group_title(ui, "Материал окна (Windows 11)");
+                ui.add_enabled_ui(platform::BACKDROP_SUPPORTED, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut self.settings.window_backdrop, WindowBackdrop::Off, "Выкл");
+                        ui.selectable_value(&mut self.settings.window_backdrop, WindowBackdrop::Mica, "Mica");
+                        ui.selectable_value(&mut self.settings.window_backdrop, WindowBackdrop::Acrylic, "Acrylic");
+                    });
+                });
+                let note = if platform::BACKDROP_SUPPORTED {
+                    "Нужна Windows 11 сборки 22621+. Материал виден там, где панели не закрашены: в Material 3 это фон под навигацией."
+                } else {
+                    "Недоступно на этой ОС."
+                };
+                ui.label(RichText::new(note).size(12.5).color(p.on_surface_variant));
+                if let Some(err) = &self.backdrop_error {
+                    ui.label(RichText::new(err).size(12.5).color(p.error));
+                }
+                let (diag, ok) = if self.gpu_backend == "Dx12" {
+                    ("Графический API: DX12 (прозрачность окна доступна).".to_string(), true)
+                } else {
+                    (
+                        format!("Графический API: {}. Для Mica/Acrylic нужен DX12 (см. MCRATE_NO_DCOMP в CLAUDE.md).", self.gpu_backend),
+                        !platform::BACKDROP_SUPPORTED,
+                    )
+                };
+                ui.label(RichText::new(diag).size(12.5).color(if ok { p.on_surface_variant } else { p.error }));
+                scroll_end_padding(ui, self.bottom_inset);
+            });
         });
     }
 
     /// Подэкран «О приложении»: версия и сведения об окружении.
     pub fn settings_about_view(&mut self, ui: &mut Ui, theme: &Theme) {
         let p = &theme.palette;
-        if settings_header(ui, theme, "О приложении") {
-            self.view = View::Settings;
-        }
-        ui.add_space(4.0);
+        centered_column(ui, 760.0, |ui| {
+            if settings_header(ui, theme, "О приложении") {
+                self.view = View::Settings;
+            }
+            ui.add_space(4.0);
 
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            group_title(ui, "Mcrate");
-            ui.label(RichText::new("Музыкальный плеер на Rust и egui.").color(p.on_surface_variant));
-            ui.add_space(12.0);
-            egui::Grid::new("about_grid").num_columns(2).spacing([24.0, 8.0]).show(ui, |ui| {
-                for (key, value) in [
-                    ("Версия", env!("CARGO_PKG_VERSION").to_string()),
-                    ("Графический API", self.gpu_backend.clone()),
-                    ("Система", std::env::consts::OS.to_string()),
-                ] {
-                    ui.label(RichText::new(key).color(p.on_surface_variant));
-                    ui.label(value);
-                    ui.end_row();
-                }
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                group_title(ui, "Mcrate");
+                ui.label(RichText::new("Музыкальный плеер на Rust и egui.").color(p.on_surface_variant));
+                ui.add_space(12.0);
+                egui::Grid::new("about_grid").num_columns(2).spacing([24.0, 8.0]).show(ui, |ui| {
+                    for (key, value) in [
+                        ("Версия", env!("CARGO_PKG_VERSION").to_string()),
+                        ("Графический API", self.gpu_backend.clone()),
+                        ("Система", std::env::consts::OS.to_string()),
+                    ] {
+                        ui.label(RichText::new(key).color(p.on_surface_variant));
+                        ui.label(value);
+                        ui.end_row();
+                    }
+                });
+                scroll_end_padding(ui, self.bottom_inset);
             });
-            ui.add_space(8.0 + self.bottom_inset);
         });
     }
+
 }
 
 /// Шапка подэкрана настроек: круглая кнопка «назад» и заголовок. Возвращает `true`, если нажали «назад».

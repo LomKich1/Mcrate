@@ -44,18 +44,25 @@ impl McrateApp {
         };
 
         ui.vertical_centered(|ui| {
-            ui.add_space(12.0);
-            // bottom_inset: в Liquid Glass нижняя часть окна закрыта плавающей панелью плеера
-            let side = cover_side(ui.available_width(), ui.available_height() - self.bottom_inset);
+            let compact_height = ui.clip_rect().height() < 620.0;
+            ui.add_space(if compact_height { 4.0 } else { 12.0 });
+            // В Liquid Glass учитываем место, перекрываемое плавающим плеером.
+            let usable_height = (ui.available_height() - self.bottom_inset).max(1.0);
+            let side = cover_side(ui.available_width(), usable_height, compact_height);
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
             cover_tile(ui, theme, rect, &track.id, 36.0);
-            ui.add_space(18.0);
-            ui.label(RichText::new(&track.title).size(26.0).strong());
-            ui.label(RichText::new(artists_text(&track)).size(16.0).color(p.on_surface_variant));
-            ui.add_space(8.0);
+            ui.add_space(if compact_height { 10.0 } else { 18.0 });
+            let title_size = if compact_height { 21.0 } else { 26.0 };
+            ui.label(RichText::new(&track.title).size(title_size).strong());
+            ui.label(
+                RichText::new(artists_text(&track))
+                    .size(if compact_height { 14.0 } else { 16.0 })
+                    .color(p.on_surface_variant),
+            );
+            ui.add_space(6.0);
             ui.label(
                 RichText::new(format!("Свои файлы · в очереди: {}", self.ctl.queue.len()))
-                    .size(13.0)
+                    .size(12.0)
                     .color(p.on_surface_variant),
             );
         });

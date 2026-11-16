@@ -197,7 +197,7 @@ impl McrateApp {
 
     /// Обычная раскладка (Material 3 и Liquid Glass с выключенным блюром): панели по краям,
     /// потом центральная область. Все поверхности плотные.
-    fn panel_layout(&mut self, ui: &mut egui::Ui, theme: &Theme, full: Rect, bp: Breakpoint) {
+    fn panel_layout(&mut self, ui: &mut egui::Ui, theme: &Theme, full: Rect, rail_width: f32, compact: bool) {
         theme.paint_background(ui, full);
 
         // Порядок важен: сначала панели по краям, потом центральная область.
@@ -213,9 +213,9 @@ impl McrateApp {
             .frame(Frame::NONE.inner_margin(Margin { left: 12, right: 4, top: 12, bottom: 4 }))
             .resizable(false)
             .show_separator_line(false)
-            .exact_size(bp.rail_width())
+            .exact_size(rail_width)
             .show(ui, |ui| {
-                theme.surface(ui, Surface::Rail, |ui| self.rail_view(ui, theme, bp.is_compact()));
+                theme.surface(ui, Surface::Rail, |ui| self.rail_view(ui, theme, compact));
             });
 
         egui::CentralPanel::default()
@@ -231,14 +231,14 @@ impl McrateApp {
     /// LiveBackdrop рисует страницу (обои + контент) за кадром. Поверх неё отдельно
     /// размещаются стеклянные контролы. Между рейкой и контентом оставлен просвет,
     /// чтобы поверхности не сливались в одну большую плиту.
-    fn glass_layout(&mut self, ui: &mut egui::Ui, theme: &Theme, full: Rect, bp: Breakpoint) {
+    fn glass_layout(&mut self, ui: &mut egui::Ui, theme: &Theme, full: Rect, rail_width: f32, compact: bool) {
         // Геометрия: панель плеера внизу на всю ширину, рейка слева,
         // контентная панель справа от рейки и под панелью плеера.
         let pane = full.shrink(EDGE);
         let bar = Rect::from_min_max(pos2(pane.left(), pane.bottom() - GLASS_BAR_H), pane.max);
         let rail = Rect::from_min_max(
             pos2(pane.left(), pane.top()),
-            pos2(full.left() + bp.rail_width() - 4.0, bar.top() - 8.0),
+            pos2(full.left() + rail_width - 4.0, bar.top() - 8.0),
         );
         // Контентная панель начинается справа от стеклянной рейки. Между ними остаётся
         // небольшой просвет: поверхности не сливаются в одну большую стеклянную плиту.
@@ -268,7 +268,7 @@ impl McrateApp {
         // и прокрутке проваливаться в список, который лежит под панелью.
         ui.scope_builder(UiBuilder::new().max_rect(rail), |ui| {
             ui.interact(rail, egui::Id::unique("rail_shield"), Sense::click_and_drag());
-            theme.surface(ui, Surface::Rail, |ui| self.rail_view(ui, theme, bp.is_compact()));
+            theme.surface(ui, Surface::Rail, |ui| self.rail_view(ui, theme, compact));
         });
         ui.scope_builder(UiBuilder::new().max_rect(bar), |ui| {
             ui.interact(bar, egui::Id::unique("bar_shield"), Sense::click_and_drag());
@@ -335,14 +335,18 @@ impl eframe::App for McrateApp {
         let theme = self.theme.clone();
 
         let full = ui.max_rect();
-        // Размерный класс окна: от него зависит ширина навигации (см. ui/layout.rs).
+        // Размерный класс окна определяет целевую ширину. Сам переход между ширинами
+        // анимируется, чтобы навигация не сдвигала весь контент скачком при resize.
         let bp = Breakpoint::from_width(full.width());
+        let rail_width = ctx.animate_value_with_time(egui::Id::new("navigation_width"), bp.rail_width(), 0.18);
+        // Подписи проявляются ближе к окончанию раскрытия панели, когда для них уже есть место.
+        let compact = rail_width < 208.0;
 
         if theme.glass_active() {
-            self.glass_layout(ui, &theme, full, bp);
+            self.glass_layout(ui, &theme, full, rail_width, compact);
         } else {
             self.bottom_inset = 0.0;
-            self.panel_layout(ui, &theme, full, bp);
+            self.panel_layout(ui, &theme, full, rail_width, compact);
         }
 
         self.paint_drop_overlay(&ctx);

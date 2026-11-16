@@ -2,6 +2,8 @@
 //! Всё в «точках» egui (логических пикселях), поэтому масштаб Windows (125%, 150%) учитывается сам.
 //! Правила собраны здесь, а не размазаны по экранам: так их проще менять и проверять тестами.
 
+use egui::{Align, Layout, Rect, Ui, UiBuilder, pos2, vec2};
+
 /// Размерный класс окна (в Material 3 это называется window size class).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Breakpoint {
@@ -56,9 +58,27 @@ pub fn bar_columns(total: f32, gap: f32) -> BarColumns {
     BarColumns { side, center }
 }
 
-/// Сторона обложки на экране «Сейчас играет»: растёт вместе с окном, но в разумных пределах.
-pub fn cover_side(avail_w: f32, avail_h: f32) -> f32 {
-    (avail_h * 0.5).min(avail_w * 0.5).clamp(160.0, 440.0)
+/// Сторона обложки на экране «Сейчас играет». В компактной высоте допускаем меньшую обложку,
+/// чтобы название и метаданные оставались видны без прокрутки.
+pub fn cover_side(avail_w: f32, avail_h: f32, compact_height: bool) -> f32 {
+    let minimum = if compact_height { 112.0 } else { 160.0 };
+    let preferred = if compact_height { 0.44 } else { 0.50 };
+    (avail_h * preferred).min(avail_w * 0.5).clamp(minimum, 440.0)
+}
+
+/// Создаёт колонку с ограниченной максимальной шириной и центрирует её в доступной области.
+/// Используется для списков, настроек и текстовых страниц на широких окнах.
+pub fn centered_column<R>(ui: &mut Ui, max_width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let available = ui.available_rect_before_wrap();
+    let width = available.width().min(max_width.max(1.0));
+    let rect = Rect::from_min_size(pos2(available.center().x - width * 0.5, available.top()), vec2(width, available.height()));
+    ui.scope_builder(UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)), add).inner
+}
+
+/// Единый запас в конце прокручиваемых страниц. В Material 3 это небольшой край,
+/// в Liquid Glass к нему добавляется область, перекрываемая плавающим плеером.
+pub fn scroll_end_padding(ui: &mut Ui, bottom_inset: f32) {
+    ui.add_space(16.0 + bottom_inset.max(0.0));
 }
 
 #[cfg(test)]
@@ -89,8 +109,9 @@ mod tests {
 
     #[test]
     fn cover_scales_but_stays_in_range() {
-        assert_eq!(cover_side(300.0, 300.0), 160.0);
-        assert_eq!(cover_side(1600.0, 800.0), 400.0);
-        assert_eq!(cover_side(3000.0, 3000.0), 440.0);
+        assert_eq!(cover_side(300.0, 300.0, false), 160.0);
+        assert_eq!(cover_side(1600.0, 800.0, false), 400.0);
+        assert_eq!(cover_side(3000.0, 3000.0, false), 440.0);
+        assert_eq!(cover_side(500.0, 360.0, true), 158.4);
     }
 }

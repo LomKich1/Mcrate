@@ -19,12 +19,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use egui::{
-    Align, Color32, CornerRadius, CursorIcon, FontId, Frame, Key, Layout, Margin, Painter, Rect, Response, RichText, ScrollArea,
+    Align, Color32, CursorIcon, FontId, Key, Layout, Painter, Rect, Response, RichText, ScrollArea,
     Sense, Shape, Stroke, Ui, UiBuilder, Vec2, pos2, vec2,
 };
 use mcrate_core::Track;
 
-use super::widgets::{ButtonKind, artists_text, cover_tile, glide_begin, glide_end, icon_button, pill_button, track_row};
+use super::layout::scroll_end_padding;
+use super::widgets::{ButtonKind, artists_text, cover_tile, glide_begin, glide_end, icon_button, pill_button, search_bar, track_row};
 use crate::app::{McrateApp, View};
 use crate::icons::{self, Icon};
 use crate::theme::{Theme, with_alpha};
@@ -44,36 +45,7 @@ impl McrateApp {
     pub fn home_view(&mut self, ui: &mut Ui, theme: &Theme) {
         ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             // ---------- поиск ----------
-            // M3 Search bar: «таблетка» высотой 56, заливка surface_container_high, значок слева, без рамки.
-            let search = {
-                let p = &theme.palette;
-                Frame::new().fill(p.surface_container_high).corner_radius(CornerRadius::same(28)).inner_margin(Margin::symmetric(20, 0)).show(ui, |ui| {
-                    ui.set_min_size(vec2(ui.available_width(), 56.0));
-                    // Убираем рамку и заливку самого поля: их рисует контейнер выше.
-                    let v = ui.visuals_mut();
-                    v.extreme_bg_color = Color32::TRANSPARENT;
-                    v.selection.stroke = Stroke::NONE;
-                    for w in [&mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active, &mut v.widgets.open] {
-                        w.bg_fill = Color32::TRANSPARENT;
-                        w.weak_bg_fill = Color32::TRANSPARENT;
-                        w.bg_stroke = Stroke::NONE;
-                    }
-                    ui.horizontal(|ui| {
-                        ui.set_min_height(56.0);
-                        let (icon_rect, _) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::hover());
-                        icons::paint(ui.painter(), Icon::Search, icon_rect.center(), 24.0, p.on_surface_variant);
-                        ui.add_space(8.0);
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.search)
-                                .hint_text("Поиск по названию и исполнителю")
-                                .desired_width(f32::INFINITY)
-                                .margin(Margin::symmetric(0, 0)),
-                        )
-                    })
-                    .inner
-                })
-                .inner
-            };
+            let search = search_bar(ui, theme, &mut self.search, "Поиск по названию и исполнителю");
             // Enter в поле: результаты показывает экран «Моя музыка» (там же будут и сервисы).
             if search.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !self.search.trim().is_empty() {
                 self.view = View::Library;
@@ -93,7 +65,7 @@ impl McrateApp {
                 ui.add_space(28.0);
                 self.home_chart(ui, theme);
             }
-            ui.add_space(16.0 + self.bottom_inset); // подушка под плавающую панель плеера (Liquid Glass)
+            scroll_end_padding(ui, self.bottom_inset);
         });
     }
 
@@ -135,7 +107,8 @@ impl McrateApp {
         });
 
         // Холст волны слушает курсор (hover) и клик.
-        let (canvas, resp) = ui.allocate_exact_size(vec2(ui.available_width(), WAVE_H), Sense::click());
+        let wave_height = if ui.clip_rect().height() < 640.0 { 148.0 } else { WAVE_H };
+        let (canvas, resp) = ui.allocate_exact_size(vec2(ui.available_width(), wave_height), Sense::click());
         // Волна прокручена за экран (или скрыта): не считаем и не рисуем, и не просим перерисовку.
         if !ui.is_rect_visible(canvas) {
             return;

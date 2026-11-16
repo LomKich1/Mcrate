@@ -9,6 +9,12 @@ use crate::theme::Theme;
 
 impl McrateApp {
     pub fn rail_view(&mut self, ui: &mut Ui, theme: &Theme, compact: bool) {
+        // В низком окне прячем пока неработающие сервисы-заглушки, чтобы основные разделы
+        // и закреплённые настройки помещались без вертикального обрезания.
+        let short_height = ui.available_height() < 500.0;
+        if short_height {
+            ui.spacing_mut().item_spacing.y = 4.0;
+        }
         ui.add_space(4.0);
         if compact {
             // Узкая панель: только значок приложения по центру.
@@ -66,20 +72,25 @@ impl McrateApp {
             self.view = View::SoundCloud;
         }
         idx += 1;
-        for name in ["Yandex Music", "VK Music", "Spotify"] {
-            nav_item(ui, theme, Icon::Plus, name, false, false, Some("скоро"), compact);
+        if !short_height {
+            for name in ["Yandex Music", "VK Music", "Spotify"] {
+                nav_item(ui, theme, Icon::Plus, name, false, false, Some("скоро"), compact);
+            }
         }
 
-        // «Настройки» стоят под сервисами и подсвечены на любом из своих подэкранов.
-        ui.add_space(10.0);
-        let is_sel = self.view.is_settings();
-        let resp = nav_item(ui, theme, Icon::Settings, "Настройки", is_sel, true, None, compact);
-        if is_sel {
-            selected = Some((idx, resp.rect));
-        }
-        if resp.clicked() {
-            self.view = View::Settings; // из подэкрана вернёт на список разделов
-        }
+        // «Настройки» закреплены у нижнего края рейки и не смещаются,
+        // когда список сервисов становится длиннее.
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+            ui.add_space(8.0);
+            let is_sel = self.view.is_settings();
+            let resp = nav_item(ui, theme, Icon::Settings, "Настройки", is_sel, true, None, compact);
+            if is_sel {
+                selected = Some((idx, resp.rect));
+            }
+            if resp.clicked() {
+                self.view = View::Settings; // из подэкрана вернёт на список разделов
+            }
+        });
 
         // Физическая пружина совпадает с демо: stiffness=500, damping=34, mass=1.
         // При быстром переключении переносим скорость, поэтому индикатор продолжает

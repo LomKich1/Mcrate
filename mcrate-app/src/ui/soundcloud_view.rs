@@ -11,6 +11,7 @@
 use egui::{Color32, Frame, Margin, RichText, ScrollArea, Sense, Ui, vec2};
 use mcrate_core::Track;
 
+use super::layout::{centered_column, scroll_end_padding};
 use super::widgets::{glide_begin, glide_end, track_row};
 use crate::app::McrateApp;
 use crate::theme::Theme;
@@ -29,59 +30,57 @@ enum Ready {
 
 impl McrateApp {
     pub fn soundcloud_view(&mut self, ui: &mut Ui, theme: &Theme) {
-        let p = &theme.palette;
-        ui.heading("SoundCloud");
-        ui.add_space(4.0);
+        centered_column(ui, 900.0, |ui| {
+            let p = &theme.palette;
+            ui.heading("SoundCloud");
+            ui.add_space(4.0);
 
-        ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            // ---------- поиск (пока выключен) ----------
-            let mut query = String::new();
-            ui.add_enabled(
-                false,
-                egui::TextEdit::singleline(&mut query)
-                    .hint_text("Поиск по SoundCloud (появится после шага 5c)")
-                    .desired_width(f32::INFINITY)
-                    .margin(Margin::symmetric(16, 10)),
-            );
-            ui.add_space(12.0);
+            ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                // ---------- поиск (пока выключен) ----------
+                let mut query = String::new();
+                ui.add_enabled(
+                    false,
+                    egui::TextEdit::singleline(&mut query)
+                        .hint_text("Поиск по SoundCloud (появится после шага 5c)")
+                        .desired_width(f32::INFINITY)
+                        .margin(Margin::symmetric(16, 10)),
+                );
+                ui.add_space(12.0);
 
-            // ---------- что готово ----------
-            Frame::new()
-                .fill(p.surface_container_low)
-                .corner_radius(20)
-                .inner_margin(Margin::same(16))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.label(RichText::new("Состояние сервиса").size(16.0).strong());
-                    ui.add_space(8.0);
-                    status_row(ui, theme, Ready::CoreOnly, "Поиск треков", "Умеет ядро (SoundCloudProvider). В окне появится вместе с шагом 5c: сейчас поиск идёт только по локальным файлам.");
-                    status_row(ui, theme, Ready::CoreOnly, "Воспроизведение", "Движок качает и играет треки (aac_160k, запасной aac_96k). Окно пока играет в обход движка, поэтому онлайн-треки не запускаются.");
-                    status_row(ui, theme, Ready::CoreOnly, "30-секундные превью", "Ядро отсеивает превью (policy=SNIP), в списке будут только полные треки.");
-                    status_row(ui, theme, Ready::No, "Вход в аккаунт и лайки", "Не поддерживается: официальный API закрыт, работаем через публичный client_id.");
-                });
-            ui.add_space(16.0);
+                Frame::new()
+                    .fill(p.surface_container_low)
+                    .corner_radius(20)
+                    .inner_margin(Margin::same(16))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(RichText::new("Состояние сервиса").size(16.0).strong());
+                        ui.add_space(8.0);
+                        status_row(ui, theme, Ready::CoreOnly, "Поиск треков", "Умеет ядро (SoundCloudProvider). В окне появится вместе с шагом 5c: сейчас поиск идёт только по локальным файлам.");
+                        status_row(ui, theme, Ready::CoreOnly, "Воспроизведение", "Движок качает и играет треки (aac_160k, запасной aac_96k). Окно пока играет в обход движка, поэтому онлайн-треки не запускаются.");
+                        status_row(ui, theme, Ready::CoreOnly, "30-секундные превью", "Ядро отсеивает превью (policy=SNIP), в списке будут только полные треки.");
+                        status_row(ui, theme, Ready::No, "Вход в аккаунт и лайки", "Не поддерживается: официальный API закрыт, работаем через публичный client_id.");
+                    });
+                ui.add_space(16.0);
 
-            // ---------- результаты ----------
-            ui.label(RichText::new("Результаты поиска").size(18.0).strong());
-            ui.add_space(6.0);
-            // Сюда придут найденные треки (шаг 5c). Пока список пуст.
-            let results: &[Track] = &[];
-            if results.is_empty() {
-                ui.label(RichText::new("Здесь появятся результаты поиска по SoundCloud.").color(p.on_surface_variant));
-            } else {
-                let time = ui.input(|i| i.time);
-                let glide_slot = glide_begin(ui);
-                let mut hovered = None;
-                for (i, track) in results.iter().enumerate() {
-                    // Клик по строке пока ничего не делает (см. пункт 3 в описании модуля).
-                    let resp = track_row(ui, theme, i, track, false, false, time);
-                    if resp.hovered() {
-                        hovered = Some((egui::Id::unique(&track.id).value(), resp.rect));
+                ui.label(RichText::new("Результаты поиска").size(18.0).strong());
+                ui.add_space(6.0);
+                let results: &[Track] = &[];
+                if results.is_empty() {
+                    ui.label(RichText::new("Здесь появятся результаты поиска по SoundCloud.").color(p.on_surface_variant));
+                } else {
+                    let time = ui.input(|i| i.time);
+                    let glide_slot = glide_begin(ui);
+                    let mut hovered = None;
+                    for (i, track) in results.iter().enumerate() {
+                        let resp = track_row(ui, theme, i, track, false, false, time);
+                        if resp.hovered() {
+                            hovered = Some((egui::Id::unique(&track.id).value(), resp.rect));
+                        }
                     }
+                    glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_soundcloud"), hovered, 18.0);
                 }
-                glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_soundcloud"), hovered, 18.0);
-            }
-            ui.add_space(8.0 + self.bottom_inset); // подушка под плавающую панель плеера (Liquid Glass)
+                scroll_end_padding(ui, self.bottom_inset);
+            });
         });
     }
 }

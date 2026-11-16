@@ -1,12 +1,53 @@
 //! Общие виджеты. Рисуются вручную (painter), цвета берут из темы,
 //! поэтому выглядят правильно и в Material 3, и в Liquid Glass.
 
-use egui::{Align2, Color32, CursorIcon, FontId, Id, Pos2, Rect, Response, Sense, Shape, Ui, Vec2, pos2, vec2, layers::ShapeIdx};
+use egui::{Align2, Color32, CornerRadius, CursorIcon, FontId, Frame, Id, Margin, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, Vec2, pos2, vec2, layers::ShapeIdx};
 use mcrate_core::Track;
 
 use crate::icons::{self, Icon};
 use crate::settings::Design;
 use crate::theme::{Theme, with_alpha};
+
+
+/// Общая поисковая строка для главной и библиотеки. Геометрия одинакова,
+/// а экран может задавать собственную подсказку и обработку Enter.
+pub fn search_bar(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str) -> Response {
+    let p = &theme.palette;
+    Frame::new()
+        .fill(p.surface_container_high)
+        .corner_radius(CornerRadius::same(28))
+        .inner_margin(Margin::symmetric(20, 0))
+        .show(ui, |ui| {
+            ui.set_min_size(vec2(ui.available_width(), 56.0));
+            let visuals = ui.visuals_mut();
+            visuals.extreme_bg_color = Color32::TRANSPARENT;
+            visuals.selection.stroke = Stroke::NONE;
+            for widget in [
+                &mut visuals.widgets.inactive,
+                &mut visuals.widgets.hovered,
+                &mut visuals.widgets.active,
+                &mut visuals.widgets.open,
+            ] {
+                widget.bg_fill = Color32::TRANSPARENT;
+                widget.weak_bg_fill = Color32::TRANSPARENT;
+                widget.bg_stroke = Stroke::NONE;
+            }
+            ui.horizontal(|ui| {
+                ui.set_min_height(56.0);
+                let (icon_rect, _) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::hover());
+                icons::paint(ui.painter(), Icon::Search, icon_rect.center(), 24.0, p.on_surface_variant);
+                ui.add_space(8.0);
+                ui.add(
+                    egui::TextEdit::singleline(value)
+                        .hint_text(hint)
+                        .desired_width(f32::INFINITY)
+                        .margin(Margin::symmetric(0, 0)),
+                )
+            })
+            .inner
+        })
+        .inner
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ButtonKind {
@@ -391,6 +432,7 @@ pub fn artists_text(track: &Track) -> String {
 }
 
 /// Строка списка треков. Высота фиксированная (56), чтобы работала виртуализация списка.
+/// Индекс выводится отдельной колонкой: он нужен для порядка в библиотеке и списка «Мои треки».
 pub fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track, is_current: bool, is_playing: bool, time: f64) -> Response {
     let p = &theme.palette;
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::click());
@@ -406,7 +448,15 @@ pub fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track, is_cur
         painter.rect_filled(rect, 18.0, with_alpha(p.primary, if p.dark { 34 } else { 28 }));
     }
 
-    let cover = Rect::from_min_size(pos2(rect.left() + 10.0, rect.center().y - 20.0), Vec2::splat(40.0));
+    let number = format!("{}", index + 1);
+    painter.text(
+        pos2(rect.left() + 26.0, rect.center().y),
+        Align2::RIGHT_CENTER,
+        number,
+        FontId::proportional(12.5),
+        p.on_surface_variant,
+    );
+    let cover = Rect::from_min_size(pos2(rect.left() + 34.0, rect.center().y - 20.0), Vec2::splat(40.0));
     cover_tile(ui, theme, cover, &track.id, 12.0);
     let painter = ui.painter();
     if is_current {
@@ -423,7 +473,6 @@ pub fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track, is_cur
     clipped.text(pos2(text_left, rect.center().y + 10.0), Align2::LEFT_CENTER, artists_text(track), FontId::proportional(12.5), p.on_surface_variant);
     painter.text(pos2(dur_x, rect.center().y), Align2::RIGHT_CENTER, fmt_time(track.duration_secs as u64), FontId::proportional(13.0), p.on_surface_variant);
 
-    let _ = index;
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
 
