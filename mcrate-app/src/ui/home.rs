@@ -11,8 +11,8 @@
 //! Блоков «Для вас», «Новые релизы», «Популярные артисты» и настоящего чарта здесь нет: у ядра пока нет ни подборок,
 //! ни обложек, ни истории (см. AUDIT_UI_vs_core.md). Когда они появятся, это ещё одна полка через `shelf`.
 //! Волна (модуль `wave.rs`) живёт всегда (в паузе медленно дрейфует), реагирует на воспроизведение, смену трека,
-//! прогресс, курсор и клики. В настройках доступно уменьшение движения. К звуку волна пока не привязана: спектр должен
-//! поступать из аудиодвижка, отдельной реализации которого в текущем API ещё нет.
+//! прогресс, курсор и клики. В настройках доступно уменьшение движения. Высота, яркость и скорость лент следуют за
+//! настоящим спектром из аудиодвижка (`Controller::visualizer`, 128 полос, см. `wave.rs`); на паузе спектр игнорируется.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -26,7 +26,7 @@ use mcrate_core::Track;
 
 use super::wave::{self, COL_STEP_PX, WaveInput, WaveSim};
 use super::layout::{Bleed, bleed_clip, pane_scroll, scroll_end_padding};
-use super::widgets::{ButtonKind, artists_text, cover_tile, glide_begin, glide_end, pill_button, search_bar, squish, track_row};
+use super::widgets::{ButtonKind, artists_text, cover_tile, glide_begin, glide_end, glide_end_flat, pill_button, search_bar, squish, track_row};
 use crate::app::{McrateApp, View};
 use crate::icons::{self, Icon};
 use crate::settings::Design;
@@ -124,6 +124,8 @@ impl McrateApp {
             playing,
             track_id: self.ctl.now.as_ref().map(|t| t.id.as_str()),
             progress,
+            // Спектр из движка (слева низкие частоты, справа высокие). Пока не играет, волна его игнорирует.
+            spectrum: Some(&self.ctl.visualizer().samples[..]),
             reduce_motion,
             pointer: resp.hover_pos().map(|p| p - canvas.min),
             pressed: resp.is_pointer_button_down_on(),
@@ -241,8 +243,8 @@ impl McrateApp {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Мои треки").size(theme.text_size(TextRole::TitleLarge)).strong());
             ui.add_space(8.0);
-            let kind = if theme.glass_active() { ButtonKind::Tonal } else { ButtonKind::Text };
-            if pill_button(ui, theme, "Показать всё", None, kind).clicked() {
+            // Tonal в обеих темах: у кнопки есть собственный фон (в M3 это secondary container).
+            if pill_button(ui, theme, "Показать всё", None, ButtonKind::Tonal).clicked() {
                 self.view = View::Library;
             }
         });
@@ -348,15 +350,25 @@ fn shelf(ui: &mut Ui, theme: &Theme, bleed: Bleed, id: &str, title: &str, subtit
         bleed_clip(ui, bleed.sides());
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = SHELF_GAP;
-            // Подсветка одна на всю полку: слот резервируем ДО карточек, чтобы она лежала под ними.
-            let glide_slot = glide_begin(ui);
+            let glass = theme.glass_active();
+            // Подсветка одна на всю полку и скользит между карточками.
+            // Liquid Glass: стеклянная подложка, слот резервируем ДО карточек, чтобы она лежала под ними.
+            // Material 3: карточки залиты сплошным цветом, подложку под ними не видно, поэтому слой состояния
+            // (8% цвета контента) кладём ПОВЕРХ карточек: слот резервируем ПОСЛЕ них.
+            let under_slot = if glass { Some(glide_begin(ui)) } else { None };
             // Сбрасываем прошлый кадр записью None (remove_temp требует Default, а Rect его не имеет).
             ui.ctx().data_mut(|d| d.insert_temp(Id::new(SHELF_HOVER_KEY), None::<(u64, Rect)>));
             add_cards(ui);
             let hovered = ui.ctx().data_mut(|d| d.get_temp::<Option<(u64, Rect)>>(Id::new(SHELF_HOVER_KEY))).flatten();
-            let target = hovered.map(|(key, rect)| (key, rect.expand(SHELF_HALO)));
-            let radius = if theme.glass_active() { 22.0 } else { 24.0 };
-            glide_end(ui, theme, glide_slot, ui.scope_id().with(("glide_shelf", id)), target, radius);
+            let salt = ui.scope_id().with(("glide_shelf", id));
+            if let Some(slot) = under_slot {
+                let target = hovered.map(|(key, rect)| (key, rect.expand(SHELF_HALO)));
+                glide_end(ui, theme, slot, salt, target, 22.0);
+            } else {
+                // Радиус как у карточки (`media_card`: 16 px в M3), без ореола.
+                let over_slot = glide_begin(ui);
+                glide_end_flat(ui, theme, over_slot, salt, hovered, 16.0, (theme.palette.on_surface, 20));
+            }
         });
     });
     st.offset = out.state.clamped_offset().x;
@@ -364,28 +376,50 @@ fn shelf(ui: &mut Ui, theme: &Theme, bleed: Bleed, id: &str, title: &str, subtit
     ui.ctx().data_mut(|d| d.insert_temp(sid, st));
 }
 
+/// Насколько стрелка «вдавливается» при нажатии (доля диаметра): круг и значок сжимаются вокруг центра.
+const ARROW_PRESS: f32 = 0.16;
+
 /// Круглая кнопка-стрелка полки. Если прокручивать некуда, она бледная и не нажимается.
+/// При нажатии кнопка плавно «вдавливается»: уменьшается вокруг центра (`squish`, пружина с перелётом),
+/// в M3 к тому же появляется внутренняя тень и слой состояния 12%. Раньше `squish` считался, но радиус круга
+/// был константой 20 px и ничего не менялось: теперь все размеры берутся от сжатого прямоугольника.
 fn arrow_button(ui: &mut Ui, theme: &Theme, right: bool, enabled: bool) -> Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(40.0), if enabled { Sense::click() } else { Sense::hover() });
-    let rect = squish(ui, resp.id, &resp, rect, 0.08, 0.08);
+    let rect = squish(ui, resp.id, &resp, rect, ARROW_PRESS, ARROW_PRESS);
+    let scale = rect.width() / 40.0; // 1.0 в покое, около 0.84 при полном нажатии
+    let depth = ((1.0 - scale) / ARROW_PRESS).clamp(0.0, 1.0); // 0..1: насколько кнопка вдавлена
+    let pressed = enabled && resp.is_pointer_button_down_on();
+    let center = rect.center();
     let painter = ui.painter();
     let fade = if enabled { 255 } else { 72 };
     if theme.glass_active() {
-        // В Liquid Glass стрелки — лёгкие toolbar-контролы: без постоянной M3-заливки.
-        if resp.hovered() || resp.is_pointer_button_down_on() {
-            let alpha = if resp.is_pointer_button_down_on() { 58 } else { 38 };
-            painter.circle_filled(rect.center(), 19.0, with_alpha(theme.palette.on_surface, alpha));
-            painter.circle_stroke(rect.center(), 18.5, Stroke::new(0.8, with_alpha(theme.palette.on_surface, 66)));
+        // В Liquid Glass стрелки это лёгкие toolbar-контролы: без постоянной M3-заливки.
+        if enabled && (resp.hovered() || pressed) {
+            let alpha = if pressed { 58 } else { 38 };
+            painter.circle_filled(center, 19.0 * scale, with_alpha(theme.palette.on_surface, alpha));
+            painter.circle_stroke(center, 18.5 * scale, Stroke::new(0.8, with_alpha(theme.palette.on_surface, 66)));
         }
     } else {
-        painter.circle_filled(rect.center(), 20.0, with_alpha(theme.tonal_fill(), fade));
-        if enabled && resp.hovered() {
-            painter.circle_filled(rect.center(), 20.0, theme.row_hover_fill());
+        let radius = 20.0 * scale;
+        painter.circle_filled(center, radius, with_alpha(theme.tonal_fill(), fade));
+        if enabled {
+            // Слой состояния M3: наведение 8%, нажатие 12% цвета контента.
+            let layer = if pressed { 31 } else if resp.hovered() { 20 } else { 0 };
+            if layer > 0 {
+                painter.circle_filled(center, radius, with_alpha(theme.on_tonal(), layer));
+            }
+            // Внутренняя тень: кнопка выглядит продавленной внутрь.
+            if depth > 0.01 {
+                painter.circle_stroke(center, radius - 1.0, Stroke::new(2.0, Color32::from_black_alpha((44.0 * depth) as u8)));
+            }
         }
     }
     let dx = if right { 1.0 } else { -1.0 };
-    let c = rect.center();
-    let pts = vec![c + vec2(-3.0 * dx, -6.0), c + vec2(3.0 * dx, 0.0), c + vec2(-3.0 * dx, 6.0)];
+    let pts = vec![
+        center + vec2(-3.0 * dx, -6.0) * scale,
+        center + vec2(3.0 * dx, 0.0) * scale,
+        center + vec2(-3.0 * dx, 6.0) * scale,
+    ];
     let arrow_color = if theme.glass_active() { theme.palette.on_surface } else { theme.on_tonal() };
     painter.add(Shape::line(pts, Stroke::new(if theme.glass_active() { 1.8 } else { 2.0 }, with_alpha(arrow_color, fade))));
     if enabled { resp.on_hover_cursor(CursorIcon::PointingHand) } else { resp }
@@ -429,14 +463,6 @@ fn elided(painter: &Painter, text: &str, font: FontId, color: Color32, max_w: f3
     job.wrap.break_anywhere = true;
     job.wrap.overflow_character = Some('…');
     painter.layout_job(job)
-}
-
-/// «Слой состояния» M3: наведение 8%, нажатие 12% цвета контента поверх контейнера.
-fn state_layer(painter: &Painter, rect: Rect, radius: f32, resp: &Response, content: Color32) {
-    let a = if resp.is_pointer_button_down_on() { 31 } else if resp.hovered() { 20 } else { 0 };
-    if a > 0 {
-        painter.rect_filled(rect, radius, with_alpha(content, a));
-    }
 }
 
 /// Медиакарточка. В M3 — filled card; в Liquid Glass — обложка и подписи напрямую
@@ -520,8 +546,6 @@ fn media_card(ui: &mut Ui, theme: &Theme, card: &MediaCard, is_current: bool, is
     painter.galley(pos2(tx, ty), title.clone(), on_container);
     painter.galley(pos2(tx, ty + title.size().y + 2.0), sub, on_variant);
 
-    if !glass {
-        state_layer(painter, rect, radius, &resp, on_container);
-    }
+    // Слой состояния (наведение 8%, нажатие 12%) в M3 рисует полка: он один на весь ряд и плавно ездит между карточками.
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }

@@ -4,7 +4,7 @@ use egui::{Align, Align2, FontId, Layout, Pos2, Rect, RichText, Sense, Ui, UiBui
 use mcrate_audio::RepeatMode;
 
 use super::layout::bar_columns;
-use super::widgets::{ButtonKind, artists_text, cover_tile, fmt_time, icon_button, slider_bar};
+use super::widgets::{ButtonKind, artists_text, cover_tile, fmt_time, icon_button, loading_outline, slider_bar};
 use crate::app::McrateApp;
 use crate::icons::Icon;
 use crate::theme::Theme;
@@ -55,7 +55,13 @@ impl McrateApp {
                 let compact = width < 220.0;
                 let cover_size = if compact { 40.0 } else { 52.0 };
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(cover_size), Sense::hover());
-                cover_tile(ui, theme, rect, &t.id, if compact { 10.0 } else { 14.0 });
+                let cover_radius = if compact { 10.0 } else { 14.0 };
+                cover_tile(ui, theme, rect, &t.id, cover_radius);
+                // Пока трек грузится или докачивается, по периметру обложки бежит контур (без чисел).
+                if self.ctl.is_loading() || self.ctl.download_percent().is_some() {
+                    let time = ui.input(|i| i.time);
+                    loading_outline(ui, theme, rect, cover_radius, time);
+                }
                 ui.vertical(|ui| {
                     ui.set_max_width((width - cover_size - 14.0).max(60.0));
                     // В компактном состоянии скрываем вторичные метаданные, чтобы название

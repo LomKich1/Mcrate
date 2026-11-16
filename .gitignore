@@ -19,3 +19,11 @@ Thumbs.db
 *.token
 *.key
 config.local.*
+
+# Архивы
+/*.zip
+/*.7z
+/*.rar
+/*.tar
+/*.tar.gz
+/*.tgz

@@ -2,20 +2,23 @@
 //! ширина и угол поворота. Когда полоса повёрнута ребром к зрителю, точки сжимаются в яркую
 //! складку (как на референсе); когда лицом — растекаются полупрозрачным полотном.
 //!
-//! Что волна «слышит» (всё из UI, без обращения к звуковому движку):
+//! Что волна «слышит» (UI сам звук не трогает: спектр приходит готовым снимком из `Controller::visualizer`):
 //!   • воспроизведение: пауза = спокойный медленный дрейф и тусклые точки; игра = быстрее, выше, ярче.
 //!     Переход плавный, а нажатие ▶/⏸ пускает от центра волну-импульс;
 //!   • смена трека: импульс от левого края и плавная «перелепка» формы лент;
 //!   • позиция в треке: мягкий блик на ленте идёт слева направо вместе с прогрессом;
 //!   • курсор: точки расступаются кругом («дыра»), движение мыши подталкивает их и будоражит волну;
 //!   • клик/нажатие: от точки нажатия бежит импульс по лентам (они вздуваются) и расходится кольцо.
-//! К громкости и спектру музыки волна пока НЕ привязана: спектр должен отдавать аудиодвижок
-//! (дорожка A), а UI-задачи его не правят (см. CLAUDE.md, «Правила для дорожки B»).
+//!   • спектр (128 полос из `mcrate-audio`, пока играет музыка): лента растёт и ярчеет там, где громче соответствующая
+//!     частота. Раскладка зеркальная: басы в центре, высокие по краям (там ленты и так сужаются). Общая энергия
+//!     подгоняет скорость фазы, а бас подбрасывает возбуждение. На паузе спектр игнорируется, уровни плавно гаснут.
 
 use std::f32::consts::{PI, TAU};
 use std::sync::Arc;
 
 use egui::{Color32, Mesh, Painter, Rect, Shape, Vec2, vec2};
+
+use mcrate_audio::VISUALIZER_POINTS;
 
 use crate::theme::with_alpha;
 
@@ -28,6 +31,7 @@ const FRONT_SPEED: f32 = 520.0; // скорость фронта импульс�
 const RING_SPEED: f32 = 420.0; // скорость кольца от клика, px/с
 const IDLE_SPEED: f32 = 0.12; // скорость фазы на паузе
 const PLAY_SPEED: f32 = 0.62; // скорость фазы при воспроизведении
+const BASS_BANDS: usize = 12; // сколько нижних полос спектра считаем «басом» (45 Гц ... ~150 Гц)
 
 /// Что UI сообщает волне на этот кадр.
 pub struct WaveInput<'a> {
@@ -38,6 +42,8 @@ pub struct WaveInput<'a> {
     pub track_id: Option<&'a str>,
     /// Позиция в треке 0..1 (None, если трека нет).
     pub progress: Option<f32>,
+    /// Уровни спектра 0..1 (индекс 0 низкие частоты). None или пауза = тишина.
+    pub spectrum: Option<&'a [f32]>,
     /// «Уменьшить анимацию»: волна замирает, на курсор и клики не реагирует.
     pub reduce_motion: bool,
     /// Курсор в координатах холста (None, если он вне холста).
@@ -77,6 +83,13 @@ pub struct WaveSim {
     was_pressed: bool,
     has_progress: bool,
     progress: f32,
+    /// Сглаженные уровни спектра (быстро растут, медленно спадают).
+    bands: Vec<f32>,
+    /// Всплески: насколько быстро растёт полоса (быстро гаснет). Из них рождаются местные колыхания ленты.
+    flux: Vec<f32>,
+    /// Средний уровень всех полос и только басов, 0..1.
+    energy: f32,
+    bass: f32,
     hover: f32,
     cursor: Vec2,
     vel: Vec2,
@@ -107,7 +120,7 @@ impl WaveSim {
 
     /// Нужна ли частая перерисовка (60 к/с). В покое хватает ~30 к/с дрейфа.
     pub fn busy(&self) -> bool {
-        self.play > 0.02 || self.excite > 0.01 || self.hover > 0.002 || self.press > 0.002 || !self.pulses.is_empty()
+        self.play > 0.02 || self.energy > 0.01 || self.flux.iter().any(|f| *f > 0.01) || self.excite > 0.01 || self.hover > 0.002 || self.press > 0.002 || !self.pulses.is_empty()
     }
 
     /// Один шаг симуляции.
@@ -162,7 +175,7 @@ impl WaveSim {
         self.morph += (self.morph_target - self.morph) * smooth(dt, 1.6);
 
         // 3. Фаза: скорость растёт от паузы к игре и от возбуждения.
-        let speed = IDLE_SPEED + (PLAY_SPEED - IDLE_SPEED) * self.play + 0.9 * self.excite;
+        let speed = IDLE_SPEED + (PLAY_SPEED - IDLE_SPEED) * self.play + 0.9 * self.excite + 0.5 * self.energy;
         self.phase += (speed * dt) as f64;
 
         // 4. Прогресс (сглажен, чтобы блик не прыгал при перемотке).
@@ -170,6 +183,31 @@ impl WaveSim {
         if let Some(p) = inp.progress {
             self.progress += (p - self.progress) * smooth(dt, 10.0);
         }
+
+        // 4б. Спектр: у каждой полосы быстрая атака и медленный спад (как у линии на экране «Сейчас играет»).
+        // Не играет: цель 0, уровни плавно гаснут (в паузе движок мог оставить последний кадр).
+        let live = if inp.playing { inp.spectrum } else { None };
+        if self.bands.len() != VISUALIZER_POINTS {
+            self.bands.resize(VISUALIZER_POINTS, 0.0);
+            self.flux.resize(VISUALIZER_POINTS, 0.0);
+        }
+        let (mut sum, mut bass_sum) = (0.0_f32, 0.0_f32);
+        for (i, band) in self.bands.iter_mut().enumerate() {
+            let goal = live.and_then(|s| s.get(i)).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+            let rate = if goal > *band { 16.0 } else { 5.0 };
+            let before = *band;
+            *band += (goal - *band) * smooth(dt, rate);
+            // Всплеск: рост уровня за кадр (удар, новая нота) копится и быстро затухает.
+            self.flux[i] = (self.flux[i] * (-dt * 7.0).exp() + (*band - before).max(0.0) * 6.0).min(1.0);
+            sum += *band;
+            if i < BASS_BANDS {
+                bass_sum += *band;
+            }
+        }
+        self.energy = sum / VISUALIZER_POINTS as f32;
+        self.bass = bass_sum / BASS_BANDS as f32;
+        // Сильный бас будоражит волну (потолок 0.5: чтобы постоянная громкая музыка не держала её в «шторме»).
+        self.excite = self.excite.max((self.bass * 0.6).min(0.5));
 
         // 5. Курсор.
         match inp.pointer {
@@ -280,11 +318,37 @@ struct Col {
     cos_t: f32, // cos угла поворота: 1 = лицом, 0 = ребром (складка)
     sin_t: f32,
     env: f32, // 0..1: сужение лент к краям
+    rip: f32, // 0..1: сила местного колыхания
+    lvl: f32, // 0..1: уровень спектра в этой колонке (зеркально: басы в центре)
 }
 
 /// Приводит фазу к 0..2π (в f64: время растёт неограниченно), дальше считаем в f32.
 fn wrap(x: f64) -> f32 {
     (x % std::f64::consts::TAU) as f32
+}
+
+/// Уровень спектра для позиции `u` (0..1 слева направо). Зеркально: центр = низкие частоты, края = высокие.
+/// Между соседними полосами линейная интерполяция.
+fn band_at(bands: &[f32], u: f32) -> f32 {
+    if bands.is_empty() {
+        return 0.0;
+    }
+    let pos = (2.0 * u - 1.0).abs().clamp(0.0, 1.0) * (bands.len() - 1) as f32;
+    let i = pos.floor() as usize;
+    let j = (i + 1).min(bands.len() - 1);
+    bands[i] + (bands[j] - bands[i]) * (pos - i as f32)
+}
+
+/// Значение по списку полос для позиции `u` без зеркала: слева низкие частоты, справа высокие.
+/// Нужно для колыханий: у каждой частоты своё место на ленте (в отличие от зеркального `band_at`).
+fn band_line(bands: &[f32], u: f32) -> f32 {
+    if bands.is_empty() {
+        return 0.0;
+    }
+    let pos = u.clamp(0.0, 1.0) * (bands.len() - 1) as f32;
+    let i = pos.floor() as usize;
+    let j = (i + 1).min(bands.len() - 1);
+    bands[i] + (bands[j] - bands[i]) * (pos - i as f32)
 }
 
 /// Считает колонки одной ленты. Форма: три синусоиды для хребта, скрутка и «дыхание» ширины.
@@ -297,6 +361,7 @@ fn ribbon_columns(k: usize, cols: usize, sim: &WaveSim, w: f32, h: f32, amp: f32
     let p3 = wrap(ph * 0.4 + kf * 2.1 + m * 0.5);
     let pt = wrap(ph * 0.7 + kf * 2.4 + m * 1.1);
     let pw = wrap(ph * 0.35 + kf * 1.3 + m * 0.4);
+    let pr = wrap(ph * 2.6 + kf * 0.7); // фаза бегущей ряби
     let cy = h * 0.5;
     let parallax = 1.0 + 0.25 * (k as f32 - 1.0); // ленты реагируют на импульс чуть по-разному
     let mut out = Vec::with_capacity(cols);
@@ -307,8 +372,15 @@ fn ribbon_columns(k: usize, cols: usize, sim: &WaveSim, w: f32, h: f32, amp: f32
         let spine = (0.50 * (u * TAU * 1.1 + p1).sin() + 0.22 * (u * TAU * 2.3 + p2).sin() + 0.35 * (u * TAU * 0.55 + p3).sin()) / 1.07;
         let twist = u * TAU * 1.15 + pt + 0.9 * (u * TAU * 0.7 - p2).sin();
         let (sin_t, cos_t) = twist.sin_cos();
-        let mut hw = (0.42 + 0.26 * (u * TAU * 0.8 + pw).sin()) * env.powf(0.6) * h * 0.22 * amp;
-        let mut y = cy + spine * env * h * 0.27 * amp;
+        // Спектр поднимает хребет (до +30%) и раздувает ленту (до +50%) там, где громче эта частота.
+        let lvl = band_at(&sim.bands, u);
+        let mut hw = (0.42 + 0.26 * (u * TAU * 0.8 + pw).sin()) * env.powf(0.6) * h * 0.22 * amp * (1.0 + 0.5 * lvl);
+        let mut y = cy + spine * env * h * 0.27 * amp * (1.0 + 0.3 * lvl);
+        // Колыхания: там, где частота только что подскочила (всплеск) или держится громко, лента мягко вздымается
+        // бегущей рябью (длина волны ~1/7 ширины, фаза плывёт). Места разные, потому что полоса привязана к позиции.
+        let rip = (0.9 * band_line(&sim.flux, u) + 0.35 * band_line(&sim.bands, u)).min(1.0) * env;
+        y += rip * h * 0.10 * (u * TAU * 7.0 + pr + kf as f32 * 2.1).sin();
+        hw *= 1.0 + 0.3 * rip;
 
         for pu in &sim.pulses {
             let (d, r) = ((x - pu.x).abs(), FRONT_SPEED * pu.age);
@@ -320,7 +392,7 @@ fn ribbon_columns(k: usize, cols: usize, sim: &WaveSim, w: f32, h: f32, amp: f32
                 hw *= 1.0 + 0.5 * g * power;
             }
         }
-        out.push(Col { y, hw, cos_t, sin_t, env });
+        out.push(Col { y, hw, cos_t, sin_t, env, rip, lvl });
     }
     out
 }
@@ -341,7 +413,7 @@ pub fn paint(painter: &Painter, rect: Rect, sim: &WaveSim, table: &WaveTable, ba
     let cols = table.cols;
     // Размах: пауза спокойнее, игра и возбуждение выше. Верхняя граница держит ленты в холсте.
     let amp = ((0.78 + 0.22 * sim.play) * (1.0 + 0.25 * sim.excite)).min(1.2);
-    let bright = 0.62 + 0.38 * sim.play + 0.25 * sim.excite;
+    let bright = 0.62 + 0.38 * sim.play + 0.25 * sim.excite + 0.3 * sim.energy;
 
     let columns: Vec<Vec<Col>> = (0..RIBBONS).map(|k| ribbon_columns(k, cols, sim, w, h, amp)).collect();
 
@@ -376,6 +448,7 @@ pub fn paint(painter: &Painter, rect: Rect, sim: &WaveSim, table: &WaveTable, ba
         let shade = 0.7 + 0.3 * dot.v * c.sin_t;
         let fold = 1.0 + 0.9 * (1.0 - c.cos_t.abs()).powi(4);
         let mut alpha = (28.0 + 140.0 * dot.a) * shade * fold * c.env.sqrt() * bright;
+        alpha *= 1.0 + 0.8 * c.lvl + 0.5 * c.rip; // громче полоса и колыхание: точки ярче (свечение)
         let mut tint = 0.0_f32;
 
         if hover_on {
@@ -414,7 +487,7 @@ pub fn paint(painter: &Painter, rect: Rect, sim: &WaveSim, table: &WaveTable, ba
             continue;
         }
         let color = if tint > 0.003 { base.lerp_to_gamma(accent, tint.min(1.0)) } else { base };
-        let size = size_base + 1.5 * tint + 0.5 * dot.a;
+        let size = size_base + 1.5 * tint + 0.5 * dot.a + 0.7 * c.lvl;
         mesh.add_colored_rect(Rect::from_center_size(rect.min + vec2(x, y), vec2(size, size)), with_alpha(color, alpha));
     }
     painter.with_clip_rect(rect).add(Shape::mesh(mesh));
@@ -425,7 +498,7 @@ mod tests {
     use super::*;
 
     fn input<'a>(now: f64, playing: bool, track: Option<&'a str>) -> WaveInput<'a> {
-        WaveInput { now, playing, track_id: track, progress: None, reduce_motion: false, pointer: None, pressed: false, size: vec2(1000.0, 200.0) }
+        WaveInput { now, playing, track_id: track, progress: None, spectrum: None, reduce_motion: false, pointer: None, pressed: false, size: vec2(1000.0, 200.0) }
     }
 
     fn run(sim: &mut WaveSim, frames: usize, playing: bool) {
@@ -486,6 +559,37 @@ mod tests {
         sim.step(&inp);
         assert!(sim.pulses.is_empty());
         assert_eq!(sim.phase, 0.0);
+    }
+
+    #[test]
+    fn spectrum_drives_the_wave_only_while_playing() {
+        let loud = [0.9_f32; VISUALIZER_POINTS];
+        let mut sim = WaveSim::default();
+        sim.step(&input(1.0, true, None)); // инициализация
+        for i in 1..60 {
+            let mut inp = input(1.0 + i as f64 / 60.0, true, None);
+            inp.spectrum = Some(&loud[..]);
+            sim.step(&inp);
+        }
+        assert!(sim.energy > 0.5 && sim.bass > 0.5, "energy {} bass {}", sim.energy, sim.bass);
+        assert!(sim.excite > 0.3, "бас должен будоражить волну: {}", sim.excite);
+        // Пауза: движок мог оставить последний кадр, но волна его игнорирует и уровни гаснут.
+        for i in 60..300 {
+            let mut inp = input(1.0 + i as f64 / 60.0, false, None);
+            inp.spectrum = Some(&loud[..]);
+            sim.step(&inp);
+        }
+        assert!(sim.energy < 0.05, "уровни не погасли: {}", sim.energy);
+    }
+
+    #[test]
+    fn band_lookup_is_mirrored_and_interpolated() {
+        let mut bands = vec![0.0_f32; VISUALIZER_POINTS];
+        bands[0] = 1.0; // самая низкая частота
+        assert!((band_at(&bands, 0.5) - 1.0).abs() < 1e-6); // центр холста
+        assert!(band_at(&bands, 0.0) < 1e-6 && band_at(&bands, 1.0) < 1e-6); // края
+        assert!((band_at(&bands, 0.25) - band_at(&bands, 0.75)).abs() < 1e-6); // симметрия
+        assert_eq!(band_at(&[], 0.3), 0.0);
     }
 
     #[test]

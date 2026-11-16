@@ -2,7 +2,7 @@
 
 use egui::{Rect, Response, RichText, Sense, Shape, Ui, Vec2, pos2, vec2};
 
-use super::widgets::{cover_tile, nav_item, section_label, spring_step, squish};
+use super::widgets::{NAV_PRESS, cover_tile, nav_item, section_label, spring_step, squish};
 use crate::app::{McrateApp, View};
 use crate::icons::Icon;
 use crate::theme::Theme;
@@ -137,7 +137,7 @@ impl McrateApp {
                 // Liquid Glass: пилюля — настоящее стекло (эффекты мини-плеера, без заливки).
                 // Кладём в слот ПОД пункты, чтобы иконка и текст оставались сверху.
                 // Сжатие: при нажатии на выбранный пункт пилюля уменьшается тем же приёмом, что и кнопки.
-                let shrink = squish(ui, sel.id, &sel, target, 0.04, 0.08);
+                let shrink = squish(ui, sel.id, &sel, target, NAV_PRESS, NAV_PRESS);
                 let kx = shrink.width() / target.width();
                 let ky = shrink.height() / target.height();
                 let pressed_rect = Rect::from_center_size(rect.center(), vec2(rect.width() * kx, rect.height() * ky));

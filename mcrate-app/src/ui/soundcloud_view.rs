@@ -3,7 +3,7 @@
 //! Поиск идёт в фоне (`Controller::sc_search`), окно не замирает: пока ответа нет, показываем
 //! строку со спиннером. Играет всё через `PlaybackEngine`: клик по строке ставит в очередь все
 //! найденные треки, начиная с выбранного. Онлайн-трек сначала скачивается (первые секунды тишина,
-//! на медленном интернете дольше), а потом играет по мере докачки.
+//! на медленном интернете дольше), а потом играет по мере докачки; ход загрузки виден в мини-плеере.
 //!
 //! Вход в аккаунт (токен) появится позже; пока экран работает без него.
 
@@ -11,7 +11,7 @@ use egui::{Align, Key, Layout, RichText, ScrollArea, Sense, Spinner, Ui, Vec2};
 
 use super::home::tracks_word;
 use super::layout::{bleed_clip, centered_column, scroll_end_padding};
-use super::widgets::{error_banner, glide_begin, glide_end, search_bar, track_row};
+use super::widgets::{error_banner, glide_begin, glide_end, search_bar_full, track_row};
 use crate::app::McrateApp;
 use crate::icons::{self, Icon};
 use crate::theme::{Theme, with_alpha};
@@ -31,7 +31,7 @@ impl McrateApp {
 
                 // ---------- поиск ----------
                 // Подсказка входит в id поля (см. `search_bar`), поэтому она отличается от подсказок других экранов.
-                let search = search_bar(ui, theme, &mut self.sc_input, "Поиск по SoundCloud");
+                let search = search_bar_full(ui, theme, &mut self.sc_input, "Поиск по SoundCloud");
                 if search.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !self.sc_input.trim().is_empty() {
                     let query = self.sc_input.clone();
                     self.ctl.sc_search(&query);
@@ -51,12 +51,7 @@ impl McrateApp {
                     error_banner(ui, theme, &err);
                     ui.add_space(8.0);
                 }
-                if self.ctl.is_loading() {
-                    let title = self.ctl.now.as_ref().map(|t| t.title.clone()).unwrap_or_default();
-                    status_line(ui, theme, &format!("Загружается «{title}»"), Some("Звук начнётся, как только скачается начало трека"), true);
-                } else if let Some(percent) = self.ctl.download_percent() {
-                    status_line(ui, theme, &format!("Трек докачивается: {percent}%"), None, false);
-                }
+                // Загрузка трека показывается контуром вокруг обложки в мини-плеере (player_bar.rs), здесь текста нет.
 
                 let count = self.ctl.sc.results.len();
 

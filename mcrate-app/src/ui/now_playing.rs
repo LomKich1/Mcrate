@@ -3,9 +3,11 @@
 //! Аудиовизуализатор рисуется отдельным фоновым слоем у нижнего края — как в исходном экране,
 //! но теперь это гладкая непрерывная линия спектра (слева низкие частоты, справа высокие) из mcrate-audio.
 //! Поверх неё располагаются карточка трека и анимируемая панель текста.
+//! Между карточками стоит разделитель: его можно тянуть мышью, меняя ширину карточек друг относительно друга
+//! (двойной клик возвращает исходное соотношение). Минимумы: `LEFT_MIN` и `RIGHT_MIN`.
 
 use egui::{
-    Align, Layout, Pos2, Rect, RichText, ScrollArea, Sense, Shape, Stroke, Ui,
+    Align, CursorIcon, Layout, Pos2, Rect, RichText, ScrollArea, Sense, Shape, Stroke, Ui,
     pos2, vec2,
 };
 
@@ -19,6 +21,10 @@ use super::layout::cover_side;
 const PANEL_GAP: f32 = 16.0;
 const LEFT_MIN: f32 = 280.0;
 const RIGHT_MIN: f32 = 250.0;
+/// Доля ширины области, которую занимает карточка текста, пока пользователь не двигал разделитель.
+const DEFAULT_SPLIT: f32 = 0.55;
+/// Идентификатор разделителя в памяти egui (один на приложение).
+const SPLIT_ID: &str = "np_split_handle";
 /// Кнопка «скрыть/показать текст» стоит в правом верхнем углу области страницы: при открытом тексте
 /// это шапка карточки текста, при закрытом — угол карточки трека (место на экране одно и то же).
 const TOGGLE_SIZE: f32 = 32.0;
@@ -41,6 +47,9 @@ pub struct NpLayout {
     pub lyrics_visible: bool,
     /// Центр кнопки «скрыть/показать текст».
     pub toggle_center: Pos2,
+    /// Зазор между карточками, за который можно тянуть. Есть только в раскладке «рядом» и когда текст
+    /// открыт целиком: пока панель едет, разделителя нет.
+    pub divider: Option<Rect>,
 }
 
 /// Состояние экрана. Лежит в `McrateApp`, а не во временной памяти egui: страница в Liquid Glass
@@ -54,30 +63,42 @@ pub struct NowPlayingState {
     pub lyrics_pos: f32,
     /// Скорость пружины. При повторном нажатии не обнуляется: панель разворачивается плавно.
     pub lyrics_vel: f32,
+    /// Какую долю ширины области занимает карточка текста (двигается разделителем, живёт до закрытия приложения).
+    pub split: f32,
     /// Раскладка этого кадра. Страница пишет её, стеклянный слой читает. Перед страницей стирается.
     pub layout: Option<NpLayout>,
 }
 
 impl Default for NowPlayingState {
     fn default() -> Self {
-        Self { lyrics_open: true, lyrics_pos: SPRING_SCALE, lyrics_vel: 0.0, layout: None }
+        Self { lyrics_open: true, lyrics_pos: SPRING_SCALE, lyrics_vel: 0.0, split: DEFAULT_SPLIT, layout: None }
     }
 }
 
+/// Допустимая ширина карточки текста при ширине области `width`: не уже `RIGHT_MIN`, и карточке трека остаётся `LEFT_MIN`.
+fn right_bounds(width: f32) -> (f32, f32) {
+    (RIGHT_MIN, (width - LEFT_MIN - PANEL_GAP).max(RIGHT_MIN))
+}
+
 /// Раскладка карточек в области `body`. `shown` = 0..1 (у пружины в пути чуть выходит за границы),
-/// `window_right` = правый край окна (до него панель текста уезжает).
-fn np_layout(body: Rect, shown: f32, window_right: f32) -> NpLayout {
+/// `window_right` = правый край окна (до него панель текста уезжает), `split` = доля ширины под карточку текста.
+fn np_layout(body: Rect, shown: f32, window_right: f32, split: f32) -> NpLayout {
     let side_by_side = body.width() >= LEFT_MIN + RIGHT_MIN + PANEL_GAP;
+    let mut divider = None;
     // `final_lyrics` = где карточка текста стоит, когда открыта полностью. Размер всегда этот.
     let (left, final_lyrics) = if side_by_side {
-        let target_right = (body.width() * 0.55).clamp(RIGHT_MIN, body.width() - LEFT_MIN - PANEL_GAP);
+        let (min_right, max_right) = right_bounds(body.width());
+        let target_right = (body.width() * split).clamp(min_right, max_right);
         // Карточка трека занимает всё, что не заняла панель текста (плюс зазор между ними).
         // `.min(..)` нужен из-за перелёта пружины: при закрытии `shown` кратко уходит ниже нуля.
         let left_width = (body.width() - (target_right + PANEL_GAP) * shown).clamp(LEFT_MIN, body.width());
-        (
-            Rect::from_min_size(body.min, vec2(left_width, body.height())),
-            Rect::from_min_max(pos2(body.right() - target_right, body.top()), body.max),
-        )
+        let left = Rect::from_min_size(body.min, vec2(left_width, body.height()));
+        let final_lyrics = Rect::from_min_max(pos2(body.right() - target_right, body.top()), body.max);
+        // Разделитель занимает зазор между карточками, когда текст открыт целиком (пружина успокоилась).
+        if (shown - 1.0).abs() < 0.01 {
+            divider = Some(Rect::from_min_max(pos2(left.right(), body.top()), pos2(final_lyrics.left(), body.bottom())));
+        }
+        (left, final_lyrics)
     } else {
         // Узкое окно: карточки друг под другом.
         let target_left = body.height() * 0.54;
@@ -108,6 +129,7 @@ fn np_layout(body: Rect, shown: f32, window_right: f32) -> NpLayout {
         lyrics,
         lyrics_visible: lyrics.left() < window_right - 0.5 && lyrics.height() > 1.0,
         toggle_center,
+        divider,
     }
 }
 
@@ -146,13 +168,70 @@ impl McrateApp {
         let body = Rect::from_min_max(available.min, pos2(available.right(), content_bottom));
 
         let window_right = ui.ctx().viewport_rect().right();
-        let layout = np_layout(body, self.np.lyrics_pos / SPRING_SCALE, window_right);
+        let shown = self.np.lyrics_pos / SPRING_SCALE;
+        let mut layout = np_layout(body, shown, window_right, self.np.split);
+        if let Some(divider) = layout.divider {
+            // Разделитель двигает долю прямо в этом кадре: пересчитываем раскладку, чтобы карточки шли за курсором без отставания.
+            if self.np_divider(ui, theme, divider, body) {
+                layout = np_layout(body, shown, window_right, self.np.split);
+            }
+        }
         self.np.layout = Some(layout);
 
         // Liquid Glass: карточки нарисует стеклянный слой (он лежит над страницей и преломляет её).
         if !theme.glass_active() && self.draw_np_cards(ui, theme, layout, false) {
             self.toggle_lyrics(ui.ctx());
         }
+    }
+
+    /// Разделитель между карточками: тянем мышью, двойной клик возвращает `DEFAULT_SPLIT`.
+    /// Положение считаем по курсору (а не накоплением сдвигов), поэтому у границы минимума карточка не «уплывает»
+    /// от курсора. Смещение точки захвата относительно середины зазора запоминаем, чтобы при нажатии не было скачка.
+    /// Страница в Liquid Glass вызывается дважды за кадр, но событий мыши получает только настоящий проход,
+    /// а запись идемпотентна (присваивание, а не прибавка), так что двойной вызов безвреден.
+    /// Возвращает `true`, если доля изменилась.
+    fn np_divider(&mut self, ui: &mut Ui, theme: &Theme, divider: Rect, body: Rect) -> bool {
+        let id = egui::Id::new(SPLIT_ID);
+        let resp = ui.interact(divider, id, Sense::click_and_drag());
+        let mut changed = false;
+
+        if resp.drag_started() {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                ui.ctx().data_mut(|d| d.insert_temp(id.with("grab"), pos.x - divider.center().x));
+            }
+        }
+        if resp.dragged() {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                let grab: f32 = ui.ctx().data_mut(|d| d.get_temp(id.with("grab"))).unwrap_or(0.0);
+                // Середина зазора стоит под курсором (с поправкой на захват): справа от неё ширина карточки текста.
+                let right = body.right() - (pos.x - grab) - PANEL_GAP / 2.0;
+                let (min_right, max_right) = right_bounds(body.width());
+                let split = right.clamp(min_right, max_right) / body.width();
+                if (split - self.np.split).abs() > 1e-4 {
+                    self.np.split = split;
+                    changed = true;
+                }
+            }
+        }
+        if resp.double_clicked() && (self.np.split - DEFAULT_SPLIT).abs() > 1e-4 {
+            self.np.split = DEFAULT_SPLIT;
+            changed = true;
+        }
+
+        // Ручка: тонкая «таблетка» по центру зазора, при наведении и перетаскивании вытягивается и цветнеет.
+        let hot = resp.hovered() || resp.dragged();
+        let t = if theme.settings.reduce_motion {
+            if hot { 1.0 } else { 0.0 }
+        } else {
+            ui.ctx().animate_bool_with_time(id.with("hot"), hot, 0.12)
+        };
+        let p = &theme.palette;
+        let color = with_alpha(p.on_surface_variant.lerp_to_gamma(p.primary, t), (110.0 + 110.0 * t) as u8);
+        let grip = Rect::from_center_size(divider.center(), vec2(4.0, 36.0 + 20.0 * t));
+        ui.painter().rect_filled(grip, 2.0, color);
+
+        let _ = resp.on_hover_cursor(CursorIcon::ResizeHorizontal);
+        changed
     }
 
     /// Стеклянные карточки «Сейчас играет» (только Liquid Glass). Вызывается из `glass_layout`
@@ -259,14 +338,6 @@ impl McrateApp {
                                 .color(p.on_surface_variant),
                         );
                     });
-                    if let Some(percent) = self.ctl.download_percent() {
-                        ui.add_space(12.0);
-                        ui.label(
-                            RichText::new(format!("Загрузка трека · {percent}%"))
-                                .size(12.0)
-                                .color(p.on_surface_variant),
-                        );
-                    }
                 } else {
                     ui.vertical_centered(|ui| {
                         ui.add_space(60.0);
@@ -382,9 +453,9 @@ mod tests {
     fn lyrics_card_keeps_its_size_while_sliding() {
         // Главное требование: карточка текста не сжимается, а только едет.
         for (w, h) in [(1100.0, 600.0), (420.0, 700.0)] {
-            let open = np_layout(body(w, h), 1.0, 1300.0).lyrics;
+            let open = np_layout(body(w, h), 1.0, 1300.0, DEFAULT_SPLIT).lyrics;
             for shown in [0.0, 0.25, 0.5, 0.75] {
-                let moving = np_layout(body(w, h), shown, 1300.0).lyrics;
+                let moving = np_layout(body(w, h), shown, 1300.0, DEFAULT_SPLIT).lyrics;
                 assert!((moving.width() - open.width()).abs() < 0.01);
                 assert!((moving.height() - open.height()).abs() < 0.01);
             }
@@ -393,19 +464,48 @@ mod tests {
 
     #[test]
     fn lyrics_card_leaves_through_the_right_window_edge() {
-        let open = np_layout(body(1100.0, 600.0), 1.0, 1300.0);
+        let open = np_layout(body(1100.0, 600.0), 1.0, 1300.0, DEFAULT_SPLIT);
         assert!(open.lyrics_visible);
-        let hidden = np_layout(body(1100.0, 600.0), 0.0, 1300.0);
+        let hidden = np_layout(body(1100.0, 600.0), 0.0, 1300.0, DEFAULT_SPLIT);
         assert!(!hidden.lyrics_visible);
         assert!(hidden.lyrics.left() >= 1300.0 - 0.5);
     }
 
     #[test]
     fn track_card_takes_the_freed_space() {
-        let open = np_layout(body(1100.0, 600.0), 1.0, 1300.0);
-        let closed = np_layout(body(1100.0, 600.0), 0.0, 1300.0);
+        let open = np_layout(body(1100.0, 600.0), 1.0, 1300.0, DEFAULT_SPLIT);
+        let closed = np_layout(body(1100.0, 600.0), 0.0, 1300.0, DEFAULT_SPLIT);
         assert!(closed.left.width() > open.left.width());
         assert!((closed.left.width() - 1100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn divider_exists_only_when_side_by_side_and_fully_open() {
+        let open = np_layout(body(1100.0, 600.0), 1.0, 1300.0, DEFAULT_SPLIT);
+        let gap = open.divider.expect("при открытом тексте разделитель есть");
+        assert!((gap.left() - open.left.right()).abs() < 0.01);
+        assert!((gap.right() - open.lyrics.left()).abs() < 0.01);
+        assert!((gap.width() - PANEL_GAP).abs() < 0.01);
+        assert!(np_layout(body(1100.0, 600.0), 0.5, 1300.0, DEFAULT_SPLIT).divider.is_none()); // панель едет
+        assert!(np_layout(body(1100.0, 600.0), 0.0, 1300.0, DEFAULT_SPLIT).divider.is_none()); // текст скрыт
+        assert!(np_layout(body(420.0, 700.0), 1.0, 1300.0, DEFAULT_SPLIT).divider.is_none()); // узкое окно: карточки друг под другом
+    }
+
+    #[test]
+    fn split_changes_widths_and_respects_minimums() {
+        let narrow = np_layout(body(1100.0, 600.0), 1.0, 1300.0, 0.3);
+        let wide = np_layout(body(1100.0, 600.0), 1.0, 1300.0, 0.7);
+        assert!(wide.lyrics.width() > narrow.lyrics.width());
+        assert!(wide.left.width() < narrow.left.width());
+        // Ширины двух карточек и зазор всегда дают всю область.
+        for l in [narrow, wide] {
+            assert!((l.left.width() + PANEL_GAP + l.lyrics.width() - 1100.0).abs() < 0.01);
+        }
+        // Крайние значения упираются в минимумы.
+        let tiny = np_layout(body(1100.0, 600.0), 1.0, 1300.0, 0.0);
+        assert!((tiny.lyrics.width() - RIGHT_MIN).abs() < 0.01);
+        let huge = np_layout(body(1100.0, 600.0), 1.0, 1300.0, 1.0);
+        assert!((huge.left.width() - LEFT_MIN).abs() < 0.01);
     }
 
     #[test]
@@ -429,9 +529,9 @@ mod tests {
     #[test]
     fn overshoot_never_breaks_the_layout() {
         // Перелёт в обе стороны: карточка трека остаётся в пределах области, размер текста прежний.
-        let reference = np_layout(body(1100.0, 600.0), 1.0, 1300.0).lyrics;
+        let reference = np_layout(body(1100.0, 600.0), 1.0, 1300.0, DEFAULT_SPLIT).lyrics;
         for shown in [-0.05, 0.0, 1.0, 1.05] {
-            let l = np_layout(body(1100.0, 600.0), shown, 1300.0);
+            let l = np_layout(body(1100.0, 600.0), shown, 1300.0, DEFAULT_SPLIT);
             assert!(l.left.width() <= 1100.0 && l.left.width() >= LEFT_MIN);
             assert!((l.lyrics.width() - reference.width()).abs() < 0.01);
         }

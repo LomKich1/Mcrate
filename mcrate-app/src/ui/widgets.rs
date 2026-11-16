@@ -13,6 +13,13 @@ use crate::theme::{ShapeRole, TextRole, Theme, with_alpha};
 /// текст и лупа должны стоять на одной оси. Отступ сверху сдвигает центр строки на половину своего значения.
 const SEARCH_TEXT_SHIFT: i8 = 0;
 
+/// Material 3: на сколько px поднять поле ввода, чтобы середина строчных букв стояла на одной оси с лупой.
+/// (Шрифт сажает буквы ниже центра строки; `margin` здесь не работает: при `Frame::NONE` он игнорируется.)
+const M3_SEARCH_TEXT_LIFT: f32 = 5.0;
+
+/// Максимальная ширина поиска Material 3 на главной и в библиотеке (поле по центру колонки).
+const M3_SEARCH_MAX_WIDTH: f32 = 760.0;
+
 fn search_text_margin() -> Margin {
     Margin { left: 0, right: 0, top: SEARCH_TEXT_SHIFT * 2, bottom: 0 }
 }
@@ -20,6 +27,16 @@ fn search_text_margin() -> Margin {
 /// Общая поисковая строка для главной и библиотеки. Геометрия одинакова,
 /// а экран может задавать собственную подсказку и обработку Enter.
 pub fn search_bar(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str) -> Response {
+    search_bar_with_max_width(ui, theme, value, hint, M3_SEARCH_MAX_WIDTH)
+}
+
+/// Поиск на всю ширину колонки: левый край совпадает с заголовком экрана, правый с краем списка.
+/// В Liquid Glass поле и так занимает всю ширину, отличие только в Material 3.
+pub fn search_bar_full(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str) -> Response {
+    search_bar_with_max_width(ui, theme, value, hint, f32::INFINITY)
+}
+
+fn search_bar_with_max_width(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str, max_width: f32) -> Response {
     let p = &theme.palette;
 
     // Material 3 сохраняет собственную геометрию SearchBar. В Liquid Glass это
@@ -99,7 +116,7 @@ pub fn search_bar(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str) ->
     // Material 3 SearchBar: fixed 56 px field, a shared center axis for the
     // search icon and editor, visible focus treatment, and a clear affordance.
     let available_width = ui.available_width();
-    let width = available_width.min(760.0);
+    let width = available_width.min(max_width);
     let (layout_rect, _) = ui.allocate_exact_size(vec2(available_width, 56.0), Sense::hover());
     let rect = Rect::from_center_size(layout_rect.center(), vec2(width, 56.0));
     let radius = theme.shape_radius(ShapeRole::Full);
@@ -118,7 +135,7 @@ pub fn search_bar(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str) ->
     // Редактор центрируем по геометрии поля (без скрытого смещения). Подгонка оптической
     // оси делается одной константой SEARCH_TEXT_SHIFT для обеих тем.
     let field_rect = Rect::from_min_size(
-        pos2(field_left, rect.center().y - 18.0),
+        pos2(field_left, rect.center().y - 18.0 - M3_SEARCH_TEXT_LIFT),
         vec2((field_right - field_left).max(32.0), 36.0),
     );
     let response = ui.scope_builder(
@@ -345,6 +362,18 @@ pub fn glide_begin(ui: &Ui) -> ShapeIdx {
 /// строку пружина получает новую цель, сохраняя текущую скорость — даже при быстрых
 /// перемещениях курсора она не телепортируется и не начинает движение с нуля.
 pub fn glide_end(ui: &Ui, theme: &Theme, slot: ShapeIdx, salt: Id, target: Option<(u64, Rect)>, radius: f32) {
+    glide_end_impl(ui, theme, slot, salt, target, radius, None);
+}
+
+/// То же, что `glide_end`, но в Material 3 вместо тёмной подложки рисует плоский «слой состояния»
+/// (цвет контента с заданной непрозрачностью 0..255), как у M3-карточек. Слот надо резервировать
+/// ПОСЛЕ карточек (`glide_begin` после их добавления): слой ложится поверх них и плавно ездит между ними.
+/// В Liquid Glass параметр `flat` игнорируется (там стеклянная подсветка).
+pub fn glide_end_flat(ui: &Ui, theme: &Theme, slot: ShapeIdx, salt: Id, target: Option<(u64, Rect)>, radius: f32, flat: (Color32, u8)) {
+    glide_end_impl(ui, theme, slot, salt, target, radius, Some(flat));
+}
+
+fn glide_end_impl(ui: &Ui, theme: &Theme, slot: ShapeIdx, salt: Id, target: Option<(u64, Rect)>, radius: f32, flat: Option<(Color32, u8)>) {
     let dt = ui.input(|i| i.stable_dt).clamp(0.0, 0.064);
     let mut g: Glide = ui.ctx().data_mut(|d| d.get_temp(salt)).unwrap_or_default();
     let mut moving = false;
@@ -404,8 +433,9 @@ pub fn glide_end(ui: &Ui, theme: &Theme, slot: ShapeIdx, salt: Id, target: Optio
             style.shadow *= g.alpha;
             ui.painter().set(slot, egui_glass::glass_shape(ui, shown, &style));
         } else {
-            let alpha = (theme.hover_glide_alpha() as f32 * g.alpha).round() as u8;
-            ui.painter().set(slot, Shape::rect_filled(shown, radius, with_alpha(theme.hover_glide_color(), alpha)));
+            let (color, base_alpha) = flat.unwrap_or((theme.hover_glide_color(), theme.hover_glide_alpha()));
+            let alpha = (base_alpha as f32 * g.alpha).round() as u8;
+            ui.painter().set(slot, Shape::rect_filled(shown, radius, with_alpha(color, alpha)));
         }
     }
     if moving {
@@ -710,6 +740,9 @@ fn mix_color(from: Color32, to: Color32, t: f32) -> Color32 {
     )
 }
 
+/// Доля вдавливания пункта навигации при нажатии. Общая для пункта и пилюли выбора (rail.rs), чтобы они сжимались синхронно.
+pub(super) const NAV_PRESS: f32 = 0.06;
+
 /// Пункт навигации (ширина = вся доступная, высота 48, форма «таблетка»).
 /// `compact`: только иконка по центру (узкая панель), подпись показывается во всплывающей подсказке.
 pub fn nav_item(ui: &mut Ui, theme: &Theme, icon: Icon, label: &str, selected: bool, enabled: bool, trailing: Option<&str>, compact: bool) -> Response {
@@ -718,7 +751,8 @@ pub fn nav_item(ui: &mut Ui, theme: &Theme, icon: Icon, label: &str, selected: b
     let sense = if enabled { Sense::click() } else { Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     let id = resp.id;
-    let rect = if enabled { squish(ui, id, &resp, rect, 0.04, 0.10) } else { rect };
+    // Вдавливание строго равномерное (одинаково по ширине и высоте): разные коэффициенты давали ощущение наклона.
+    let rect = if enabled { squish(ui, id, &resp, rect, NAV_PRESS, NAV_PRESS) } else { rect };
     let painter = ui.painter();
 
     // Выбранную капсулу рисует rail.rs. Для остальных пунктов Liquid Glass добавляет
@@ -728,7 +762,8 @@ pub fn nav_item(ui: &mut Ui, theme: &Theme, icon: Icon, label: &str, selected: b
         if t > 0.01 {
             painter.rect_filled(rect.shrink(1.0), 22.0, with_alpha(p.on_surface, (t * if resp.is_pointer_button_down_on() { 32.0 } else { 20.0 }) as u8));
         }
-    } else if enabled && resp.is_pointer_button_down_on() {
+    } else if enabled && !selected && resp.is_pointer_button_down_on() {
+        // У выбранного пункта фон-подложку при нажатии не рисуем: он уже подсвечен пилюлей (rail.rs).
         painter.rect_filled(rect, 24.0, with_alpha(theme.hover_glide_color(), theme.hover_glide_alpha()));
     }
     if resp.has_focus() {
@@ -953,6 +988,75 @@ pub fn cover_tile(ui: &mut Ui, theme: &Theme, rect: Rect, seed: &str, radius: f3
     let painter = ui.painter();
     painter.rect_filled(rect, radius, bg);
     icons::paint(theme, painter, Icon::Note, rect.center(), rect.height() * 0.5, with_alpha(fg, 200));
+}
+
+/// Контур загрузки: яркий отрезок с затухающим хвостом бежит по периметру обложки, пока трек грузится.
+/// Чисел нет. Контур рисуется чуть внутри обложки (`rect`), чтобы его не обрезала область панели.
+/// При включённом «уменьшении движения» вместо бега показывается неподвижная рамка.
+pub fn loading_outline(ui: &Ui, theme: &Theme, cover: Rect, radius: f32, time: f64) {
+    const STEPS: usize = 6; // сегментов на каждый скруглённый угол
+    const TRAIL: f32 = 0.30; // длина бегущего отрезка, доля периметра
+    const LAP_SECS: f64 = 1.4; // один круг по периметру
+    const SEGMENTS: usize = 28; // на сколько кусочков режем отрезок для затухания хвоста
+
+    let p = &theme.palette;
+    let rect = cover.shrink(1.5);
+    let r = (radius - 1.5).clamp(0.0, rect.width().min(rect.height()) * 0.5);
+
+    // Замкнутая ломаная по скруглённому прямоугольнику, по часовой стрелке (ось y экрана смотрит вниз).
+    let corners = [
+        (pos2(rect.right() - r, rect.top() + r), -90.0_f32),
+        (pos2(rect.right() - r, rect.bottom() - r), 0.0),
+        (pos2(rect.left() + r, rect.bottom() - r), 90.0),
+        (pos2(rect.left() + r, rect.top() + r), 180.0),
+    ];
+    let mut pts: Vec<Pos2> = Vec::with_capacity(4 * (STEPS + 1) + 1);
+    for (center, start) in corners {
+        for i in 0..=STEPS {
+            let a = (start + 90.0 * i as f32 / STEPS as f32).to_radians();
+            pts.push(center + vec2(a.cos(), a.sin()) * r);
+        }
+    }
+    let ring = pts.clone();
+    pts.push(pts[0]); // замыкаем, чтобы последний отрезок периметра тоже считался
+
+    // Накопленная длина вдоль периметра: по ней находим точку на расстоянии `s` от старта.
+    let mut cum: Vec<f32> = Vec::with_capacity(pts.len());
+    cum.push(0.0);
+    for w in pts.windows(2) {
+        let last = *cum.last().unwrap_or(&0.0);
+        cum.push(last + (w[1] - w[0]).length());
+    }
+    let total = *cum.last().unwrap_or(&0.0);
+    if total <= f32::EPSILON {
+        return;
+    }
+    let point_at = |s: f32| -> Pos2 {
+        let s = s.rem_euclid(total); // за пределами круга заворачиваем в начало
+        let i = cum.partition_point(|&c| c <= s).saturating_sub(1).min(pts.len() - 2);
+        let seg = cum[i + 1] - cum[i];
+        if seg <= f32::EPSILON { pts[i] } else { pts[i].lerp(pts[i + 1], (s - cum[i]) / seg) }
+    };
+
+    let painter = ui.painter();
+    if theme.settings.reduce_motion {
+        let _ = painter.add(Shape::closed_line(ring, Stroke::new(2.0, with_alpha(p.primary, 170))));
+        return;
+    }
+    // Тусклая дорожка по всему периметру, чтобы было видно, где бежит отрезок.
+    let _ = painter.add(Shape::closed_line(ring, Stroke::new(1.5, with_alpha(p.primary, 60))));
+    let head = ((time / LAP_SECS).fract() as f32) * total;
+    let trail = total * TRAIL;
+    for k in 0..SEGMENTS {
+        let a = k as f32 / SEGMENTS as f32;
+        let b = (k + 1) as f32 / SEGMENTS as f32;
+        let alpha = (255.0 * b).round() as u8; // хвост тает, голова самая яркая
+        painter.line_segment(
+            [point_at(head - trail * (1.0 - a)), point_at(head - trail * (1.0 - b))],
+            Stroke::new(2.5, with_alpha(p.primary, alpha)),
+        );
+    }
+    ui.ctx().request_repaint(); // анимация идёт сама, без движения мыши
 }
 
 pub fn fmt_time(secs: u64) -> String {
