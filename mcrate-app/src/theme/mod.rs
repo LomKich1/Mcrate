@@ -36,7 +36,7 @@ impl Theme {
     pub fn new(settings: &GraphicsSettings) -> Self {
         Self {
             settings: settings.clone(),
-            palette: Palette::from_settings(settings),
+            palette: Palette::from_settings(settings, settings.design),
         }
     }
 

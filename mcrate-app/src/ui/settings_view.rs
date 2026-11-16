@@ -425,7 +425,8 @@ fn theme_menu_row(ui: &mut Ui, theme: &Theme, s: &GraphicsSettings, preset: Them
         painter.rect_filled(rect, 12.0, theme.row_hover_fill());
     }
     // Точка показывает главный цвет самой темы (а не текущей), так темы легко различать.
-    let swatch = Palette::for_preset(preset, s.accent, s.dark).primary;
+    let swatch_settings = GraphicsSettings { theme: preset, ..s.clone() };
+    let swatch = Palette::from_settings(&swatch_settings, theme.design()).primary;
     let dot = pos2(rect.left() + 20.0, rect.center().y);
     painter.circle_filled(dot, 8.0, swatch);
     painter.circle_stroke(dot, 8.0, Stroke::new(1.0, with_alpha(fg, 70)));

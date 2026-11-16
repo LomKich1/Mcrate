@@ -1,31 +1,60 @@
-//! Цветовые роли Material 3 в цветах egui.
-//! Обе темы оформления (Material 3 и Liquid Glass) берут цвета отсюда, поэтому выбранная
-//! цветовая тема работает одинаково в обоих дизайнах.
+//! Полная цветовая схема Material 3 в терминах egui.
 //!
-//! Источник цветов: проект LomKich1/sheduleappreload, файл ui/theme/AppTheme.kt.
-//! Там три готовые схемы (Тёмная, Светлая, Монохром) и восемь цветных тёмных, которые
-//! строятся из трёх опорных цветов (акцент, фон, карточки) функцией `darkSchemeFrom`.
-//! Ниже тот же алгоритм на Rust, поэтому цвета совпадают с приложением расписания.
+//! Material 3 использует семантические роли, а не произвольные пары цветов.
+//! M3 получает схемы Light/Dark из одного seed через Material Color Utilities.
+//! Liquid Glass намеренно продолжает использовать прежние значения уже существовавших
+//! ролей: его визуальные параметры не меняются этим этапом.
 
 use egui::Color32;
 use material_colors::color::Rgb;
 use material_colors::dynamic_color::{SpecVersion, Variant};
+use material_colors::scheme::Scheme;
 use material_colors::theme::ThemeBuilder;
 
-use crate::settings::{GraphicsSettings, ThemePreset};
+use crate::settings::{Design, GraphicsSettings, ThemePreset};
 
-/// Набор ролей. Названия совпадают со спецификацией M3 (primary, surface_container и т.д.).
+/// Семантические роли Material 3 (включая fixed и surface roles спецификации 2025).
 #[derive(Clone, Debug)]
 pub struct Palette {
     pub dark: bool,
+
     pub primary: Color32,
     pub on_primary: Color32,
     pub primary_container: Color32,
     pub on_primary_container: Color32,
+    pub inverse_primary: Color32,
+    pub primary_fixed: Color32,
+    pub primary_fixed_dim: Color32,
+    pub on_primary_fixed: Color32,
+    pub on_primary_fixed_variant: Color32,
+
+    pub secondary: Color32,
+    pub on_secondary: Color32,
     pub secondary_container: Color32,
     pub on_secondary_container: Color32,
+    pub secondary_fixed: Color32,
+    pub secondary_fixed_dim: Color32,
+    pub on_secondary_fixed: Color32,
+    pub on_secondary_fixed_variant: Color32,
+
+    pub tertiary: Color32,
+    pub on_tertiary: Color32,
     pub tertiary_container: Color32,
+    pub on_tertiary_container: Color32,
+    pub tertiary_fixed: Color32,
+    pub tertiary_fixed_dim: Color32,
+    pub on_tertiary_fixed: Color32,
+    pub on_tertiary_fixed_variant: Color32,
+
+    pub error: Color32,
+    pub on_error: Color32,
+    pub error_container: Color32,
+    pub on_error_container: Color32,
+
+    pub surface_dim: Color32,
     pub surface: Color32,
+    pub surface_tint: Color32,
+    pub surface_bright: Color32,
     pub surface_container_lowest: Color32,
     pub surface_container_low: Color32,
     pub surface_container: Color32,
@@ -33,13 +62,16 @@ pub struct Palette {
     pub surface_container_highest: Color32,
     pub on_surface: Color32,
     pub on_surface_variant: Color32,
+    pub outline: Color32,
     pub outline_variant: Color32,
-    pub error: Color32,
+    pub inverse_surface: Color32,
+    pub inverse_on_surface: Color32,
+    pub surface_variant: Color32,
+    pub background: Color32,
+    pub on_background: Color32,
+    pub shadow: Color32,
+    pub scrim: Color32,
 }
-
-// ---------------------------------------------------------------------------------------------
-// Вспомогательные функции цвета
-// ---------------------------------------------------------------------------------------------
 
 /// 0xRRGGBB -> Color32.
 const fn hex(rgb: u32) -> Color32 {
@@ -148,16 +180,146 @@ pub fn with_alpha_over(base: Color32, overlay: Color32, amount: f32) -> Color32 
 }
 
 // ---------------------------------------------------------------------------------------------
-// Схемы
+// Генерация и схемы
 // ---------------------------------------------------------------------------------------------
 
-/// Цветная тёмная схема из трёх опорных цветов (порт `darkSchemeFrom`).
-/// `primary` акцент, `background` фон окна, `surface` цвет карточек.
+fn from_rgb(rgb: Rgb) -> Color32 {
+    Color32::from_rgb(rgb.red, rgb.green, rgb.blue)
+}
+
+/// Преобразовать готовую динамическую схему MCU в набор ролей приложения.
+fn from_scheme(s: &Scheme, dark: bool) -> Palette {
+    Palette {
+        dark,
+        primary: from_rgb(s.primary),
+        on_primary: from_rgb(s.on_primary),
+        primary_container: from_rgb(s.primary_container),
+        on_primary_container: from_rgb(s.on_primary_container),
+        inverse_primary: from_rgb(s.inverse_primary),
+        primary_fixed: from_rgb(s.primary_fixed),
+        primary_fixed_dim: from_rgb(s.primary_fixed_dim),
+        on_primary_fixed: from_rgb(s.on_primary_fixed),
+        on_primary_fixed_variant: from_rgb(s.on_primary_fixed_variant),
+        secondary: from_rgb(s.secondary),
+        on_secondary: from_rgb(s.on_secondary),
+        secondary_container: from_rgb(s.secondary_container),
+        on_secondary_container: from_rgb(s.on_secondary_container),
+        secondary_fixed: from_rgb(s.secondary_fixed),
+        secondary_fixed_dim: from_rgb(s.secondary_fixed_dim),
+        on_secondary_fixed: from_rgb(s.on_secondary_fixed),
+        on_secondary_fixed_variant: from_rgb(s.on_secondary_fixed_variant),
+        tertiary: from_rgb(s.tertiary),
+        on_tertiary: from_rgb(s.on_tertiary),
+        tertiary_container: from_rgb(s.tertiary_container),
+        on_tertiary_container: from_rgb(s.on_tertiary_container),
+        tertiary_fixed: from_rgb(s.tertiary_fixed),
+        tertiary_fixed_dim: from_rgb(s.tertiary_fixed_dim),
+        on_tertiary_fixed: from_rgb(s.on_tertiary_fixed),
+        on_tertiary_fixed_variant: from_rgb(s.on_tertiary_fixed_variant),
+        error: from_rgb(s.error),
+        on_error: from_rgb(s.on_error),
+        error_container: from_rgb(s.error_container),
+        on_error_container: from_rgb(s.on_error_container),
+        surface_dim: from_rgb(s.surface_dim),
+        surface: from_rgb(s.surface),
+        surface_tint: from_rgb(s.surface_tint),
+        surface_bright: from_rgb(s.surface_bright),
+        surface_container_lowest: from_rgb(s.surface_container_lowest),
+        surface_container_low: from_rgb(s.surface_container_low),
+        surface_container: from_rgb(s.surface_container),
+        surface_container_high: from_rgb(s.surface_container_high),
+        surface_container_highest: from_rgb(s.surface_container_highest),
+        on_surface: from_rgb(s.on_surface),
+        on_surface_variant: from_rgb(s.on_surface_variant),
+        outline: from_rgb(s.outline),
+        outline_variant: from_rgb(s.outline_variant),
+        inverse_surface: from_rgb(s.inverse_surface),
+        inverse_on_surface: from_rgb(s.inverse_on_surface),
+        surface_variant: from_rgb(s.surface_variant),
+        background: from_rgb(s.background),
+        on_background: from_rgb(s.on_background),
+        shadow: from_rgb(s.shadow),
+        scrim: from_rgb(s.scrim),
+    }
+}
+
+/// Единый генератор обеих цветовых схем. Цветовые роли Light/Dark строятся
+/// одним алгоритмом, одной версией спецификации и одним вариантом Tonal Spot.
+fn from_seed(seed: [u8; 3], dark: bool) -> Palette {
+    let theme = ThemeBuilder::with_source(Rgb::new(seed[0], seed[1], seed[2]))
+        .spec_version(SpecVersion::Spec2025)
+        .variant(Variant::TonalSpot)
+        .build();
+    let scheme = if dark { &theme.schemes.dark } else { &theme.schemes.light };
+    from_scheme(scheme, dark)
+}
+
+/// AMOLED-режим сохраняет чёрные поверхности, используя семантическую шкалу M3
+/// для остальных ролей. Все текстовые пары на поверхностях остаются контрастными.
+fn material3_amoled() -> Palette {
+    let mut p = from_seed([0xE2, 0xE2, 0xE2], true);
+
+    p.primary = hex(0xE2E2E2);
+    p.on_primary = hex(0x1A1A1A);
+    p.primary_container = hex(0x303030);
+    p.on_primary_container = hex(0xE6E6E6);
+    p.primary_fixed = hex(0xE2E2E2);
+    p.primary_fixed_dim = hex(0xC6C6C6);
+    p.on_primary_fixed = hex(0x1A1A1A);
+    p.on_primary_fixed_variant = hex(0x303030);
+
+    p.secondary = hex(0xC6C6C6);
+    p.on_secondary = hex(0x202020);
+    p.secondary_container = hex(0x2E2E2E);
+    p.on_secondary_container = hex(0xE2E2E2);
+    p.secondary_fixed = hex(0xC6C6C6);
+    p.secondary_fixed_dim = hex(0xB0B0B0);
+    p.on_secondary_fixed = hex(0x1A1A1A);
+    p.on_secondary_fixed_variant = hex(0x303030);
+
+    p.tertiary = hex(0xD0D0D0);
+    p.on_tertiary = hex(0x1A1A1A);
+    p.tertiary_container = hex(0x3A3A3A);
+    p.on_tertiary_container = hex(0xE6E6E6);
+    p.tertiary_fixed = hex(0xD0D0D0);
+    p.tertiary_fixed_dim = hex(0xBDBDBD);
+    p.on_tertiary_fixed = hex(0x1A1A1A);
+    p.on_tertiary_fixed_variant = hex(0x303030);
+
+    p.surface_dim = hex(0x000000);
+    p.surface = hex(0x000000);
+    p.surface_tint = p.primary;
+    p.surface_bright = hex(0x262626);
+    p.surface_container_lowest = hex(0x000000);
+    p.surface_container_low = hex(0x0D0D0D);
+    p.surface_container = hex(0x141414);
+    p.surface_container_high = hex(0x1C1C1C);
+    p.surface_container_highest = hex(0x262626);
+    p.on_surface = hex(0xE6E6E6);
+    p.on_surface_variant = hex(0xB0B0B0);
+    p.outline = hex(0x8A8A8A);
+    p.outline_variant = hex(0x4A4A4A);
+    p.inverse_surface = hex(0xE6E6E6);
+    p.inverse_on_surface = hex(0x1A1A1A);
+    p.surface_variant = hex(0x2E2E2E);
+    p.background = hex(0x000000);
+    p.on_background = hex(0xE6E6E6);
+    p.shadow = Color32::BLACK;
+    p.scrim = Color32::BLACK;
+    p
+}
+
+// ---------------------------------------------------------------------------------------------
+// Совместимость с Liquid Glass
+// ---------------------------------------------------------------------------------------------
+
+/// Тёмная авторская палитра старого оформления. Для Liquid Glass сохраняем
+/// исходные значения существовавших ролей; недостающие роли заполняются MCU.
 fn dark_scheme_from(primary: Color32, background: Color32, surface: Color32) -> Palette {
     let (h, s, _) = to_hsl(primary);
     let (bh, _, _) = to_hsl(background);
-
     let on_surface = hsl(bh, 0.10, 0.90);
+
     Palette {
         dark: true,
         primary,
@@ -177,6 +339,7 @@ fn dark_scheme_from(primary: Color32, background: Color32, surface: Color32) -> 
         on_surface_variant: hsl(bh, 0.08, 0.76),
         outline_variant: mix(surface, on_surface, 0.20),
         error: hex(0xFFB4AB),
+        ..from_seed([primary.r(), primary.g(), primary.b()], true)
     }
 }
 
@@ -200,6 +363,7 @@ fn dark_baseline() -> Palette {
         on_surface_variant: hex(0xC4C6D0),
         outline_variant: hex(0x44474E),
         error: hex(0xFFB4AB),
+        ..from_seed([0xAA, 0xC7, 0xFF], true)
     }
 }
 
@@ -223,10 +387,11 @@ fn light_baseline() -> Palette {
         on_surface_variant: hex(0x44474E),
         outline_variant: hex(0xC4C6D0),
         error: hex(0xBA1A1A),
+        ..from_seed([0x41, 0x5F, 0x91], false)
     }
 }
 
-/// «Монохром» (AMOLED): чёрный фон, серые тона, ноль цвета.
+/// Прежняя монохромная палитра Liquid Glass; значения поверхностей сохранены.
 fn amoled() -> Palette {
     Palette {
         dark: true,
@@ -247,50 +412,27 @@ fn amoled() -> Palette {
         on_surface_variant: hex(0xB0B0B0),
         outline_variant: hex(0x2E2E2E),
         error: hex(0xFFB4AB),
+        ..from_seed([0xE2, 0xE2, 0xE2], true)
     }
 }
 
-/// «Свой цвет», тёмный вариант: из одного цвета делаем те же три опорных цвета,
-/// что у готовых тем (акцент светлый и яркий, фон и карточки в том же оттенке, но почти серые).
 fn custom_dark(seed: [u8; 3]) -> Palette {
     let (h, s, _) = to_hsl(Color32::from_rgb(seed[0], seed[1], seed[2]));
-    dark_scheme_from(hsl(h, s.clamp(0.35, 0.90), 0.78), hsl(h, 0.14, 0.12), hsl(h, 0.12, 0.16))
+    dark_scheme_from(
+        hsl(h, s.clamp(0.35, 0.90), 0.78),
+        hsl(h, 0.14, 0.12),
+        hsl(h, 0.12, 0.16),
+    )
 }
 
-/// «Свой цвет», светлый вариант: у готовых тем светлой цветной нет, берём схему Material 3
-/// из крейта material-colors (спецификация 2025).
+/// Совместимый светлый custom для Liquid Glass. И раньше он уже использовал MCU Spec2025.
 fn custom_light(seed: [u8; 3]) -> Palette {
-    let c = |rgb: Rgb| Color32::from_rgb(rgb.red, rgb.green, rgb.blue);
-    let theme = ThemeBuilder::with_source(Rgb::new(seed[0], seed[1], seed[2]))
-        .spec_version(SpecVersion::Spec2025)
-        .variant(Variant::TonalSpot)
-        .build();
-    let s = theme.schemes.light;
-    Palette {
-        dark: false,
-        primary: c(s.primary),
-        on_primary: c(s.on_primary),
-        primary_container: c(s.primary_container),
-        on_primary_container: c(s.on_primary_container),
-        secondary_container: c(s.secondary_container),
-        on_secondary_container: c(s.on_secondary_container),
-        tertiary_container: c(s.tertiary_container),
-        surface: c(s.surface),
-        surface_container_lowest: c(s.surface_container_lowest),
-        surface_container_low: c(s.surface_container_low),
-        surface_container: c(s.surface_container),
-        surface_container_high: c(s.surface_container_high),
-        surface_container_highest: c(s.surface_container_highest),
-        on_surface: c(s.on_surface),
-        on_surface_variant: c(s.on_surface_variant),
-        outline_variant: c(s.outline_variant),
-        error: c(s.error),
-    }
+    from_seed(seed, false)
 }
 
 impl Palette {
-    /// Палитра для выбранной темы. Для готовых тем `seed` и `custom_dark` не используются.
-    pub fn for_preset(preset: ThemePreset, seed: [u8; 3], custom_is_dark: bool) -> Self {
+    /// Палитра старого дизайна Liquid Glass. Существовавшие цвета намеренно сохранены.
+    fn for_glass_preset(preset: ThemePreset, seed: [u8; 3], custom_is_dark: bool) -> Self {
         let colored = |p: u32, bg: u32, surf: u32| dark_scheme_from(hex(p), hex(bg), hex(surf));
         match preset {
             ThemePreset::Dark => dark_baseline(),
@@ -309,14 +451,51 @@ impl Palette {
         }
     }
 
-    pub fn from_settings(s: &GraphicsSettings) -> Self {
-        Self::for_preset(s.theme, s.accent, s.dark)
+    /// Полная динамическая палитра Material 3 Spec2025 для каждой предустановленной темы.
+    fn for_material3_preset(preset: ThemePreset, seed: [u8; 3], custom_is_dark: bool) -> Self {
+        let (source, dark) = match preset {
+            ThemePreset::Dark => ([0xAA, 0xC7, 0xFF], true),
+            ThemePreset::Light => ([0x41, 0x5F, 0x91], false),
+            ThemePreset::Amoled => return material3_amoled(),
+            ThemePreset::Embermire => ([0xF5, 0xB0, 0x9C], true),
+            ThemePreset::VelvetRose => ([0xEE, 0xB0, 0xCB], true),
+            ThemePreset::MistyWave => ([0x96, 0xE5, 0xE3], true),
+            ThemePreset::Glacier => ([0x94, 0xD3, 0xEE], true),
+            ThemePreset::GreenDusk => ([0xE2, 0xE2, 0x7C], true),
+            ThemePreset::UrbanGray => ([0xC9, 0xC6, 0xC9], true),
+            ThemePreset::SilentDawn => ([0x88, 0xD8, 0x9C], true),
+            ThemePreset::Sky => ([0x58, 0xC4, 0xDC], true),
+            ThemePreset::Custom => (seed, custom_is_dark),
+        };
+        from_seed(source, dark)
+    }
+
+    /// Выбрать палитру в зависимости от дизайна. Это изолирует Material 3 от Liquid Glass:
+    /// переход на новую генерацию не меняет существующие цвета стеклянного оформления.
+    pub fn from_settings(s: &GraphicsSettings, design: Design) -> Self {
+        match design {
+            Design::Material3 => Self::for_material3_preset(s.theme, s.accent, s.dark),
+            Design::LiquidGlass => Self::for_glass_preset(s.theme, s.accent, s.dark),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn relative_luminance(c: Color32) -> f32 {
+        let channel = |v: u8| {
+            let s = v as f32 / 255.0;
+            if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+    }
+
+    fn contrast_ratio(a: Color32, b: Color32) -> f32 {
+        let (la, lb) = (relative_luminance(a), relative_luminance(b));
+        (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+    }
 
     #[test]
     fn oklab_roundtrip_is_stable() {
@@ -343,14 +522,51 @@ mod tests {
     }
 
     #[test]
-    fn every_preset_builds_and_has_readable_text() {
+    fn material3_presets_have_complete_readable_schemes() {
         for preset in ThemePreset::ALL {
-            for dark in [true, false] {
-                let p = Palette::for_preset(preset, [0x4F, 0x7C, 0xFF], dark);
-                // Текст должен заметно отличаться по яркости от фона.
-                let lum = |c: Color32| to_oklab(c)[0];
-                assert!((lum(p.on_surface) - lum(p.surface)).abs() > 0.5, "{preset:?}");
+            for custom_dark in [true, false] {
+                let p = Palette::for_material3_preset(preset, [0x4F, 0x7C, 0xFF], custom_dark);
+                for (background, foreground, role) in [
+                    (p.primary, p.on_primary, "on_primary"),
+                    (p.primary_container, p.on_primary_container, "on_primary_container"),
+                    (p.secondary, p.on_secondary, "on_secondary"),
+                    (p.secondary_container, p.on_secondary_container, "on_secondary_container"),
+                    (p.tertiary, p.on_tertiary, "on_tertiary"),
+                    (p.tertiary_container, p.on_tertiary_container, "on_tertiary_container"),
+                    (p.error, p.on_error, "on_error"),
+                    (p.error_container, p.on_error_container, "on_error_container"),
+                    (p.surface, p.on_surface, "on_surface"),
+                    (p.surface_dim, p.on_surface, "on_surface / surface_dim"),
+                    (p.surface_bright, p.on_surface, "on_surface / surface_bright"),
+                    (p.surface_container_lowest, p.on_surface, "on_surface / surface_container_lowest"),
+                    (p.surface_container_low, p.on_surface, "on_surface / surface_container_low"),
+                    (p.surface_container, p.on_surface, "on_surface / surface_container"),
+                    (p.surface_container_high, p.on_surface, "on_surface / surface_container_high"),
+                    (p.surface_container_highest, p.on_surface, "on_surface / surface_container_highest"),
+                    (p.surface_variant, p.on_surface_variant, "on_surface_variant"),
+                    (p.inverse_surface, p.inverse_on_surface, "inverse_on_surface"),
+                    (p.background, p.on_background, "on_background"),
+                    (p.primary_fixed, p.on_primary_fixed, "on_primary_fixed"),
+                    (p.primary_fixed, p.on_primary_fixed_variant, "on_primary_fixed_variant"),
+                    (p.secondary_fixed, p.on_secondary_fixed, "on_secondary_fixed"),
+                    (p.secondary_fixed, p.on_secondary_fixed_variant, "on_secondary_fixed_variant"),
+                    (p.tertiary_fixed, p.on_tertiary_fixed, "on_tertiary_fixed"),
+                    (p.tertiary_fixed, p.on_tertiary_fixed_variant, "on_tertiary_fixed_variant"),
+                ] {
+                    assert!(contrast_ratio(background, foreground) >= 4.5,
+                        "{preset:?} {role}: {}:1", contrast_ratio(background, foreground));
+                }
             }
         }
+    }
+
+    #[test]
+    fn liquid_glass_keeps_legacy_palette_values() {
+        let dark = Palette::for_glass_preset(ThemePreset::Dark, [0x4F, 0x7C, 0xFF], true);
+        assert_eq!(dark.primary, hex(0xAAC7FF));
+        assert_eq!(dark.surface, hex(0x111318));
+        let ember = Palette::for_glass_preset(ThemePreset::Embermire, [0x4F, 0x7C, 0xFF], true);
+        assert_eq!(ember.primary, hex(0xF5B09C));
+        assert_eq!(ember.surface, hex(0x231B1A));
     }
 }

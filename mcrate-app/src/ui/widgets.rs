@@ -538,7 +538,14 @@ pub fn cover_tile(ui: &mut Ui, theme: &Theme, rect: Rect, seed: &str, radius: f3
     let (mut bg, fg) = match h % 3 {
         0 => (p.primary_container, p.on_primary_container),
         1 => (p.secondary_container, p.on_secondary_container),
-        _ => (p.tertiary_container, p.on_surface),
+        _ => (
+            p.tertiary_container,
+            if theme.design() == Design::Material3 {
+                p.on_tertiary_container
+            } else {
+                p.on_surface
+            },
+        ),
     };
     // Эти цветные плитки — временная замена обложек, а не M3-контейнеры.
     // В Liquid Glass слегка приглушаем тон, чтобы заглушки не спорили с альбомным рядом.
