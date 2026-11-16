@@ -4,8 +4,9 @@ use egui::collapsing_header::CollapsingState;
 use egui::{Color32, CornerRadius, CursorIcon, FontId, Margin, Rect, RichText, Sense, Stroke, Ui, Vec2, pos2, vec2};
 
 use super::layout::{bleed_clip, centered_column, scroll_end_padding};
-use super::widgets::{ButtonKind, error_banner, pill_button};
+use super::widgets::{ButtonKind, error_banner, glass_icon_button, glide_begin, glide_end, pill_button, squish};
 use crate::app::{McrateApp, View};
+use crate::icons::{self, Icon};
 use crate::platform;
 use crate::settings::{Design, GlassQuality, GraphicsSettings, ThemePreset, WindowBackdrop};
 use crate::theme::Palette;
@@ -35,11 +36,8 @@ impl McrateApp {
                     (View::SettingsWindow, "Окно", format!("Материал окна: {backdrop}")),
                     (View::SettingsAbout, "О приложении", format!("Версия {}", env!("CARGO_PKG_VERSION"))),
                 ];
-                for (view, title, subtitle) in rows {
-                    if settings_nav_row(ui, theme, title, &subtitle).clicked() {
-                        self.view = view;
-                    }
-                    ui.add_space(8.0);
+                if let Some(view) = nav_list(ui, theme, &rows, 700.0, true) {
+                    self.view = view;
                 }
 
                 ui.add_space(12.0);
@@ -231,65 +229,94 @@ fn palette_preview(ui: &mut Ui, theme: &Theme, palette: &Palette) {
 /// Шапка подэкрана настроек: круглая кнопка «назад» и заголовок. Возвращает `true`, если нажали «назад».
 pub(super) fn settings_header(ui: &mut Ui, theme: &Theme, title: &str) -> bool {
     ui.horizontal(|ui| {
-        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::click());
-        let painter = ui.painter();
-        if theme.glass_active() {
-            if resp.hovered() {
-                painter.circle_filled(rect.center(), 19.0, with_alpha(theme.palette.on_surface, 24));
-                painter.circle_stroke(rect.center(), 19.0, Stroke::new(0.8, with_alpha(theme.palette.on_surface, 54)));
-            }
-        } else if resp.hovered() {
-            painter.circle_filled(rect.center(), 20.0, theme.row_hover_fill());
-        }
-        // Шеврон «<» рисуем линиями, отдельная иконка не нужна.
-        let c = rect.center();
-        let pts = vec![c + vec2(2.5, -6.0), c + vec2(-3.5, 0.0), c + vec2(2.5, 6.0)];
-        painter.add(egui::Shape::line(pts, Stroke::new(2.5, theme.palette.on_surface)));
+        let clicked = glass_icon_button(ui, theme, Icon::ChevronBack, 40.0, ButtonKind::Plain, false, "Назад").clicked();
         ui.heading(title);
-        resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text("Назад").clicked()
+        clicked
     })
     .inner
 }
 
-/// Строка-переход главного экрана настроек: название, подпись и шеврон «>» справа.
-/// Ширина ограничена 700 px, как и раньше.
-pub(super) fn settings_nav_row(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str) -> egui::Response {
-    let width = ui.available_width().min(700.0);
-    nav_row_impl(ui, theme, title, subtitle, width, true)
-}
-
-/// Та же строка, но без шеврона и на всю доступную ширину (экраны раздела «Библиотека»):
-/// так её края совпадают с краями строк треков под ней.
-pub(super) fn plain_nav_row(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str) -> egui::Response {
-    let width = ui.available_width();
-    nav_row_impl(ui, theme, title, subtitle, width, false)
-}
-
-fn nav_row_impl(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str, width: f32, chevron: bool) -> egui::Response {
-    let p = &theme.palette;
-    let row_height = if theme.glass_active() { 64.0 } else { theme.list_item_height(2) };
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, row_height), Sense::click());
-    let painter = ui.painter();
+/// Список строк-переходов (главный экран настроек и экран «Библиотека»). Возвращает вид, на который нажали.
+/// Material 3: все строки лежат в одном тональном блоке со скруглением MENU_CORNER, как список в меню тем
+/// (`theme_menu`): без зазоров между строками, у строки при наведении своя скруглённая подсветка, шеврона нет.
+/// Liquid Glass: отдельные строки, как раньше. `max_width` ограничивает ширину (700 в настройках).
+pub(super) fn nav_list(ui: &mut Ui, theme: &Theme, rows: &[(View, &str, String)], max_width: f32, chevron: bool) -> Option<View> {
+    let width = ui.available_width().min(max_width);
+    let mut clicked = None;
     if theme.glass_active() {
-        if resp.hovered() {
-            painter.rect_filled(rect, 14.0, with_alpha(p.on_surface, 16));
-            painter.rect_stroke(rect, 14.0, Stroke::new(0.8, with_alpha(p.on_surface, 36)), egui::StrokeKind::Inside);
+        for (view, title, subtitle) in rows {
+            if glass_nav_row(ui, theme, title, subtitle, width, chevron).clicked() {
+                clicked = Some(*view);
+            }
+            ui.add_space(8.0);
         }
-        painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(0.7, with_alpha(p.on_surface, 22)));
-    } else {
-        painter.rect_filled(rect, theme.shape_radius(ShapeRole::Large), p.surface_container_high);
-        if resp.hovered() {
-            painter.rect_filled(rect, theme.shape_radius(ShapeRole::Large), theme.row_hover_fill());
-        }
+        return clicked;
     }
-    let title_size = if theme.glass_active() { 16.0 } else { theme.text_size(TextRole::TitleMedium) };
-    let subtitle_size = if theme.glass_active() { 12.5 } else { theme.text_size(TextRole::BodySmall) };
-    painter.text(pos2(rect.left() + 18.0, rect.center().y - 10.0), egui::Align2::LEFT_CENTER, title, FontId::proportional(title_size), p.on_surface);
-    painter.text(pos2(rect.left() + 18.0, rect.center().y + 12.0), egui::Align2::LEFT_CENTER, subtitle, FontId::proportional(subtitle_size), p.on_surface_variant);
+    ui.scope(|ui| {
+        // Без вертикального зазора: строки идут встык внутри блока.
+        ui.spacing_mut().item_spacing.y = 0.0;
+        egui::Frame::new()
+            .fill(theme.tonal_fill())
+            .corner_radius(CornerRadius::same(MENU_CORNER))
+            // Без внутреннего отступа: строки и подсветка занимают блок целиком, без зазоров по краям.
+            .inner_margin(Margin::ZERO)
+            .show(ui, |ui| {
+                ui.set_width(width);
+                // Слой под подсветку резервируем до строк, чтобы текст рисовался поверх неё.
+                let glide_slot = glide_begin(ui);
+                let mut hovered = None;
+                for (i, (view, title, subtitle)) in rows.iter().enumerate() {
+                    let resp = m3_nav_row(ui, theme, title, subtitle);
+                    if resp.hovered() {
+                        hovered = Some((i as u64, resp.rect));
+                    }
+                    if resp.clicked() {
+                        clicked = Some(*view);
+                    }
+                }
+                // Та же скользящая подсветка, что в списке треков (ui/widgets.rs). Радиус равен скруглению
+                // блока: у первой и последней строки внешние углы подсветки совпадают с углами блока.
+                glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_nav_list"), hovered, MENU_CORNER as f32);
+            });
+    });
+    clicked
+}
+
+/// Строка внутри тонального блока Material 3: название и подпись. Подсветку рисует `glide_end` в `nav_list`.
+fn m3_nav_row(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), NAV_ROW_H_M3), Sense::click());
+    // Продавливание при нажатии, те же параметры, что у строки трека (`track_row`).
+    let rect = squish(ui, resp.id, &resp, rect, 0.015, 0.07);
+    let painter = ui.painter();
+    let fg = theme.on_tonal();
+    // 20 px от края, как у текста кнопки выбора темы.
+    let x = rect.left() + 20.0;
+    painter.text(pos2(x, rect.center().y - 10.0), egui::Align2::LEFT_CENTER, title, FontId::proportional(15.0), fg);
+    painter.text(
+        pos2(x, rect.center().y + 12.0),
+        egui::Align2::LEFT_CENTER,
+        subtitle,
+        FontId::proportional(theme.text_size(TextRole::BodySmall)),
+        with_alpha(fg, 190),
+    );
+    resp.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// Отдельная строка Liquid Glass (прежний вид): название, подпись, при желании шеврон «>».
+fn glass_nav_row(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str, width: f32, chevron: bool) -> egui::Response {
+    let p = &theme.palette;
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, 64.0), Sense::click());
+    let painter = ui.painter();
+    if resp.hovered() || resp.is_pointer_button_down_on() || resp.has_focus() {
+        let style = crate::theme::glass::control_style(theme, false, 14.0);
+        egui_glass::paint_glass(ui, rect, &style);
+        painter.rect_stroke(rect, 14.0, Stroke::new(0.8, with_alpha(p.on_surface, 42)), egui::StrokeKind::Inside);
+    }
+    painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(0.7, with_alpha(p.on_surface, 22)));
+    painter.text(pos2(rect.left() + 18.0, rect.center().y - 10.0), egui::Align2::LEFT_CENTER, title, FontId::proportional(16.0), p.on_surface);
+    painter.text(pos2(rect.left() + 18.0, rect.center().y + 12.0), egui::Align2::LEFT_CENTER, subtitle, FontId::proportional(12.5), p.on_surface_variant);
     if chevron {
-        let c = pos2(rect.right() - 26.0, rect.center().y);
-        let pts = vec![c + vec2(-3.0, -6.0), c + vec2(3.0, 0.0), c + vec2(-3.0, 6.0)];
-        painter.add(egui::Shape::line(pts, Stroke::new(2.0, p.on_surface_variant)));
+        icons::paint(theme, painter, Icon::ChevronForward, pos2(rect.right() - 26.0, rect.center().y), 20.0, p.on_surface_variant);
     }
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
@@ -349,9 +376,10 @@ fn expander_header(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str, open
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width().min(700.0), 60.0), Sense::click());
     let painter = ui.painter();
     if theme.glass_active() {
-        if resp.hovered() {
-            painter.rect_filled(rect, 14.0, with_alpha(p.on_surface, 16));
-            painter.rect_stroke(rect, 14.0, Stroke::new(0.8, with_alpha(p.on_surface, 36)), egui::StrokeKind::Inside);
+        if resp.hovered() || resp.is_pointer_button_down_on() || openness > 0.01 || resp.has_focus() {
+            let style = crate::theme::glass::control_style(theme, false, 14.0);
+            egui_glass::paint_glass(ui, rect, &style);
+            painter.rect_stroke(rect, 14.0, Stroke::new(0.8, with_alpha(p.on_surface, 38)), egui::StrokeKind::Inside);
         }
         painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(0.7, with_alpha(p.on_surface, 22)));
     } else {
@@ -388,6 +416,7 @@ const MENU_ROW_H: f32 = 48.0;
 const MENU_BUTTON_H: f32 = 48.0;
 const MENU_MAX_H: f32 = 288.0; // выше этого список прокручивается
 const MENU_MAX_W: f32 = 460.0;
+const NAV_ROW_H_M3: f32 = 64.0; // высота строки-перехода (Библиотека, Настройки) в Material 3
 
 /// Выбор цветовой темы: кнопка на всю ширину блока с названием текущей темы и «приклеенным»
 /// к ней списком (по образцу ThemeMenuButton из sheduleappreload/SettingsScreen.kt).
@@ -464,7 +493,7 @@ fn theme_menu_button(ui: &mut Ui, theme: &Theme, label: &str, openness: f32, wid
     }
     painter.text(pos2(rect.left() + 20.0, rect.center().y), egui::Align2::LEFT_CENTER, label, FontId::proportional(15.0), fg);
 
-    // Треугольник ▼, поворачивается на 180° по мере раскрытия.
+    // Плавный разворот оставляем геометрическим — иконка остаётся чёткой на каждом кадре.
     let (sin, cos) = (openness * std::f32::consts::PI).sin_cos();
     let rot = |v: Vec2| vec2(v.x * cos - v.y * sin, v.x * sin + v.y * cos);
     let c = pos2(rect.right() - 26.0, rect.center().y);
@@ -499,9 +528,7 @@ fn theme_menu_row(ui: &mut Ui, theme: &Theme, s: &GraphicsSettings, preset: Them
     let label_size = if theme.glass_active() { 15.0 } else { theme.text_size(TextRole::LabelLarge) };
     painter.text(pos2(rect.left() + 40.0, rect.center().y), egui::Align2::LEFT_CENTER, preset.label(), FontId::proportional(label_size), fg);
     if selected {
-        let c = pos2(rect.right() - 20.0, rect.center().y);
-        let pts = vec![c + vec2(-5.0, 0.0), c + vec2(-1.5, 4.0), c + vec2(5.0, -4.0)];
-        painter.add(egui::Shape::line(pts, Stroke::new(2.0, fg)));
+        icons::paint(theme, painter, Icon::Checkmark, pos2(rect.right() - 20.0, rect.center().y), 18.0, fg);
     }
     resp.on_hover_cursor(CursorIcon::PointingHand).clicked()
 }

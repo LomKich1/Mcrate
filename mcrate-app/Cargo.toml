@@ -14,6 +14,8 @@ eframe = { version = "0.37", default-features = false, features = ["accesskit", 
 # Liquid Glass: рефракция + блюр шейдерами wgpu (MIT). 0.2.x требует egui 0.37; есть LiveBackdrop (стекло видит живой контент). API может меняться
 egui = "0.37"
 egui_material_icons = "0.9"
+# Liquid Glass: open iOS-style outline glyphs (only Ionicons pack is embedded).
+iconflow = { version = "2.1", default-features = false, features = ["pack-ionicons"] }
 egui_glass = "0.2.0"
 # Material 3: генерация цветовых схем из одного "seed"-цвета (порт material-color-utilities)
 material-colors = "0.5"

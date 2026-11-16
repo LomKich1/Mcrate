@@ -1,13 +1,19 @@
-//! Иконки: готовый набор Google Material Symbols (Rounded, Filled) через крейт `egui_material_icons`.
-//! Шрифт иконок вшит в exe, а каждая иконка это один символ шрифта: она чёткая на любом
-//! размере и красится любым цветом, как обычный текст.
+//! Иконки приложения.
 //!
-//! Лицензии: крейт под MIT, сам шрифт Material Symbols под Apache 2.0 (см. THIRD_PARTY_NOTICES.md).
+//! Material 3 использует Material Symbols Rounded (Google, Apache-2.0), а Liquid Glass —
+//! Ionicons Outline: узнаваемую тонкую iOS-ориентированную графику из открытого набора
+//! ionic-team/ionicons (MIT). Шрифты встраиваются в бинарник и работают на всех платформах.
 
-use egui::{Align2, Color32, FontId, Painter, Pos2, Rect, pos2, vec2};
+use std::sync::OnceLock;
+
+use egui::{Align2, Color32, FontFamily, FontId, Painter, Pos2, Rect, pos2, vec2};
 use egui_material_icons::MaterialIcon;
 use egui_material_icons::icons as mi;
+use iconflow::{IconRef, Pack, Size, Style, try_icon};
 
+use crate::theme::Theme;
+
+#[repr(usize)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Icon {
     Play,
@@ -28,71 +34,169 @@ pub enum Icon {
     Cloud,
     Search,
     Library,
+    ChevronBack,
+    ChevronForward,
+    ChevronDown,
+    ChevronUp,
+    Checkmark,
+    Close,
 }
 
 impl Icon {
-    fn glyph(self) -> MaterialIcon {
+    const COUNT: usize = 24;
+
+    const ALL: [Self; Self::COUNT] = [
+        Self::Play, Self::Pause, Self::Next, Self::Prev, Self::Shuffle, Self::Repeat,
+        Self::RepeatOne, Self::Volume, Self::VolumeMute, Self::Note, Self::Queue,
+        Self::Settings, Self::Plus, Self::Folder, Self::Home, Self::Cloud, Self::Search,
+        Self::Library, Self::ChevronBack, Self::ChevronForward, Self::ChevronDown,
+        Self::ChevronUp, Self::Checkmark, Self::Close,
+    ];
+
+    fn material_glyph(self) -> MaterialIcon {
         match self {
-            Icon::Play => mi::ICON_PLAY_ARROW,
-            Icon::Pause => mi::ICON_PAUSE,
-            Icon::Next => mi::ICON_SKIP_NEXT,
-            Icon::Prev => mi::ICON_SKIP_PREVIOUS,
-            Icon::Shuffle => mi::ICON_SHUFFLE,
-            Icon::Repeat => mi::ICON_REPEAT,
-            Icon::RepeatOne => mi::ICON_REPEAT_ONE,
-            Icon::Volume => mi::ICON_VOLUME_UP,
-            Icon::VolumeMute => mi::ICON_VOLUME_OFF,
-            Icon::Note => mi::ICON_MUSIC_NOTE,
-            Icon::Queue => mi::ICON_QUEUE_MUSIC,
-            Icon::Settings => mi::ICON_TUNE,
-            Icon::Plus => mi::ICON_ADD,
-            Icon::Folder => mi::ICON_FOLDER,
-            Icon::Home => mi::ICON_HOME,
-            Icon::Cloud => mi::ICON_CLOUD,
-            Icon::Search => mi::ICON_SEARCH,
-            Icon::Library => mi::ICON_LIBRARY_MUSIC,
+            Self::Play => mi::ICON_PLAY_ARROW,
+            Self::Pause => mi::ICON_PAUSE,
+            Self::Next => mi::ICON_SKIP_NEXT,
+            Self::Prev => mi::ICON_SKIP_PREVIOUS,
+            Self::Shuffle => mi::ICON_SHUFFLE,
+            Self::Repeat => mi::ICON_REPEAT,
+            Self::RepeatOne => mi::ICON_REPEAT_ONE,
+            Self::Volume => mi::ICON_VOLUME_UP,
+            Self::VolumeMute => mi::ICON_VOLUME_OFF,
+            Self::Note => mi::ICON_MUSIC_NOTE,
+            Self::Queue => mi::ICON_QUEUE_MUSIC,
+            Self::Settings => mi::ICON_TUNE,
+            Self::Plus => mi::ICON_ADD,
+            Self::Folder => mi::ICON_FOLDER,
+            Self::Home => mi::ICON_HOME,
+            Self::Cloud => mi::ICON_CLOUD,
+            Self::Search => mi::ICON_SEARCH,
+            Self::Library => mi::ICON_LIBRARY_MUSIC,
+            Self::ChevronBack => mi::ICON_ARROW_BACK,
+            Self::ChevronForward => mi::ICON_CHEVRON_RIGHT,
+            Self::ChevronDown => mi::ICON_EXPAND_MORE,
+            Self::ChevronUp => mi::ICON_EXPAND_LESS,
+            Self::Checkmark => mi::ICON_CHECK,
+            Self::Close => mi::ICON_CLOSE,
         }
     }
 
-    /// Поправка по вертикали (доля размера, плюс = вверх) для иконок, которые в самом шрифте
-    /// нарисованы ниже центра квадрата. Значения вычислены по контурам глифов шрифта.
-    fn nudge_up(self) -> f32 {
+    /// Отдельные outline-глифы Ionicons. Для RepeatOne цифра «1» дорисовывается поверх repeat.
+    fn ion_name(self) -> &'static str {
         match self {
-            Icon::Queue => 0.042,
-            Icon::VolumeMute => 0.029,
-            Icon::Home => 0.010,
+            Self::Play => "play-outline",
+            Self::Pause => "pause-outline",
+            Self::Next => "play-skip-forward-outline",
+            Self::Prev => "play-skip-back-outline",
+            Self::Shuffle => "shuffle-outline",
+            Self::Repeat | Self::RepeatOne => "repeat-outline",
+            Self::Volume => "volume-high-outline",
+            Self::VolumeMute => "volume-mute-outline",
+            Self::Note => "musical-note-outline",
+            Self::Queue => "list-outline",
+            Self::Settings => "settings-outline",
+            Self::Plus => "add-outline",
+            Self::Folder => "folder-outline",
+            Self::Home => "home-outline",
+            Self::Cloud => "cloud-outline",
+            Self::Search => "search-outline",
+            Self::Library => "library-outline",
+            Self::ChevronBack => "chevron-back-outline",
+            Self::ChevronForward => "chevron-forward-outline",
+            Self::ChevronDown => "chevron-down-outline",
+            Self::ChevronUp => "chevron-up-outline",
+            Self::Checkmark => "checkmark-outline",
+            Self::Close => "close-outline",
+        }
+    }
+
+    /// Небольшая поправка оптического центра Material Symbols, измеренная по метрикам шрифта.
+    fn material_nudge_up(self) -> f32 {
+        match self {
+            Self::Queue => 0.042,
+            Self::VolumeMute => 0.029,
+            Self::Home => 0.010,
             _ => 0.0,
         }
     }
+
+    fn ion_glyph(self) -> IconRef {
+        static GLYPHS: OnceLock<[IconRef; Icon::COUNT]> = OnceLock::new();
+        GLYPHS.get_or_init(|| {
+            Icon::ALL.map(|icon| {
+                try_icon(Pack::Ionicons, icon.ion_name(), Style::Outline, Size::Regular)
+                    .unwrap_or_else(|error| panic!("Ionicons glyph '{}' is missing: {error}", icon.ion_name()))
+            })
+        })[self as usize]
+    }
 }
 
-/// Крейт иконок сдвигает все глифы на 5% вниз (подгонка под текст кнопок). Для точной
-/// центровки в круглых кнопках этот сдвиг компенсируем. Тест `glyph_offset_matches_constant`
-/// следит, что после обновления крейта число не изменилось.
-const CRATE_Y_OFFSET: f32 = 0.05;
-
-/// Добавить шрифт иконок в набор шрифтов (после `fonts::definitions`). Делает то же, что
-/// `egui_material_icons::initialize` (`Context::add_font`), но на уровне `FontDefinitions`:
-/// так один и тот же набор можно отдать и основному, и закадровому контексту стекла.
+/// Зарегистрировать Material Symbols и Ionicons в одном наборе шрифтов.
+/// Оба набора загружаются при старте, чтобы переключение темы не требовало перезагрузки окна.
 pub fn add_to_definitions(fonts: &mut egui::FontDefinitions) {
     use egui::epaint::text::FontPriority;
-    let insert = egui_material_icons::font_insert();
-    for fam in &insert.families {
-        let list = fonts.families.entry(fam.family.clone()).or_default();
-        match fam.priority {
-            FontPriority::Highest => list.insert(0, insert.name.clone()), // перед всеми остальными
-            FontPriority::Lowest => list.push(insert.name.clone()),       // запасной, в самый конец
+
+    let material = egui_material_icons::font_insert();
+    for family in &material.families {
+        let list = fonts.families.entry(family.family.clone()).or_default();
+        match family.priority {
+            FontPriority::Highest => list.insert(0, material.name.clone()),
+            FontPriority::Lowest => list.push(material.name.clone()),
         }
     }
-    fonts.font_data.insert(insert.name.clone(), std::sync::Arc::new(insert.data));
+    fonts.font_data.insert(material.name.clone(), std::sync::Arc::new(material.data));
+
+    // Ionicons embedded TTF: ~0.28 MiB для всего набора, выбирается только Outline.
+    let fallback_fonts: Vec<String> = fonts.font_data.keys().cloned().collect();
+    for asset in iconflow::fonts() {
+        let name = asset.family.to_owned();
+        fonts.font_data.insert(
+            name.clone(),
+            std::sync::Arc::new(egui::FontData::from_static(asset.bytes)),
+        );
+        let family = FontFamily::Name(asset.family.into());
+        let family_fonts = fonts.families.entry(family).or_default();
+        if !family_fonts.contains(&name) {
+            family_fonts.insert(0, name);
+        }
+        for fallback in &fallback_fonts {
+            if !family_fonts.contains(fallback) {
+                family_fonts.push(fallback.clone());
+            }
+        }
+    }
 }
 
-/// Нарисовать иконку с центром в `center`. `size` = размер шрифта (как «24dp» в Material:
-/// иконка занимает квадрат size x size, сама картинка чуть меньше с полями внутри).
-pub fn paint(painter: &Painter, icon: Icon, center: Pos2, size: f32, color: Color32) {
-    let g = icon.glyph();
-    let shift_up = (CRATE_Y_OFFSET + icon.nudge_up()) * size;
-    painter.text(center - vec2(0.0, shift_up), Align2::CENTER_CENTER, g.codepoint, FontId::new(size, g.font_family()), color);
+/// Нарисовать символ из набора, соответствующего активной теме.
+/// Ionicons используется только в Liquid Glass; Material 3 остаётся визуально неизменным.
+pub fn paint(theme: &Theme, painter: &Painter, icon: Icon, center: Pos2, size: f32, color: Color32) {
+    if theme.glass_active() {
+        let glyph = icon.ion_glyph();
+        let character = char::from_u32(glyph.codepoint).unwrap_or('?').to_string();
+        let font = FontId::new(size, FontFamily::Name(glyph.family.into()));
+        painter.text(center, Align2::CENTER_CENTER, character, font, color);
+
+        if icon == Icon::RepeatOne {
+            painter.text(
+                center + vec2(size * 0.22, -size * 0.22),
+                Align2::CENTER_CENTER,
+                "1",
+                FontId::proportional(size * 0.34),
+                color,
+            );
+        }
+    } else {
+        let glyph = icon.material_glyph();
+        let shift_up = (0.05 + icon.material_nudge_up()) * size;
+        painter.text(
+            center - vec2(0.0, shift_up),
+            Align2::CENTER_CENTER,
+            glyph.codepoint,
+            FontId::new(size, glyph.font_family()),
+            color,
+        );
+    }
 }
 
 /// Анимированный «эквалайзер» для играющего трека. `t` = время в секундах.
@@ -104,50 +208,46 @@ pub fn paint_equalizer(painter: &Painter, center: Pos2, size: f32, color: Color3
         let phase = if animate { ((t * 5.0 + i as f64 * 1.7).sin() * 0.5 + 0.5) as f32 } else { 0.5 };
         let h = size * (0.3 + 0.7 * phase);
         let x = center.x + (i as f32 - 1.0) * (w + gap);
-        let r = Rect::from_min_max(pos2(x - w / 2.0, center.y + size / 2.0 - h), pos2(x + w / 2.0, center.y + size / 2.0));
-        painter.rect_filled(r, w / 2.0, color);
+        let rect = Rect::from_min_max(
+            pos2(x - w / 2.0, center.y + size / 2.0 - h),
+            pos2(x + w / 2.0, center.y + size / 2.0),
+        );
+        painter.rect_filled(rect, w / 2.0, color);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::{Design, GraphicsSettings};
 
-    /// Все глифы должны существовать в шрифте (иначе вместо иконки будет «квадратик»),
-    /// а смещение глифа относительно центра строки должно остаться ~5% размера.
     #[test]
-    fn glyph_offset_matches_constant() {
+    fn both_icon_packs_render_every_shared_icon() {
         let ctx = egui::Context::default();
-        // Тот же порядок, что в приложении: сначала свой набор шрифтов, потом иконки.
         let mut defs = egui::FontDefinitions::default();
         add_to_definitions(&mut defs);
         ctx.set_fonts(defs);
 
-        let all = [
-            Icon::Play, Icon::Pause, Icon::Next, Icon::Prev, Icon::Shuffle, Icon::Repeat, Icon::RepeatOne,
-            Icon::Volume, Icon::VolumeMute, Icon::Note, Icon::Queue, Icon::Settings, Icon::Plus, Icon::Folder,
-            Icon::Home, Icon::Cloud,
-        ];
-        let mut failures: Vec<String> = Vec::new();
-        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-            for icon in all {
-                for size in [20.0_f32, 24.0, 40.0] {
-                    let g = icon.glyph();
-                    let galley = ui.painter().layout_no_wrap(g.codepoint.to_string(), FontId::new(size, g.font_family()), Color32::WHITE);
-                    let ink = galley.rows[0].visuals.mesh_bounds;
-                    if ink.width() < 1.0 || ink.height() < 1.0 {
-                        failures.push(format!("{icon:?}: глиф не нарисовался"));
-                        continue;
-                    }
-                    // Положение иконки после нашей компенсации: ink_center - сдвиг вверх.
-                    let after = (ink.center().y - galley.rect.center().y) - (CRATE_Y_OFFSET + icon.nudge_up()) * size;
-                    if after.abs() > 0.2 * size * 0.1 + 0.75 {
-                        failures.push(format!("{icon:?} при {size}: ink смещён на {after:+.2}px"));
+        for design in [Design::Material3, Design::LiquidGlass] {
+            let theme = Theme::new(&GraphicsSettings { design, ..GraphicsSettings::default() });
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                for icon in Icon::ALL {
+                    paint(&theme, ui.painter(), icon, pos2(64.0, 64.0), 24.0, Color32::WHITE);
+                }
+                if design == Design::LiquidGlass {
+                    for icon in Icon::ALL {
+                        let glyph = icon.ion_glyph();
+                        let galley = ui.painter().layout_no_wrap(
+                            char::from_u32(glyph.codepoint).unwrap_or('?').to_string(),
+                            FontId::new(24.0, FontFamily::Name(glyph.family.into())),
+                            Color32::WHITE,
+                        );
+                        assert!(galley.size().x >= 1.0 && galley.size().y >= 1.0,
+                            "{icon:?}: Ionicons glyph did not render");
                     }
                 }
-            }
-        });
-        out.textures_delta.clear();
-        assert!(failures.is_empty(), "{failures:#?}");
+            });
+            output.textures_delta.clear();
+        }
     }
 }

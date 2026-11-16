@@ -296,7 +296,7 @@ impl McrateApp {
                 ui.vertical_centered(|ui| {
                     ui.add_space(24.0);
                     let (icon_rect, _) = ui.allocate_exact_size(vec2(48.0, 48.0), Sense::hover());
-                    crate::icons::paint(ui.painter(), Icon::Note, icon_rect.center(), 38.0, p.on_surface_variant);
+                    crate::icons::paint(theme, ui.painter(), Icon::Note, icon_rect.center(), 38.0, p.on_surface_variant);
                     ui.add_space(14.0);
                     ui.label(RichText::new("Текст пока недоступен").size(16.0).strong());
                     ui.add_space(6.0);

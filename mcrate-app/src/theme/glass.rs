@@ -9,6 +9,33 @@ use egui_glass::{Glass, GlassStyle, LiveBackdropQuality};
 use super::{Palette, Surface, Theme, material3, with_alpha};
 use crate::settings::GlassQuality;
 
+
+/// Стиль настоящего GPU Liquid Glass для отдельных интерактивных контролов в контенте.
+/// Используется только вне уже стеклянной поверхности: GlassButton не должен наслаиваться
+/// поверх Glass-рейки или PlayerBar. blur/refraction следуют настройкам активной темы.
+pub fn control_style(theme: &Theme, prominent: bool, corner_radius: f32) -> GlassStyle {
+    let p = &theme.palette;
+    let tint = if prominent {
+        with_alpha(p.primary, if p.dark { 136 } else { 120 })
+    } else {
+        with_alpha(p.surface_container_high, if p.dark { 50 } else { 66 })
+    };
+    GlassStyle {
+        corner_radius,
+        blur: (theme.settings.blur_radius * 0.58).clamp(8.0, 24.0),
+        refraction: (theme.settings.refraction * 1.55).clamp(6.0, 20.0),
+        tint,
+        brightness: if p.dark { 0.96 } else { 1.04 },
+        saturation: 1.12,
+        specular: if prominent { 0.72 } else { 0.58 },
+        border: 0.42,
+        shadow: if prominent { 0.12 } else { 0.065 },
+        shadow_radius: 12.0,
+        shadow_offset: 2.0,
+        ..GlassStyle::regular().physical(1.48, 5.0, 1.0, 0.38, 0.20)
+    }
+}
+
 /// Наши настройки качества -> перечисление библиотеки.
 pub fn lib_quality(q: GlassQuality) -> LiveBackdropQuality {
     match q {

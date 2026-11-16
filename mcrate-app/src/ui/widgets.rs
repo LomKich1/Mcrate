@@ -25,6 +25,12 @@ pub fn search_bar(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str) ->
         let hovered = outer.hovered();
         let bg_alpha = if p.dark { if hovered { 78 } else { 60 } } else if hovered { 112 } else { 92 };
         ui.painter().rect_filled(rect, 17.0, with_alpha(p.surface_container_high, bg_alpha));
+        if hovered {
+            ui.painter().line_segment(
+                [pos2(rect.left() + 18.0, rect.top() + 1.0), pos2(rect.right() - 18.0, rect.top() + 1.0)],
+                Stroke::new(0.8, with_alpha(Color32::WHITE, if p.dark { 32 } else { 70 })),
+            );
+        }
 
         // Фиксированная геометрия: одинаковый вертикальный центр у лупы, текста и clear-кнопки.
         let response = ui.scope_builder(
@@ -34,7 +40,7 @@ pub fn search_bar(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str) ->
             |ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
                 let (icon_rect, _) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
-                icons::paint(ui.painter(), Icon::Search, icon_rect.center(), 20.0, p.on_surface_variant);
+                icons::paint(theme, ui.painter(), Icon::Search, icon_rect.center(), 20.0, p.on_surface_variant);
                 ui.add_space(12.0);
 
                 let show_clear = !value.is_empty();
@@ -55,13 +61,14 @@ pub fn search_bar(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str) ->
                     ui.add_space(8.0);
                     let (clear_rect, clear_resp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
                     let color = if clear_resp.hovered() { p.on_surface } else { p.on_surface_variant };
-                    if clear_resp.hovered() {
-                        ui.painter().circle_filled(clear_rect.center(), 12.0, with_alpha(p.on_surface, 20));
+                    if clear_resp.hovered() || clear_resp.is_pointer_button_down_on() {
+                        ui.painter().circle_filled(
+                            clear_rect.center(),
+                            12.0,
+                            with_alpha(p.on_surface, if clear_resp.is_pointer_button_down_on() { 34 } else { 20 }),
+                        );
                     }
-                    let c = clear_rect.center();
-                    let d = 4.0;
-                    ui.painter().line_segment([pos2(c.x - d, c.y - d), pos2(c.x + d, c.y + d)], Stroke::new(1.6, color));
-                    ui.painter().line_segment([pos2(c.x + d, c.y - d), pos2(c.x - d, c.y + d)], Stroke::new(1.6, color));
+                    icons::paint(theme, ui.painter(), Icon::Close, clear_rect.center(), 16.0, color);
                     if clear_resp.clicked() {
                         value.clear();
                     }
@@ -76,7 +83,7 @@ pub fn search_bar(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str) ->
         } else {
             with_alpha(p.on_surface, if hovered { 52 } else { 32 })
         };
-        ui.painter().rect_stroke(rect, 17.0, Stroke::new(if focused { 1.25 } else { 0.8 }, border), StrokeKind::Inside);
+        ui.painter().rect_stroke(rect, 17.0, Stroke::new(if focused { 1.4 } else { 0.8 }, border), StrokeKind::Inside);
         return response.accessible_name(hint);
     }
 
@@ -93,7 +100,7 @@ pub fn search_bar(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str) ->
     ui.painter().rect_filled(rect, radius, p.surface_container_high);
 
     let icon_center = pos2(rect.left() + 32.0, rect.center().y);
-    icons::paint(ui.painter(), Icon::Search, icon_center, 24.0, p.on_surface_variant);
+    icons::paint(theme, ui.painter(), Icon::Search, icon_center, 24.0, p.on_surface_variant);
 
     let show_clear = !value.is_empty();
     let clear_space = if show_clear { 40.0 } else { 0.0 };
@@ -183,13 +190,7 @@ pub fn status_snackbar(ui: &mut Ui, theme: &Theme, message: &str) -> bool {
                     if response.hovered() {
                         ui.painter().circle_filled(rect.center(), 15.0, with_alpha(p.inverse_on_surface, 20));
                     }
-                    ui.painter().text(
-                        rect.center(),
-                        Align2::CENTER_CENTER,
-                        "×",
-                        FontId::proportional(20.0),
-                        p.inverse_primary,
-                    );
+                    icons::paint(theme, ui.painter(), Icon::Close, rect.center(), 18.0, p.inverse_primary);
                     ui.add(
                         egui::Label::new(
                             egui::RichText::new(message)
@@ -265,7 +266,7 @@ fn press_curve(t: f32) -> f32 {
 
 /// Плавное «сжатие» при нажатии (в демо `scale(.88, .94)` у кнопки): прямоугольник уменьшается
 /// вокруг центра на `sx`/`sy` (доли) с перелётом при нажатии и отпускании.
-fn squish(ui: &Ui, id: Id, resp: &Response, rect: Rect, sx: f32, sy: f32) -> Rect {
+pub(super) fn squish(ui: &Ui, id: Id, resp: &Response, rect: Rect, sx: f32, sy: f32) -> Rect {
     let t = ui.ctx().animate_bool_with_time(id.with("press"), resp.is_pointer_button_down_on(), 0.18);
     let k = press_curve(t);
     Rect::from_center_size(rect.center(), vec2(rect.width() * (1.0 - sx * k), rect.height() * (1.0 - sy * k)))
@@ -403,7 +404,67 @@ fn state_alpha(r: &Response) -> u8 {
     }
 }
 
-/// Круглая кнопка с иконкой.
+/// Отдельная круглая кнопка в контентном слое: в Liquid Glass используется реальный
+/// GPU-материал GlassButton, а не имитация прозрачности. Не использовать внутри PlayerBar
+/// или Rail — там уже есть общая стеклянная поверхность и нужны плоские дочерние контроли.
+pub fn glass_icon_button(
+    ui: &mut Ui,
+    theme: &Theme,
+    icon: Icon,
+    diameter: f32,
+    kind: ButtonKind,
+    active: bool,
+    tip: &str,
+) -> Response {
+    if !theme.glass_active() {
+        return icon_button(ui, theme, icon, diameter, kind, active, tip);
+    }
+
+    let p = &theme.palette;
+    let prominent = kind == ButtonKind::Filled;
+    let response = egui_glass::GlassButton::new("")
+        .style(crate::theme::glass::control_style(theme, prominent, diameter.max(44.0) * 0.5))
+        .icon()
+        .min_size(Vec2::splat(diameter.max(44.0)))
+        .accessible_name(tip)
+        .show(ui);
+    let foreground = if prominent { p.on_primary } else if active { p.primary } else { p.on_surface };
+    icons::paint(theme, ui.painter(), icon, response.rect.center(), diameter * 0.58, foreground);
+    response.on_hover_text(tip).on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// Pill-кнопка с настоящим Liquid Glass backdrop callback. Иконка и подпись остаются
+/// отдельными глифами, поэтому сохраняют разный размер/шрифт и корректную доступность.
+fn glass_pill_button(
+    ui: &mut Ui,
+    theme: &Theme,
+    label: &str,
+    icon: Option<Icon>,
+    kind: ButtonKind,
+    galley: std::sync::Arc<egui::Galley>,
+    size: Vec2,
+) -> Response {
+    let p = &theme.palette;
+    let response = egui_glass::GlassButton::new("")
+        .style(crate::theme::glass::control_style(theme, kind == ButtonKind::Filled, f32::INFINITY))
+        .icon()
+        .min_size(size.max(vec2(44.0, 44.0)))
+        .accessible_name(label)
+        .show(ui);
+    let foreground = if kind == ButtonKind::Filled { p.on_primary } else { p.on_surface };
+    let icon_width = if icon.is_some() { 28.0 } else { 0.0 };
+    let content_width = galley.size().x + icon_width;
+    let mut x = response.rect.center().x - content_width * 0.5;
+    if let Some(icon) = icon {
+        icons::paint(theme, ui.painter(), icon, pos2(x + 10.0, response.rect.center().y), 18.0, foreground);
+        x += icon_width;
+    }
+    ui.painter().galley(pos2(x, response.rect.center().y - galley.size().y * 0.5), galley, foreground);
+    response.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// Круглая кнопка с иконкой. Внутри уже стеклянного PlayerBar используется плоский контрол,
+/// чтобы не создавать второй оптический слой поверх стекла.
 pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, diameter: f32, kind: ButtonKind, active: bool, tip: &str) -> Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(diameter), Sense::click());
     let p = &theme.palette;
@@ -423,31 +484,36 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, diameter: f32, kind: 
         // только важное действие получает prominent tint, остальные — тихую оптическую поверхность.
         let pressed = resp.is_pointer_button_down_on();
         let hovered = resp.hovered();
+        let state_t = ui.ctx().animate_bool_with_time(
+            resp.id.with("glass_feedback"),
+            pressed || hovered || resp.has_focus() || active,
+            0.14,
+        );
         let (fill, stroke) = match kind {
             ButtonKind::Filled => (
                 Some(with_alpha(p.primary, if p.dark { 224 } else { 218 })),
                 with_alpha(p.on_primary, 92),
             ),
             ButtonKind::Tonal => (
-                Some(with_alpha(p.surface_container_high, if pressed { 142 } else if hovered { 112 } else { 82 })),
-                with_alpha(p.on_surface, if hovered { 72 } else { 42 }),
+                Some(with_alpha(p.surface_container_high, (82.0 + state_t * 60.0) as u8)),
+                with_alpha(p.on_surface, (42.0 + state_t * 38.0) as u8),
             ),
             ButtonKind::Outlined => (
-                Some(with_alpha(p.surface_container_high, if pressed { 116 } else if hovered { 74 } else { 36 })),
-                with_alpha(p.on_surface, if hovered { 82 } else { 54 }),
+                Some(with_alpha(p.surface_container_high, (36.0 + state_t * 80.0) as u8)),
+                with_alpha(p.on_surface, (54.0 + state_t * 34.0) as u8),
             ),
-            ButtonKind::Text if hovered || pressed => (
-                Some(with_alpha(p.on_surface, if pressed { 38 } else { 24 })),
-                with_alpha(p.on_surface, 42),
+            ButtonKind::Text if hovered || pressed || resp.has_focus() => (
+                Some(with_alpha(p.on_surface, (12.0 + state_t * 26.0) as u8)),
+                with_alpha(p.on_surface, 48),
             ),
             ButtonKind::Text => (None, Color32::TRANSPARENT),
             ButtonKind::Plain if active => (
-                Some(with_alpha(p.primary, if pressed { 82 } else if hovered { 68 } else { 54 })),
+                Some(with_alpha(p.primary, (54.0 + state_t * 30.0) as u8)),
                 with_alpha(p.primary, 86),
             ),
-            ButtonKind::Plain if hovered || pressed => (
-                Some(with_alpha(p.on_surface, if pressed { 38 } else { 24 })),
-                with_alpha(p.on_surface, 42),
+            ButtonKind::Plain if hovered || pressed || resp.has_focus() => (
+                Some(with_alpha(p.on_surface, (10.0 + state_t * 28.0) as u8)),
+                with_alpha(p.on_surface, 48),
             ),
             ButtonKind::Plain => (None, Color32::TRANSPARENT),
         };
@@ -466,6 +532,13 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, diameter: f32, kind: 
                     Stroke::new(0.8, with_alpha(Color32::WHITE, if p.dark { 36 } else { 74 })),
                 );
             }
+        }
+        if resp.has_focus() {
+            painter.circle_stroke(
+                visual_rect.center(),
+                r + 2.0,
+                Stroke::new(1.6, with_alpha(p.primary, 220)),
+            );
         }
     } else {
         let (bg, _) = match kind {
@@ -489,7 +562,7 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, diameter: f32, kind: 
         }
     }
 
-    icons::paint(painter, icon, visual_rect.center(), diameter * 0.6, fg);
+    icons::paint(theme, painter, icon, visual_rect.center(), diameter * 0.6, fg);
     let resp = resp.on_hover_text(tip).on_hover_cursor(CursorIcon::PointingHand);
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, active, tip));
     resp
@@ -509,30 +582,46 @@ pub fn pill_button(ui: &mut Ui, theme: &Theme, label: &str, icon: Option<Icon>, 
     let galley = ui.painter().layout_no_wrap(label.to_owned(), FontId::proportional(theme.text_size(TextRole::LabelLarge)), fg);
     let icon_w = if icon.is_some() { 20.0 + 8.0 } else { 0.0 };
     let size = vec2(galley.size().x + icon_w + 36.0, 40.0);
+    if glass {
+        return glass_pill_button(ui, theme, label, icon, kind, galley, size);
+    }
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let visual_rect = if glass { squish(ui, resp.id, &resp, rect, 0.035, 0.075) } else { rect };
     let pill_radius = if glass { 20.0 } else { (theme.shape_radius(ShapeRole::Full) as f32).min(visual_rect.height() * 0.5) };
     let painter = ui.painter();
 
     if glass {
+        let state_t = ui.ctx().animate_bool_with_time(
+            resp.id.with("glass_feedback"),
+            resp.hovered() || resp.is_pointer_button_down_on() || resp.has_focus(),
+            0.14,
+        );
         let (fill, stroke) = match kind {
             ButtonKind::Filled => (with_alpha(p.primary, if p.dark { 224 } else { 218 }), with_alpha(p.on_primary, 90)),
             ButtonKind::Tonal => (
-                with_alpha(p.surface_container_high, if resp.is_pointer_button_down_on() { 146 } else if resp.hovered() { 112 } else { 82 }),
-                with_alpha(p.on_surface, if resp.hovered() { 72 } else { 42 }),
+                with_alpha(p.surface_container_high, (82.0 + state_t * 64.0) as u8),
+                with_alpha(p.on_surface, (42.0 + state_t * 38.0) as u8),
             ),
             ButtonKind::Outlined => (
-                with_alpha(p.surface_container_high, if resp.is_pointer_button_down_on() { 116 } else if resp.hovered() { 74 } else { 36 }),
-                with_alpha(p.on_surface, if resp.hovered() { 82 } else { 54 }),
+                with_alpha(p.surface_container_high, (36.0 + state_t * 80.0) as u8),
+                with_alpha(p.on_surface, (54.0 + state_t * 34.0) as u8),
             ),
-            ButtonKind::Text | ButtonKind::Plain => (with_alpha(p.on_surface, if resp.hovered() { 28 } else { 0 }), with_alpha(p.on_surface, 30)),
+            ButtonKind::Text | ButtonKind::Plain => (with_alpha(p.on_surface, (state_t * 28.0) as u8), with_alpha(p.on_surface, 30)),
         };
         if kind == ButtonKind::Filled {
             painter.rect_filled(visual_rect.translate(vec2(0.0, 1.0)), 20.0, Color32::from_black_alpha(if p.dark { 42 } else { 24 }));
         }
             painter.rect_filled(visual_rect, pill_radius, fill);
-        if !matches!(kind, ButtonKind::Plain | ButtonKind::Text) || resp.hovered() {
+        if !matches!(kind, ButtonKind::Plain | ButtonKind::Text) || resp.hovered() || resp.has_focus() {
             painter.rect_stroke(visual_rect, pill_radius, Stroke::new(0.9, stroke), StrokeKind::Inside);
+        }
+        if resp.has_focus() {
+            painter.rect_stroke(
+                visual_rect.expand(2.0),
+                pill_radius + 2.0,
+                Stroke::new(1.6, with_alpha(p.primary, 220)),
+                StrokeKind::Outside,
+            );
         }
     } else {
         let bg = match kind {
@@ -555,7 +644,7 @@ pub fn pill_button(ui: &mut Ui, theme: &Theme, label: &str, icon: Option<Icon>, 
 
     let mut x = visual_rect.left() + 18.0;
     if let Some(icon) = icon {
-        icons::paint(painter, icon, pos2(x + 10.0, visual_rect.center().y), 18.0, fg);
+        icons::paint(theme, painter, icon, pos2(x + 10.0, visual_rect.center().y), 18.0, fg);
         x += icon_w;
     }
     painter.galley(pos2(x, visual_rect.center().y - galley.size().y / 2.0), galley, fg);
@@ -588,13 +677,23 @@ pub fn nav_item(ui: &mut Ui, theme: &Theme, icon: Icon, label: &str, selected: b
     let rect = if enabled { squish(ui, id, &resp, rect, 0.04, 0.10) } else { rect };
     let painter = ui.painter();
 
-    // Фон реагирует только на нажатие; при наведении плавно меняется лишь цвет текста и иконки.
-    // Фон уже выбранного пункта рисует rail.rs отдельной пилюлей.
-    if enabled && resp.is_pointer_button_down_on() {
+    // Выбранную капсулу рисует rail.rs. Для остальных пунктов Liquid Glass добавляет
+    // лишь лёгкий hover-glow, чтобы не наслаивать вторую стеклянную поверхность.
+    if theme.glass_active() && enabled && !selected {
+        let t = ui.ctx().animate_bool_with_time(id.with("glass_hover"), resp.hovered() || resp.is_pointer_button_down_on(), 0.16);
+        if t > 0.01 {
+            painter.rect_filled(rect.shrink(1.0), 22.0, with_alpha(p.on_surface, (t * if resp.is_pointer_button_down_on() { 32.0 } else { 20.0 }) as u8));
+        }
+    } else if enabled && resp.is_pointer_button_down_on() {
         painter.rect_filled(rect, 24.0, with_alpha(theme.hover_glide_color(), theme.hover_glide_alpha()));
     }
-    if resp.has_focus() && !theme.glass_active() {
-        painter.rect_stroke(rect.shrink(2.0), 22.0, Stroke::new(2.0, p.primary), StrokeKind::Inside);
+    if resp.has_focus() {
+        painter.rect_stroke(
+            rect.shrink(2.0),
+            22.0,
+            Stroke::new(if theme.glass_active() { 1.5 } else { 2.0 }, p.primary),
+            StrokeKind::Inside,
+        );
     }
 
     let fg = if !enabled {
@@ -614,9 +713,9 @@ pub fn nav_item(ui: &mut Ui, theme: &Theme, icon: Icon, label: &str, selected: b
 
     // Фон выбранного пункта рисует rail.rs: пилюля, которая плавно скользит между пунктами.
     if compact {
-        icons::paint(painter, icon, rect.center(), 24.0, fg);
+        icons::paint(theme, painter, icon, rect.center(), 24.0, fg);
     } else {
-        icons::paint(painter, icon, pos2(rect.left() + 28.0, rect.center().y), 24.0, fg);
+        icons::paint(theme, painter, icon, pos2(rect.left() + 28.0, rect.center().y), 24.0, fg);
         let label_size = if theme.glass_active() { 15.0 } else { theme.text_size(TextRole::LabelLarge) };
         painter.text(pos2(rect.left() + 52.0, rect.center().y), Align2::LEFT_CENTER, label, FontId::proportional(label_size), fg);
         if let Some(t) = trailing {
@@ -645,7 +744,6 @@ pub fn slider_bar(ui: &mut Ui, theme: &Theme, width: f32, frac: f32, enabled: bo
     let (left, right) = (rect.left() + pad, rect.right() - pad);
     let cy = rect.center().y;
     let active = resp.hovered() || resp.dragged();
-    let th = if active { 8.0 } else { 6.0 };
     let frac = frac.clamp(0.0, 1.0);
     let x = left + (right - left) * frac;
 
@@ -705,13 +803,51 @@ pub fn slider_bar(ui: &mut Ui, theme: &Theme, width: f32, frac: f32, enabled: bo
             }
         }
         Design::LiquidGlass => {
-            painter.rect_filled(Rect::from_min_max(pos2(left, cy - th / 2.0), pos2(right, cy + th / 2.0)), th / 2.0, track_bg);
+            let track_height = ui.ctx().animate_value_with_time(
+                resp.id.with("glass_track_height"),
+                if active { 7.0 } else { 5.0 },
+                0.12,
+            );
+            let track_rect = Rect::from_min_max(
+                pos2(left, cy - track_height / 2.0),
+                pos2(right, cy + track_height / 2.0),
+            );
+            painter.rect_filled(track_rect, track_height / 2.0, track_bg);
             if x > left {
-                painter.rect_filled(Rect::from_min_max(pos2(left, cy - th / 2.0), pos2(x, cy + th / 2.0)), th / 2.0, fg);
+                painter.rect_filled(
+                    Rect::from_min_max(pos2(left, cy - track_height / 2.0), pos2(x, cy + track_height / 2.0)),
+                    track_height / 2.0,
+                    fg,
+                );
             }
-            let r = if active { 9.0 } else { 7.5 };
-            painter.circle_filled(pos2(x, cy + 1.0), r, egui::Color32::from_black_alpha(50));
-            painter.circle_filled(pos2(x, cy), r, egui::Color32::WHITE);
+            let thumb_r = ui.ctx().animate_value_with_time(
+                resp.id.with("glass_thumb_radius"),
+                if active { 9.5 } else { 7.5 },
+                0.12,
+            );
+            let thumb_rect = Rect::from_center_size(pos2(x, cy), vec2(thumb_r * 2.0, thumb_r * 2.0));
+            if active && enabled {
+                // Apple shows the glass material transiently on active sliders/toggles,
+                // rather than turning the whole content surface into glass.
+                let style = crate::theme::glass::control_style(theme, false, thumb_r);
+                egui_glass::paint_glass(ui, thumb_rect, &style);
+                painter.circle_stroke(
+                    pos2(x, cy),
+                    thumb_r - 0.5,
+                    Stroke::new(0.9, with_alpha(p.on_surface, if p.dark { 120 } else { 92 })),
+                );
+            } else {
+                painter.circle_filled(pos2(x, cy + 1.2), thumb_r + 0.5, egui::Color32::from_black_alpha(54));
+                painter.circle_filled(pos2(x, cy), thumb_r, egui::Color32::WHITE);
+                painter.circle_stroke(pos2(x, cy), thumb_r - 0.6, Stroke::new(0.8, with_alpha(p.on_surface, 70)));
+                painter.line_segment(
+                    [pos2(x - thumb_r * 0.38, cy - thumb_r * 0.48), pos2(x + thumb_r * 0.25, cy - thumb_r * 0.48)],
+                    Stroke::new(0.8, with_alpha(Color32::WHITE, 180)),
+                );
+            }
+            if resp.has_focus() {
+                painter.circle_stroke(pos2(x, cy), thumb_r + 4.0, Stroke::new(1.6, p.primary));
+            }
         }
     }
 
@@ -768,7 +904,7 @@ pub fn cover_tile(ui: &mut Ui, theme: &Theme, rect: Rect, seed: &str, radius: f3
     }
     let painter = ui.painter();
     painter.rect_filled(rect, radius, bg);
-    icons::paint(painter, Icon::Note, rect.center(), rect.height() * 0.5, with_alpha(fg, 200));
+    icons::paint(theme, painter, Icon::Note, rect.center(), rect.height() * 0.5, with_alpha(fg, 200));
 }
 
 pub fn fmt_time(secs: u64) -> String {

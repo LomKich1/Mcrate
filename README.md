@@ -10,6 +10,7 @@
 - `mcrate-providers`: провайдеры (локальные файлы, SoundCloud).
 - `mcrate-app`: окно и интерфейс.
 - `vendor/egui_glass`: изменённая копия egui_glass с физической моделью линзы (см. `vendor/egui_glass/MCRATE.md`).
+- [Документация и ссылки по iOS / Liquid Glass](docs/LIQUID_GLASS_IOS_REFERENCES.md): Apple HIG/WWDC, SwiftUI/UIKit API и репозитории иконок.
 
 ## Сборка
 Нужен Rust 1.95+. Запуск: `cargo run -p mcrate-app`. Проверка: `cargo test --workspace`.

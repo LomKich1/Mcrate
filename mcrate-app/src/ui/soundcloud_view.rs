@@ -154,10 +154,10 @@ fn empty_state(ui: &mut Ui, theme: &Theme, top_space: f32, icon: Icon, headline:
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(88.0), Sense::hover());
         if theme.glass_active() {
             ui.painter().circle_stroke(rect.center(), 42.0, egui::Stroke::new(0.9, with_alpha(p.on_surface, 46)));
-            icons::paint(ui.painter(), icon, rect.center(), 40.0, p.on_surface);
+            icons::paint(theme, ui.painter(), icon, rect.center(), 40.0, p.on_surface);
         } else {
             ui.painter().circle_filled(rect.center(), 44.0, theme.tonal_fill());
-            icons::paint(ui.painter(), icon, rect.center(), 40.0, theme.on_tonal());
+            icons::paint(theme, ui.painter(), icon, rect.center(), 40.0, theme.on_tonal());
         }
         ui.add_space(14.0);
         ui.label(RichText::new(headline).size(20.0).strong());

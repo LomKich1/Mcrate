@@ -26,7 +26,7 @@ use mcrate_core::Track;
 
 use super::wave::{self, COL_STEP_PX, WaveInput, WaveSim};
 use super::layout::{Bleed, bleed_clip, pane_scroll, scroll_end_padding};
-use super::widgets::{ButtonKind, artists_text, cover_tile, glide_begin, glide_end, icon_button, pill_button, search_bar, track_row};
+use super::widgets::{ButtonKind, artists_text, cover_tile, glide_begin, glide_end, glass_icon_button, pill_button, search_bar, squish, track_row};
 use crate::app::{McrateApp, View};
 use crate::icons::{self, Icon};
 use crate::settings::Design;
@@ -101,14 +101,14 @@ impl McrateApp {
         let btn_rect = Rect::from_min_max(pos2(head.right() - 120.0, head.top()), head.max);
         ui.scope_builder(UiBuilder::new().max_rect(btn_rect).layout(Layout::right_to_left(Align::Center)), |ui| {
             let (icon, tip) = if playing { (Icon::Pause, "Пауза") } else { (Icon::Play, "Запустить волну") };
-            if icon_button(ui, theme, icon, 52.0, ButtonKind::Filled, false, tip).clicked() && has_music {
+            if glass_icon_button(ui, theme, icon, 52.0, ButtonKind::Filled, false, tip).clicked() && has_music {
                 if self.ctl.now.is_some() {
                     self.ctl.toggle_pause();
                 } else {
                     self.shuffle_all();
                 }
             }
-            if icon_button(ui, theme, Icon::Shuffle, 40.0, ButtonKind::Tonal, false, "Перемешать заново").clicked() && has_music {
+            if glass_icon_button(ui, theme, Icon::Shuffle, 40.0, ButtonKind::Tonal, false, "Перемешать заново").clicked() && has_music {
                 self.shuffle_all();
             }
         });
@@ -445,6 +445,12 @@ fn media_card(ui: &mut Ui, theme: &Theme, card: &MediaCard, is_current: bool, is
     if !ui.is_rect_visible(rect) {
         return resp; // карточка за краем полки или экрана: не рисуем
     }
+    // Продавливание при нажатии, как у строк треков (`squish` в widgets.rs): карточка плавно уменьшается
+    // вокруг центра. Доля по высоте подобрана так, чтобы абсолютное сжатие по ширине и высоте было
+    // одинаковым: содержимое (обложка и подписи) считается от верхнего края и остаётся внутри карточки.
+    // Клик по-прежнему ловится по исходному прямоугольнику (`resp`), поэтому края не «дрожат».
+    const PRESS: f32 = 0.05;
+    let rect = squish(ui, resp.id, &resp, rect, PRESS, PRESS * card.w / card.h);
     let radius = if glass { 14.0 } else { 16.0 };
     let (on_container, on_variant) = if is_current && !glass {
         (p.on_secondary_container, with_alpha(p.on_secondary_container, 200))
@@ -470,7 +476,7 @@ fn media_card(ui: &mut Ui, theme: &Theme, card: &MediaCard, is_current: bool, is
 
     // Обложка: у трека скруглённый квадрат, у исполнителя круг.
     let pad = if glass { 4.0 } else { 8.0 };
-    let side = card.w - pad * 2.0;
+    let side = rect.width() - pad * 2.0; // от сжатого прямоугольника, а не от card.w
     let cover = Rect::from_min_size(rect.min + vec2(pad, pad), Vec2::splat(side));
     let cover_radius = if card.round { side / 2.0 } else if glass { 10.0 } else { 12.0 };
     cover_tile(ui, theme, cover, card.seed, cover_radius);
@@ -493,15 +499,15 @@ fn media_card(ui: &mut Ui, theme: &Theme, card: &MediaCard, is_current: bool, is
             painter.circle_filled(fab.center() + vec2(0.0, 1.0), 17.0, Color32::from_black_alpha(46));
             painter.circle_filled(fab.center(), 17.0, with_alpha(p.surface_container_high, 218));
             painter.circle_stroke(fab.center(), 16.5, Stroke::new(0.9, with_alpha(p.on_surface, 70)));
-            icons::paint(painter, Icon::Play, fab.center(), 21.0, p.on_surface);
+            icons::paint(theme, painter, Icon::Play, fab.center(), 21.0, p.on_surface);
         } else {
             let fab = Rect::from_min_size(pos2(cover.right() - 8.0 - 40.0, cover.bottom() - 8.0 - 40.0), Vec2::splat(40.0));
             painter.rect_filled(fab, 12.0, p.primary_container);
-            icons::paint(painter, Icon::Play, fab.center(), 26.0, p.on_primary_container);
+            icons::paint(theme, painter, Icon::Play, fab.center(), 26.0, p.on_primary_container);
         }
     }
 
-    let text_w = card.w - pad * 2.0 - 4.0;
+    let text_w = rect.width() - pad * 2.0 - 4.0;
     let ty = cover.bottom() + if glass { 8.0 } else { 10.0 };
     let title = elided(painter, card.title, FontId::proportional(14.5), on_container, text_w);
     let sub = elided(painter, card.subtitle, FontId::proportional(12.0), on_variant, text_w);

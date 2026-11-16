@@ -235,23 +235,44 @@ impl Theme {
         v.selection.bg_fill = with_alpha(p.primary, 90);
         v.selection.stroke = egui::Stroke::new(1.0, p.primary);
 
-        // Универсальный базовый радиус egui-контролов оставляем 20 px:
-        // полный M3-пилюльный радиус рассчитывают компоненты с учётом собственной высоты.
-        let pill = CornerRadius::same(20);
+        // Универсальные egui-контролы тоже получают тему. В Liquid Glass фон тише,
+        // скругление мягче, а наведение/нажатие читаются как внутренний блик, а не как
+        // плотная карточка. Ветка Material 3 сохраняет прежние токены без изменений
+        // (полный M3-пилюльный радиус рассчитывают компоненты с учётом собственной высоты).
+        let glass = self.glass_active();
+        let pill = CornerRadius::same(if glass { 18 } else { 20 });
         let w = &mut v.widgets;
-        w.noninteractive.bg_fill = p.surface_container;
+        w.noninteractive.bg_fill = if glass { Color32::TRANSPARENT } else { p.surface_container };
         w.noninteractive.fg_stroke = egui::Stroke::new(1.0, p.on_surface_variant);
-        w.noninteractive.bg_stroke = egui::Stroke::new(1.0, p.outline_variant);
-        for (state, fill) in [
-            (&mut w.inactive, p.surface_container_highest),
-            (&mut w.hovered, with_alpha_over(p.surface_container_highest, p.on_surface, 0.08)),
-            (&mut w.active, with_alpha_over(p.surface_container_highest, p.on_surface, 0.12)),
-        ] {
-            state.bg_fill = fill;
-            state.weak_bg_fill = fill;
-            state.bg_stroke = egui::Stroke::NONE;
-            state.fg_stroke = egui::Stroke::new(1.0, p.on_surface);
-            state.corner_radius = pill;
+        w.noninteractive.bg_stroke = if glass {
+            egui::Stroke::NONE
+        } else {
+            egui::Stroke::new(1.0, p.outline_variant)
+        };
+        if glass {
+            for (state, fill_alpha, edge_alpha) in [
+                (&mut w.inactive, if p.dark { 30 } else { 42 }, 30),
+                (&mut w.hovered, if p.dark { 58 } else { 72 }, 66),
+                (&mut w.active, if p.dark { 82 } else { 96 }, 92),
+            ] {
+                state.bg_fill = with_alpha(p.surface_container_high, fill_alpha);
+                state.weak_bg_fill = with_alpha(p.on_surface, fill_alpha / 2);
+                state.bg_stroke = egui::Stroke::new(0.8, with_alpha(p.on_surface, edge_alpha));
+                state.fg_stroke = egui::Stroke::new(1.0, p.on_surface);
+                state.corner_radius = pill;
+            }
+        } else {
+            for (state, fill) in [
+                (&mut w.inactive, p.surface_container_highest),
+                (&mut w.hovered, with_alpha_over(p.surface_container_highest, p.on_surface, 0.08)),
+                (&mut w.active, with_alpha_over(p.surface_container_highest, p.on_surface, 0.12)),
+            ] {
+                state.bg_fill = fill;
+                state.weak_bg_fill = fill;
+                state.bg_stroke = egui::Stroke::NONE;
+                state.fg_stroke = egui::Stroke::new(1.0, p.on_surface);
+                state.corner_radius = pill;
+            }
         }
         w.open.corner_radius = pill;
 
@@ -266,8 +287,14 @@ impl Theme {
             let small_size = if self.glass_active() { 12.0 } else { self.text_size(TextRole::BodySmall) };
             style.text_styles.insert(TextStyle::Small, FontId::new(small_size, Proportional));
             style.spacing.item_spacing = egui::vec2(10.0, 8.0);
-            style.spacing.button_padding = egui::vec2(16.0, 8.0);
-            style.spacing.interact_size.y = if self.glass_active() { 36.0 } else { 40.0 };
+            style.spacing.button_padding = if self.glass_active() {
+                egui::vec2(14.0, 10.0)
+            } else {
+                egui::vec2(16.0, 8.0)
+            };
+            // Ближе к минимальной 44 pt зоне нажатия iOS, но без изменения геометрии
+            // кастомных плеерных контролов и без влияния на Material 3.
+            style.spacing.interact_size.y = if self.glass_active() { 44.0 } else { 40.0 };
 
             // Тонкий бегунок лежит в свободном правом поле и не перекрывает строки/карточки.
             // Геометрия ScrollArea дополнительно отступает от верхнего и нижнего скруглений;
