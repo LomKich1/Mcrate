@@ -1,7 +1,7 @@
 //! Общие виджеты. Рисуются вручную (painter), цвета берут из темы,
 //! поэтому выглядят правильно и в Material 3, и в Liquid Glass.
 
-use egui::{Align2, Color32, CursorIcon, FontId, Id, Rect, Response, Sense, Shape, Ui, Vec2, pos2, vec2, layers::ShapeIdx};
+use egui::{Align2, Color32, CursorIcon, FontId, Id, Pos2, Rect, Response, Sense, Shape, Ui, Vec2, pos2, vec2, layers::ShapeIdx};
 use mcrate_core::Track;
 
 use crate::icons::{self, Icon};
@@ -46,19 +46,41 @@ fn squish(ui: &Ui, id: Id, resp: &Response, rect: Rect, sx: f32, sy: f32) -> Rec
     Rect::from_center_size(rect.center(), vec2(rect.width() * (1.0 - sx * k), rect.height() * (1.0 - sy * k)))
 }
 
+/// Параметры физической пружины, как в HTML-демо:
+/// F = -k * (x - target) - c * velocity.
+const SPRING_STIFFNESS: f32 = 500.0;
+const SPRING_DAMPING: f32 = 34.0;
+const SPRING_EPSILON: f32 = 0.05;
+
+/// Один шаг пружины. Скорость намеренно не обнуляется при смене цели:
+/// быстрые перемещения разворачивают текущий импульс, а не начинают анимацию заново.
+pub(super) fn spring_step(value: &mut f32, velocity: &mut f32, target: f32, dt: f32) -> bool {
+    if dt > 0.0 {
+        let force = -SPRING_STIFFNESS * (*value - target) - SPRING_DAMPING * *velocity;
+        *velocity += force * dt;
+        *value += *velocity * dt;
+    }
+
+    if (*value - target).abs() < SPRING_EPSILON && (*velocity).abs() < SPRING_EPSILON {
+        *value = target;
+        *velocity = 0.0;
+        false
+    } else {
+        true
+    }
+}
+
 /// Состояние скользящей подсветки (хранится в памяти egui).
-///
-/// `from_*` — смещение подсветки относительно цели в момент старта пружины.
-/// Пока пружина идёт, рисуем `цель + смещение * (1 - прогресс)`. Прогресс больше 1
-/// значит перелёт за цель, меньше 1 после этого — возврат. Если цель просто
-/// прокрутилась (тот же `key`), смещение не сбрасываем: подсветка едет вместе со строкой.
+/// Положение и скорость разделены для двух углов прямоугольника — так подсветка
+/// корректно анимируется и при изменении размеров целевой строки.
 #[derive(Clone, Copy)]
 struct Glide {
     key: u64,
     target: Rect,
-    from_min: Vec2,
-    from_max: Vec2,
-    t0: f64,
+    min: Pos2,
+    max: Pos2,
+    velocity_min: Vec2,
+    velocity_max: Vec2,
     alpha: f32,
     alive: bool,
 }
@@ -68,90 +90,53 @@ impl Default for Glide {
         Self {
             key: 0,
             target: Rect::ZERO,
-            from_min: Vec2::ZERO,
-            from_max: Vec2::ZERO,
-            t0: 0.0,
+            min: pos2(0.0, 0.0),
+            max: pos2(0.0, 0.0),
+            velocity_min: Vec2::ZERO,
+            velocity_max: Vec2::ZERO,
             alpha: 0.0,
             alive: false,
         }
     }
 }
 
-/// Пружина перемещения подсветки. `t` — секунды с начала хода.
-///
-/// До первого пика (0.23 с, перелёт около 6%) это прежняя кривая меню
-/// `cubic-bezier(.2, .9, .3, 1.2)` за 0.35 с, поэтому скорость разгона та же.
-/// Раньше после пика был один плавный возврат и подсветка замирала. Теперь в этот
-/// момент несколько колебаний вокруг цели, каждое следующее примерно на треть слабее.
-pub fn spring_highlight(t: f32) -> f32 {
-    if t <= 0.0 {
-        return 0.0;
-    }
-    // Секунда первого пика старой кривой.
-    const PEAK_T: f32 = 0.2282;
-    if t < PEAK_T {
-        return cubic_bezier(0.2, 0.9, 0.3, 1.2, t / 0.35);
-    }
-    // Затухающий косинус: полпериода 0.11 с, следующее полуколебание = 0.68 от предыдущего.
-    const A: f32 = 0.05922308; // высота первого перелёта
-    const B: f32 = 0.007270; // слагаемое синуса, чтобы скорость в пике не прыгала
-    const DECAY: f32 = 3.506023;
-    const OMEGA: f32 = 28.559933; // π / 0.11
-    let dt = t - PEAK_T;
-    let env = (-DECAY * dt).exp();
-    1.0 + env * (A * (OMEGA * dt).cos() + B * (OMEGA * dt).sin())
-}
-
-/// Пружина уже не видна: хвост меньше ~0.3% пути.
-pub fn spring_highlight_resting(t: f32) -> bool {
-    t >= 1.08
-}
-
-/// Скользящая подсветка под курсором: одна на весь список. Когда курсор переходит со строки на строку,
-/// она не прыгает, а едет пружиной (`spring_highlight`: перелёт и несколько затухающих колебаний).
-/// Рисуется ПОД содержимым пунктов: сначала `glide_begin` резервирует место, после отрисовки `glide_end`
-/// кладёт в него фигуру.
-///
-/// `target` — id строки и её прямоугольник, либо `None`, если курсор не над списком.
-/// Id отличает смену строки от прокрутки той же строки.
+/// Резервирует слой, на котором после отрисовки строк будет нарисована подсветка.
 pub fn glide_begin(ui: &Ui) -> ShapeIdx {
     ui.painter().add(Shape::Noop)
 }
 
+/// Скользящая подсветка под курсором: одна на весь список. При переходе на другую
+/// строку пружина получает новую цель, сохраняя текущую скорость — даже при быстрых
+/// перемещениях курсора она не телепортируется и не начинает движение с нуля.
 pub fn glide_end(ui: &Ui, theme: &Theme, slot: ShapeIdx, salt: Id, target: Option<(u64, Rect)>, radius: f32) {
-    let now = ui.input(|i| i.time);
-    let dt = ui.input(|i| i.stable_dt).min(0.05);
+    let dt = ui.input(|i| i.stable_dt).clamp(0.0, 0.064);
     let mut g: Glide = ui.ctx().data_mut(|d| d.get_temp(salt)).unwrap_or_default();
-    let mut busy = false;
+    let mut moving = false;
 
     if let Some((key, rect)) = target {
         if !g.alive || g.alpha < 0.02 {
-            // Погасла: появляется сразу на строке, без полёта через весь список.
+            // После полного исчезновения подсветка появляется сразу под новым пунктом.
+            g.key = key;
+            g.target = rect;
+            g.min = rect.min;
+            g.max = rect.max;
+            g.velocity_min = Vec2::ZERO;
+            g.velocity_max = Vec2::ZERO;
             g.alive = true;
-            g.key = key;
-            g.target = rect;
-            g.from_min = Vec2::ZERO;
-            g.from_max = Vec2::ZERO;
-            g.t0 = now - 10.0;
-        } else if g.key != key {
-            let k = spring_highlight((now - g.t0) as f32);
-            let disp_min = g.target.min + g.from_min * (1.0 - k);
-            let disp_max = g.target.max + g.from_max * (1.0 - k);
-            g.from_min = disp_min - rect.min;
-            g.from_max = disp_max - rect.max;
-            g.target = rect;
-            g.key = key;
-            g.t0 = now;
-            busy = true;
         } else {
-            g.target = rect;
-            if spring_highlight_resting((now - g.t0) as f32) {
-                g.from_min = Vec2::ZERO;
-                g.from_max = Vec2::ZERO;
-            } else {
-                busy = true;
+            // Меняем только цель. Текущее положение и импульс сохраняются.
+            if g.key != key {
+                g.key = key;
             }
+            g.target = rect;
         }
+    }
+
+    if g.alive {
+        moving |= spring_step(&mut g.min.x, &mut g.velocity_min.x, g.target.min.x, dt);
+        moving |= spring_step(&mut g.min.y, &mut g.velocity_min.y, g.target.min.y, dt);
+        moving |= spring_step(&mut g.max.x, &mut g.velocity_max.x, g.target.max.x, dt);
+        moving |= spring_step(&mut g.max.y, &mut g.velocity_max.y, g.target.max.y, dt);
     }
 
     if target.is_some() {
@@ -159,24 +144,24 @@ pub fn glide_end(ui: &Ui, theme: &Theme, slot: ShapeIdx, salt: Id, target: Optio
         if g.alpha > 0.99 {
             g.alpha = 1.0;
         } else {
-            busy = true;
+            moving = true;
         }
     } else {
         g.alpha -= g.alpha * (1.0 - (-dt * 14.0).exp());
         if g.alpha < 0.01 {
             g.alpha = 0.0;
+            g.alive = false;
         } else {
-            busy = true;
+            moving = true;
         }
     }
 
     if g.alive && g.alpha > 0.0 {
-        let k = spring_highlight((now - g.t0) as f32);
-        let shown = Rect::from_min_max(g.target.min + g.from_min * (1.0 - k), g.target.max + g.from_max * (1.0 - k));
-        let a = (theme.hover_glide_alpha() as f32 * g.alpha) as u8;
-        ui.painter().set(slot, Shape::rect_filled(shown, radius, Color32::from_black_alpha(a)));
+        let shown = Rect::from_min_max(g.min, g.max);
+        let alpha = (theme.hover_glide_alpha() as f32 * g.alpha).round() as u8;
+        ui.painter().set(slot, Shape::rect_filled(shown, radius, Color32::from_black_alpha(alpha)));
     }
-    if busy {
+    if moving {
         ui.ctx().request_repaint();
     }
     ui.ctx().data_mut(|d| d.insert_temp(salt, g));
@@ -241,6 +226,19 @@ pub fn pill_button(ui: &mut Ui, theme: &Theme, label: &str, icon: Option<Icon>, 
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
 
+/// Интерполяция sRGBA для плавного изменения цвета текста навигации.
+fn mix_color(from: Color32, to: Color32, t: f32) -> Color32 {
+    let a = from.to_array();
+    let b = to.to_array();
+    let t = t.clamp(0.0, 1.0);
+    Color32::from_rgba_unmultiplied(
+        (a[0] as f32 + (b[0] as f32 - a[0] as f32) * t).round() as u8,
+        (a[1] as f32 + (b[1] as f32 - a[1] as f32) * t).round() as u8,
+        (a[2] as f32 + (b[2] as f32 - a[2] as f32) * t).round() as u8,
+        (a[3] as f32 + (b[3] as f32 - a[3] as f32) * t).round() as u8,
+    )
+}
+
 /// Пункт навигации (ширина = вся доступная, высота 48, форма «таблетка»).
 /// `compact`: только иконка по центру (узкая панель), подпись показывается во всплывающей подсказке.
 pub fn nav_item(ui: &mut Ui, theme: &Theme, icon: Icon, label: &str, selected: bool, enabled: bool, trailing: Option<&str>, compact: bool) -> Response {
@@ -252,7 +250,7 @@ pub fn nav_item(ui: &mut Ui, theme: &Theme, icon: Icon, label: &str, selected: b
     let rect = if enabled { squish(ui, id, &resp, rect, 0.04, 0.10) } else { rect };
     let painter = ui.painter();
 
-    // Тёмная заливка только пока кнопка мыши зажата. Простое наведение меню не подсвечивает.
+    // Фон реагирует только на нажатие; при наведении плавно меняется лишь цвет текста и иконки.
     // Фон уже выбранного пункта рисует rail.rs отдельной пилюлей.
     if enabled && resp.is_pointer_button_down_on() {
         painter.rect_filled(rect, 24.0, Color32::from_black_alpha(theme.hover_glide_alpha()));
@@ -260,13 +258,17 @@ pub fn nav_item(ui: &mut Ui, theme: &Theme, icon: Icon, label: &str, selected: b
 
     let fg = if !enabled {
         with_alpha(p.on_surface_variant, 120)
-    } else if selected {
-        match theme.design() {
+    } else {
+        // Как в CSS-примере: активный и наведённый пункты плавно переходят
+        // от приглушённого текста к основному цвету за 0.3 секунды.
+        let selected_fg = match theme.design() {
             Design::Material3 => theme.on_tonal(),
             Design::LiquidGlass => p.on_surface,
-        }
-    } else {
-        p.on_surface_variant
+        };
+        let emphasized = selected || resp.hovered();
+        let emphasized_fg = if selected { selected_fg } else { p.on_surface };
+        let t = ui.ctx().animate_bool_with_time(id.with("emphasis"), emphasized, 0.3);
+        mix_color(p.on_surface_variant, emphasized_fg, t)
     };
 
     // Фон выбранного пункта рисует rail.rs: пилюля, которая плавно скользит между пунктами.
@@ -415,34 +417,40 @@ pub fn section_label(ui: &mut Ui, theme: &Theme, text: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::spring_highlight;
+    use super::spring_step;
 
-    /// После первого перелёта пружина пересекает цель ещё несколько раз, а не садится сразу.
     #[test]
-    fn highlight_spring_rings_more_than_once() {
-        assert!(spring_highlight(0.0).abs() < 1e-3);
-        let peak = spring_highlight(0.2282);
-        assert!((peak - 1.059).abs() < 0.01, "первый пик уехал: {peak}");
+    fn spring_overshoots_and_settles() {
+        let (mut value, mut velocity, target) = (0.0_f32, 0.0_f32, 100.0_f32);
+        let mut overshot = false;
+        let mut settled = false;
 
-        let mut prev = 0.0_f32;
-        let mut prev_d = 0.0_f32;
-        let mut crosses = 0;
-        let mut extrema = 0;
-        for i in 1..1200 {
-            let y = spring_highlight(i as f32 * 0.001);
-            if (prev - 1.0) * (y - 1.0) < 0.0 {
-                crosses += 1;
+        for _ in 0..600 {
+            let moving = spring_step(&mut value, &mut velocity, target, 1.0 / 60.0);
+            assert!(value.is_finite() && velocity.is_finite());
+            overshot |= value > target;
+            if !moving {
+                settled = true;
+                break;
             }
-            let d = y - prev;
-            if i > 2 && prev_d * d < 0.0 && (prev - 1.0).abs() > 0.008 {
-                extrema += 1;
-            }
-            assert!((y - prev).abs() < 0.05, "скачок на шаге {i}: {prev} -> {y}");
-            prev_d = d;
-            prev = y;
         }
-        assert!(crosses >= 4, "мало пересечений цели: {crosses}");
-        assert!(extrema >= 4, "мало колебаний: {extrema}");
-        assert!((spring_highlight(1.2) - 1.0).abs() < 0.01);
+
+        assert!(overshot, "пружина должна слегка перелететь за цель");
+        assert!(settled, "пружина должна остановиться у цели");
+        assert_eq!(value, target);
+        assert_eq!(velocity, 0.0);
+    }
+
+    #[test]
+    fn retargeting_keeps_existing_velocity() {
+        let (mut value, mut velocity) = (0.0_f32, 0.0_f32);
+        for _ in 0..5 {
+            spring_step(&mut value, &mut velocity, 100.0, 1.0 / 60.0);
+        }
+        let velocity_before_retarget = velocity;
+        assert!(velocity_before_retarget > 0.0);
+
+        spring_step(&mut value, &mut velocity, 20.0, 1.0 / 60.0);
+        assert!(velocity > 0.0, "новая цель не должна сбрасывать инерцию");
     }
 }

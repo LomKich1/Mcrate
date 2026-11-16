@@ -2,7 +2,7 @@
 
 use egui::{Rect, RichText, Sense, Shape, Ui, Vec2, pos2};
 
-use super::widgets::{cover_tile, nav_item, section_label, spring_highlight, spring_highlight_resting};
+use super::widgets::{cover_tile, nav_item, section_label, spring_step};
 use crate::app::{McrateApp, View};
 use crate::icons::Icon;
 use crate::theme::Theme;
@@ -81,35 +81,48 @@ impl McrateApp {
             self.view = View::Settings; // из подэкрана вернёт на список разделов
         }
 
-        // Пилюля: до первого пика та же скорость, что раньше (0.23 с), дальше ещё несколько
-        // затухающих колебаний вокруг пункта (spring_highlight).
+        // Физическая пружина совпадает с демо: stiffness=500, damping=34, mass=1.
+        // При быстром переключении переносим скорость, поэтому индикатор продолжает
+        // движение из текущего состояния и естественно разворачивается к новой цели.
         if let Some((key, target)) = selected {
-            let now = ui.input(|i| i.time);
+            let dt = ui.input(|i| i.stable_dt).clamp(0.0, 0.064);
             let id = ui.scope_id().with("rail_pill");
-            let mut a: PillAnim = ui.ctx().data_mut(|d| d.get_temp(id)).unwrap_or(PillAnim { key, from: target.top(), t0: now - 10.0, last_y: target.top() });
-            if a.key != key {
+            let mut a: PillAnim = ui.ctx().data_mut(|d| d.get_temp(id)).unwrap_or(PillAnim {
+                key,
+                y: target.top(),
+                velocity: 0.0,
+                initialized: false,
+            });
+
+            if !a.initialized {
                 a.key = key;
-                a.from = a.last_y; // если нажали на другой пункт на полпути, едем от текущего места
-                a.t0 = now;
+                a.y = target.top();
+                a.velocity = 0.0;
+                a.initialized = true;
+            } else if a.key != key {
+                a.key = key;
             }
-            let elapsed = (now - a.t0) as f32;
-            if !spring_highlight_resting(elapsed) {
+
+            let moving = spring_step(&mut a.y, &mut a.velocity, target.top(), dt);
+            if moving {
                 ui.ctx().request_repaint();
+            } else {
+                a.y = target.top();
+                a.velocity = 0.0;
             }
-            let y = a.from + (target.top() - a.from) * spring_highlight(elapsed);
-            a.last_y = y;
-            ui.ctx().data_mut(|d| d.insert_temp(id, a));
-            let rect = Rect::from_min_size(pos2(target.left(), y), target.size());
+
+            let rect = Rect::from_min_size(pos2(target.left(), a.y), target.size());
             ui.painter().set(pill_slot, Shape::rect_filled(rect, 24.0, theme.selected_fill()));
+            ui.ctx().data_mut(|d| d.insert_temp(id, a));
         }
     }
 }
 
-/// Состояние скольжения пилюли выбора.
+/// Состояние пружинной анимации пилюли выбора.
 #[derive(Clone, Copy)]
 struct PillAnim {
     key: usize,
-    from: f32,
-    t0: f64,
-    last_y: f32,
+    y: f32,
+    velocity: f32,
+    initialized: bool,
 }

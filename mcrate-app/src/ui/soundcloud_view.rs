@@ -11,7 +11,7 @@
 use egui::{Color32, Frame, Margin, RichText, ScrollArea, Sense, Ui, vec2};
 use mcrate_core::Track;
 
-use super::widgets::track_row;
+use super::widgets::{glide_begin, glide_end, track_row};
 use crate::app::McrateApp;
 use crate::theme::Theme;
 
@@ -70,10 +70,16 @@ impl McrateApp {
                 ui.label(RichText::new("Здесь появятся результаты поиска по SoundCloud.").color(p.on_surface_variant));
             } else {
                 let time = ui.input(|i| i.time);
+                let glide_slot = glide_begin(ui);
+                let mut hovered = None;
                 for (i, track) in results.iter().enumerate() {
                     // Клик по строке пока ничего не делает (см. пункт 3 в описании модуля).
-                    let _ = track_row(ui, theme, i, track, false, false, time);
+                    let resp = track_row(ui, theme, i, track, false, false, time);
+                    if resp.hovered() {
+                        hovered = Some((egui::Id::unique(&track.id).value(), resp.rect));
+                    }
                 }
+                glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_soundcloud"), hovered, 18.0);
             }
             ui.add_space(8.0 + self.bottom_inset); // подушка под плавающую панель плеера (Liquid Glass)
         });
