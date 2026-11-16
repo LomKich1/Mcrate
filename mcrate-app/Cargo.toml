@@ -11,7 +11,8 @@ mcrate-providers = { path = "../mcrate-providers" }
 
 # UI: egui поверх wgpu (GPU). persistence = сохранение настроек оформления в файл.
 eframe = { version = "0.37", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "persistence", "wayland", "x11"] }
-# Liquid Glass: рефракция + блюр шейдерами wgpu (MIT). 0.2.x требует egui 0.37; есть LiveBackdrop (стекло видит живой контент). API может меняться
+# Liquid Glass: рефракция + блюр шейдерами wgpu (MIT). 0.2.x требует egui 0.37; есть LiveBackdrop (стекло видит живой контент).
+# Фактически берётся наша копия vendor/egui_glass (см. [patch.crates-io] в корневом Cargo.toml).
 egui = "0.37"
 egui_material_icons = "0.9"
 egui_glass = "0.2.0"
