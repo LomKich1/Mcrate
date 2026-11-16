@@ -52,13 +52,18 @@ impl McrateApp {
         let p = &theme.palette;
         match self.ctl.now.clone() {
             Some(t) => {
-                let (rect, _) = ui.allocate_exact_size(Vec2::splat(52.0), Sense::hover());
-                cover_tile(ui, theme, rect, &t.id, 14.0);
+                let compact = width < 220.0;
+                let cover_size = if compact { 40.0 } else { 52.0 };
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(cover_size), Sense::hover());
+                cover_tile(ui, theme, rect, &t.id, if compact { 10.0 } else { 14.0 });
                 ui.vertical(|ui| {
-                    ui.set_max_width((width - 52.0 - 14.0).max(60.0));
-                    // truncate = длинный текст обрезается многоточием, а не ломает раскладку
-                    ui.add(egui::Label::new(RichText::new(&t.title).size(15.0).strong()).truncate());
-                    ui.add(egui::Label::new(RichText::new(artists_text(&t)).size(12.5).color(p.on_surface_variant)).truncate());
+                    ui.set_max_width((width - cover_size - 14.0).max(60.0));
+                    // В компактном состоянии скрываем вторичные метаданные, чтобы название
+                    // оставалось читаемым и не сжимало центральные кнопки.
+                    ui.add(egui::Label::new(RichText::new(&t.title).size(if compact { 13.5 } else { 15.0 }).strong()).truncate());
+                    if !compact {
+                        ui.add(egui::Label::new(RichText::new(artists_text(&t)).size(12.5).color(p.on_surface_variant)).truncate());
+                    }
                 });
             }
             None => {
@@ -135,10 +140,16 @@ impl McrateApp {
         ui.painter().text(pos2(seek.right() - time_w, seek.center().y), Align2::LEFT_CENTER, fmt_time(dur as u64), font, p.on_surface_variant);
 
         let bar_rect = Rect::from_min_max(pos2(seek.left() + time_w, seek.top()), pos2(seek.right() - time_w, seek.bottom()));
-        let out = ui.scope_builder(UiBuilder::new().max_rect(bar_rect), |ui| slider_bar(ui, theme, bar_rect.width(), frac, dur > 0.0)).inner;
+        let out = ui.scope_builder(UiBuilder::new().max_rect(bar_rect), |ui| slider_bar(ui, theme, bar_rect.width(), frac, dur > 0.0, "Перемотка")).inner;
         if out.response.dragged() {
             if let Some(v) = out.value {
                 self.seek_drag = Some(v);
+            }
+        } else if out.response.has_focus() && !out.response.clicked() {
+            // Изменение с клавиатуры применяется сразу, без имитации мышиного drag.
+            if let Some(v) = out.value {
+                self.ctl.seek_to(v * dur);
+                self.seek_drag = None;
             }
         }
         // Перематываем один раз при отпускании (или при клике), а не на каждом кадре.
@@ -153,7 +164,7 @@ impl McrateApp {
         // Layout здесь right_to_left: что добавлено первым, то правее.
         // Ползунок растёт с панелью, но остаётся в пределах 90..180 px.
         let slider_w = (width * 0.45).clamp(90.0, 180.0);
-        let out = slider_bar(ui, theme, slider_w, self.ctl.volume, true);
+        let out = slider_bar(ui, theme, slider_w, self.ctl.volume, true, "Громкость");
         if let Some(v) = out.value {
             self.ctl.set_volume(v);
         }

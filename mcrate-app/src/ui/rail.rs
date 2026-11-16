@@ -122,8 +122,13 @@ impl McrateApp {
                 a.velocity = 0.0;
             }
 
-            let rect = Rect::from_min_size(pos2(target.left(), a.y), target.size());
-            ui.painter().set(pill_slot, Shape::rect_filled(rect, 24.0, theme.selected_fill()));
+            let compact_m3 = compact && !theme.glass_active();
+            let indicator_size = if compact_m3 { Vec2::new(56.0, 32.0) } else { target.size() };
+            let indicator_left = target.center().x - indicator_size.x * 0.5;
+            let indicator_top = if compact_m3 { a.y + (target.height() - indicator_size.y) * 0.5 } else { a.y };
+            let rect = Rect::from_min_size(pos2(indicator_left, indicator_top), indicator_size);
+            let indicator_radius = if compact_m3 { 16.0 } else { 24.0 };
+            ui.painter().set(pill_slot, Shape::rect_filled(rect, indicator_radius, theme.selected_fill()));
             if theme.glass_active() {
                 // Тонкая внутренняя кромка даёт выбранному пункту лёгкое стеклянное свечение,
                 // не создавая ещё одну стеклянную поверхность поверх рейки.

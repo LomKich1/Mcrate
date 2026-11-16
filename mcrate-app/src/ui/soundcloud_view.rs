@@ -36,7 +36,7 @@ impl McrateApp {
             ui.add_space(4.0);
 
             ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                bleed_clip(ui, self.bleed, 0.0, self.bleed);
+                bleed_clip(ui, self.bleed.below_header());
                 // ---------- поиск (пока выключен) ----------
                 let mut query = String::new();
                 ui.add_enabled(

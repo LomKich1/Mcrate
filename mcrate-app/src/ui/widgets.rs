@@ -6,7 +6,7 @@ use mcrate_core::Track;
 
 use crate::icons::{self, Icon};
 use crate::settings::Design;
-use crate::theme::{Theme, with_alpha};
+use crate::theme::{ShapeRole, TextRole, Theme, with_alpha};
 
 
 /// Общая поисковая строка для главной и библиотеки. Геометрия одинакова,
@@ -77,50 +77,167 @@ pub fn search_bar(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str) ->
             with_alpha(p.on_surface, if hovered { 52 } else { 32 })
         };
         ui.painter().rect_stroke(rect, 17.0, Stroke::new(if focused { 1.25 } else { 0.8 }, border), StrokeKind::Inside);
-        return response;
+        return response.accessible_name(hint);
     }
 
-    Frame::new()
-        .fill(p.surface_container_high)
-        .corner_radius(CornerRadius::same(28))
-        .inner_margin(Margin::symmetric(20, 0))
-        .show(ui, |ui| {
-            ui.set_min_size(vec2(ui.available_width(), 56.0));
-            let visuals = ui.visuals_mut();
-            visuals.extreme_bg_color = Color32::TRANSPARENT;
-            visuals.selection.stroke = Stroke::NONE;
-            for widget in [
-                &mut visuals.widgets.inactive,
-                &mut visuals.widgets.hovered,
-                &mut visuals.widgets.active,
-                &mut visuals.widgets.open,
-            ] {
-                widget.bg_fill = Color32::TRANSPARENT;
-                widget.weak_bg_fill = Color32::TRANSPARENT;
-                widget.bg_stroke = Stroke::NONE;
-            }
-            ui.horizontal(|ui| {
-                ui.set_min_height(56.0);
-                let (icon_rect, _) = ui.allocate_exact_size(Vec2::splat(24.0), Sense::hover());
-                icons::paint(ui.painter(), Icon::Search, icon_rect.center(), 24.0, p.on_surface_variant);
-                ui.add_space(8.0);
-                ui.add(
-                    egui::TextEdit::singleline(value)
-                        .hint_text(hint)
-                        .desired_width(f32::INFINITY)
-                        .margin(Margin::symmetric(0, 0)),
-                )
-            })
-            .inner
-        })
-        .inner
+    // Material 3 SearchBar: fixed 56 px field, a shared center axis for the
+    // search icon and editor, visible focus treatment, and a clear affordance.
+    let available_width = ui.available_width();
+    let width = available_width.min(760.0);
+    let (layout_rect, _) = ui.allocate_exact_size(vec2(available_width, 56.0), Sense::hover());
+    let rect = Rect::from_center_size(layout_rect.center(), vec2(width, 56.0));
+    let radius = theme.shape_radius(ShapeRole::Full);
+    let edit_id = ui.make_persistent_id(("mcrate_search_field", hint));
+    let focused_before = ui.memory(|memory| memory.has_focus(edit_id));
+    let hovered = ui.interact(rect, ui.make_persistent_id(("mcrate_search_surface", hint)), Sense::hover()).hovered();
+    ui.painter().rect_filled(rect, radius, p.surface_container_high);
+
+    let icon_center = pos2(rect.left() + 32.0, rect.center().y);
+    icons::paint(ui.painter(), Icon::Search, icon_center, 24.0, p.on_surface_variant);
+
+    let show_clear = !value.is_empty();
+    let clear_space = if show_clear { 40.0 } else { 0.0 };
+    let field_left = rect.left() + 56.0;
+    let field_right = (rect.right() - 20.0 - clear_space).max(field_left + 32.0);
+    // Смещаем редактор на 3 px вниз относительно геометрического центра поля:
+    // это компенсирует визуально высокий baseline egui TextEdit и ставит строку
+    // на одну оптическую ось с центром лупы.
+    let field_rect = Rect::from_min_size(
+        pos2(field_left, rect.center().y - 18.0 + 3.0),
+        vec2((field_right - field_left).max(32.0), 36.0),
+    );
+    let response = ui.scope_builder(
+        UiBuilder::new()
+            .max_rect(field_rect)
+            .layout(Layout::left_to_right(Align::Center)),
+        |ui| {
+            ui.add_sized(
+                field_rect.size(),
+                egui::TextEdit::singleline(value)
+                    .id(edit_id)
+                    .frame(Frame::NONE)
+                    .hint_text(hint)
+                    .desired_width(field_rect.width())
+                    .margin(Margin::same(0))
+                    .align(Align2::LEFT_CENTER),
+            )
+        },
+    ).inner.accessible_name(hint);
+
+    if show_clear {
+        let clear_rect = Rect::from_center_size(pos2(rect.right() - 32.0, rect.center().y), vec2(28.0, 28.0));
+        let clear_resp = ui.interact(clear_rect, ui.make_persistent_id(("mcrate_search_clear", hint)), Sense::click());
+        let color = if clear_resp.hovered() { p.on_surface } else { p.on_surface_variant };
+        if clear_resp.hovered() {
+            ui.painter().circle_filled(clear_rect.center(), 12.0, with_alpha(p.on_surface, 20));
+        }
+        let c = clear_rect.center();
+        let d = 4.0;
+        ui.painter().line_segment([pos2(c.x - d, c.y - d), pos2(c.x + d, c.y + d)], Stroke::new(1.6, color));
+        ui.painter().line_segment([pos2(c.x + d, c.y - d), pos2(c.x - d, c.y + d)], Stroke::new(1.6, color));
+        if clear_resp.clicked() {
+            value.clear();
+        }
+        clear_resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Очистить поиск"));
+        clear_resp.on_hover_text("Очистить поиск");
+    }
+
+    let focused = focused_before || response.has_focus();
+    let border = if focused {
+        p.primary
+    } else if hovered {
+        p.outline
+    } else {
+        with_alpha(p.outline_variant, 0)
+    };
+    ui.painter().rect_stroke(
+        rect,
+        radius,
+        Stroke::new(if focused { 2.0 } else if hovered { 1.0 } else { 0.0 }, border),
+        StrokeKind::Inside,
+    );
+    response
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ButtonKind {
-    Plain,  // только иконка
-    Tonal,  // приглушённая заливка
-    Filled, // главный акцент (кнопка «играть»)
+    Plain,    // только иконка без постоянной подложки
+    Text,     // текстовая кнопка
+    Outlined, // контурная кнопка
+    Tonal,    // приглушённая заливка
+    Filled,   // главный акцент (кнопка «играть»)
+}
+
+/// M3 snackbar: инверсная поверхность, контрастный текст и действие inverse-primary.
+/// Возвращает true, если пользователь нажал на закрытие.
+pub fn status_snackbar(ui: &mut Ui, theme: &Theme, message: &str) -> bool {
+    let p = &theme.palette;
+    Frame::new()
+        .fill(p.inverse_surface)
+        .corner_radius(CornerRadius::same(theme.shape_radius(ShapeRole::Medium)))
+        .inner_margin(Margin::symmetric(16, 8))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let (rect, response) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click());
+                    if response.hovered() {
+                        ui.painter().circle_filled(rect.center(), 15.0, with_alpha(p.inverse_on_surface, 20));
+                    }
+                    ui.painter().text(
+                        rect.center(),
+                        Align2::CENTER_CENTER,
+                        "×",
+                        FontId::proportional(20.0),
+                        p.inverse_primary,
+                    );
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(message)
+                                .size(theme.text_size(TextRole::BodyMedium))
+                                .color(p.inverse_on_surface),
+                        )
+                        .wrap(),
+                    );
+                    response.on_hover_text("Закрыть").on_hover_cursor(CursorIcon::PointingHand).clicked()
+                }).inner
+            }).inner
+        })
+        .inner
+}
+
+/// Ошибка в контейнере семантического цвета. В Liquid Glass остаётся прежний тихий текстовый стиль.
+pub fn error_banner(ui: &mut Ui, theme: &Theme, message: &str) {
+    let p = &theme.palette;
+    if theme.glass_active() {
+        ui.label(egui::RichText::new(message).size(13.0).color(p.error));
+        return;
+    }
+
+    Frame::new()
+        .fill(p.error_container)
+        .corner_radius(CornerRadius::same(theme.shape_radius(ShapeRole::Medium)))
+        .inner_margin(Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let (badge, _) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::hover());
+                ui.painter().circle_filled(badge.center(), 9.0, p.error);
+                ui.painter().text(
+                    badge.center(),
+                    Align2::CENTER_CENTER,
+                    "!",
+                    FontId::proportional(13.0),
+                    p.on_error,
+                );
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(message)
+                            .size(theme.text_size(TextRole::BodySmall))
+                            .color(p.on_error_container),
+                    )
+                    .wrap(),
+                );
+            });
+        });
 }
 
 
@@ -277,10 +394,10 @@ pub fn glide_end(ui: &Ui, theme: &Theme, slot: ShapeIdx, salt: Id, target: Optio
 
 /// «Слой состояния» из M3: при наведении поверх кладётся 8% цвета контента, при нажатии 12%.
 fn state_alpha(r: &Response) -> u8 {
-    if r.is_pointer_button_down_on() {
-        30
+    if r.is_pointer_button_down_on() || r.has_focus() {
+        30 // pressed / focused: 12%
     } else if r.hovered() {
-        20
+        20 // hovered: 8%
     } else {
         0
     }
@@ -295,6 +412,7 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, diameter: f32, kind: 
     let fg = match kind {
         ButtonKind::Filled => p.on_primary,
         ButtonKind::Tonal => if glass { p.on_surface } else { theme.on_tonal() },
+        ButtonKind::Outlined | ButtonKind::Text => p.primary,
         ButtonKind::Plain => if active { p.primary } else { p.on_surface },
     };
     let painter = ui.painter();
@@ -314,6 +432,15 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, diameter: f32, kind: 
                 Some(with_alpha(p.surface_container_high, if pressed { 142 } else if hovered { 112 } else { 82 })),
                 with_alpha(p.on_surface, if hovered { 72 } else { 42 }),
             ),
+            ButtonKind::Outlined => (
+                Some(with_alpha(p.surface_container_high, if pressed { 116 } else if hovered { 74 } else { 36 })),
+                with_alpha(p.on_surface, if hovered { 82 } else { 54 }),
+            ),
+            ButtonKind::Text if hovered || pressed => (
+                Some(with_alpha(p.on_surface, if pressed { 38 } else { 24 })),
+                with_alpha(p.on_surface, 42),
+            ),
+            ButtonKind::Text => (None, Color32::TRANSPARENT),
             ButtonKind::Plain if active => (
                 Some(with_alpha(p.primary, if pressed { 82 } else if hovered { 68 } else { 54 })),
                 with_alpha(p.primary, 86),
@@ -329,7 +456,7 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, diameter: f32, kind: 
         }
         if let Some(fill) = fill {
             painter.circle_filled(visual_rect.center(), r, fill);
-            if kind != ButtonKind::Plain || active {
+            if !matches!(kind, ButtonKind::Plain | ButtonKind::Text) || active {
                 painter.circle_stroke(visual_rect.center(), r - 0.5, Stroke::new(0.9, stroke));
                 // Короткий верхний блик помогает читать кнопку как прозрачный контрол,
                 // но не превращает каждый элемент в яркую стеклянную капсулу.
@@ -344,6 +471,7 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, diameter: f32, kind: 
         let (bg, _) = match kind {
             ButtonKind::Filled => (Some(p.primary), p.on_primary),
             ButtonKind::Tonal => (Some(theme.tonal_fill()), theme.on_tonal()),
+            ButtonKind::Outlined | ButtonKind::Text => (None, p.primary),
             ButtonKind::Plain => (if active { Some(with_alpha(p.primary, if p.dark { 42 } else { 34 })) } else { None }, p.on_surface),
         };
         if let Some(bg) = bg {
@@ -353,10 +481,18 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, diameter: f32, kind: 
         if a > 0 {
             painter.circle_filled(visual_rect.center(), r, with_alpha(fg, a));
         }
+        if kind == ButtonKind::Outlined {
+            painter.circle_stroke(visual_rect.center(), r - 0.5, Stroke::new(1.0, p.outline));
+        }
+        if resp.has_focus() {
+            painter.circle_stroke(visual_rect.center(), r + 1.5, Stroke::new(2.0, p.primary));
+        }
     }
 
     icons::paint(painter, icon, visual_rect.center(), diameter * 0.6, fg);
-    resp.on_hover_text(tip).on_hover_cursor(CursorIcon::PointingHand)
+    let resp = resp.on_hover_text(tip).on_hover_cursor(CursorIcon::PointingHand);
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, active, tip));
+    resp
 }
 
 /// Кнопка-«таблетка» с текстом и необязательной иконкой.
@@ -367,13 +503,15 @@ pub fn pill_button(ui: &mut Ui, theme: &Theme, label: &str, icon: Option<Icon>, 
         ButtonKind::Filled => p.on_primary,
         ButtonKind::Tonal if glass => p.on_surface,
         ButtonKind::Tonal => theme.on_tonal(),
+        ButtonKind::Outlined | ButtonKind::Text => p.primary,
         ButtonKind::Plain => p.on_surface,
     };
-    let galley = ui.painter().layout_no_wrap(label.to_owned(), FontId::proportional(14.0), fg);
+    let galley = ui.painter().layout_no_wrap(label.to_owned(), FontId::proportional(theme.text_size(TextRole::LabelLarge)), fg);
     let icon_w = if icon.is_some() { 20.0 + 8.0 } else { 0.0 };
     let size = vec2(galley.size().x + icon_w + 36.0, 40.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let visual_rect = if glass { squish(ui, resp.id, &resp, rect, 0.035, 0.075) } else { rect };
+    let pill_radius = if glass { 20.0 } else { (theme.shape_radius(ShapeRole::Full) as f32).min(visual_rect.height() * 0.5) };
     let painter = ui.painter();
 
     if glass {
@@ -383,25 +521,35 @@ pub fn pill_button(ui: &mut Ui, theme: &Theme, label: &str, icon: Option<Icon>, 
                 with_alpha(p.surface_container_high, if resp.is_pointer_button_down_on() { 146 } else if resp.hovered() { 112 } else { 82 }),
                 with_alpha(p.on_surface, if resp.hovered() { 72 } else { 42 }),
             ),
-            ButtonKind::Plain => (with_alpha(p.on_surface, if resp.hovered() { 28 } else { 0 }), with_alpha(p.on_surface, 30)),
+            ButtonKind::Outlined => (
+                with_alpha(p.surface_container_high, if resp.is_pointer_button_down_on() { 116 } else if resp.hovered() { 74 } else { 36 }),
+                with_alpha(p.on_surface, if resp.hovered() { 82 } else { 54 }),
+            ),
+            ButtonKind::Text | ButtonKind::Plain => (with_alpha(p.on_surface, if resp.hovered() { 28 } else { 0 }), with_alpha(p.on_surface, 30)),
         };
         if kind == ButtonKind::Filled {
             painter.rect_filled(visual_rect.translate(vec2(0.0, 1.0)), 20.0, Color32::from_black_alpha(if p.dark { 42 } else { 24 }));
         }
-        painter.rect_filled(visual_rect, 20.0, fill);
-        if kind != ButtonKind::Plain || resp.hovered() {
-            painter.rect_stroke(visual_rect, 20.0, Stroke::new(0.9, stroke), StrokeKind::Inside);
+            painter.rect_filled(visual_rect, pill_radius, fill);
+        if !matches!(kind, ButtonKind::Plain | ButtonKind::Text) || resp.hovered() {
+            painter.rect_stroke(visual_rect, pill_radius, Stroke::new(0.9, stroke), StrokeKind::Inside);
         }
     } else {
         let bg = match kind {
             ButtonKind::Filled => p.primary,
             ButtonKind::Tonal => theme.tonal_fill(),
-            ButtonKind::Plain => Color32::TRANSPARENT,
+            ButtonKind::Outlined | ButtonKind::Text | ButtonKind::Plain => Color32::TRANSPARENT,
         };
-        painter.rect_filled(visual_rect, 20.0, bg);
+        painter.rect_filled(visual_rect, pill_radius, bg);
         let a = state_alpha(&resp);
         if a > 0 {
-            painter.rect_filled(visual_rect, 20.0, with_alpha(fg, a));
+            painter.rect_filled(visual_rect, pill_radius, with_alpha(fg, a));
+        }
+        if kind == ButtonKind::Outlined {
+            painter.rect_stroke(visual_rect, pill_radius, Stroke::new(1.0, p.outline), StrokeKind::Inside);
+        }
+        if resp.has_focus() {
+            painter.rect_stroke(visual_rect.expand(2.0), pill_radius + 2.0, Stroke::new(2.0, p.primary), StrokeKind::Outside);
         }
     }
 
@@ -411,7 +559,9 @@ pub fn pill_button(ui: &mut Ui, theme: &Theme, label: &str, icon: Option<Icon>, 
         x += icon_w;
     }
     painter.galley(pos2(x, visual_rect.center().y - galley.size().y / 2.0), galley, fg);
-    resp.on_hover_cursor(CursorIcon::PointingHand)
+    let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
+    resp
 }
 
 /// Интерполяция sRGBA для плавного изменения цвета текста навигации.
@@ -443,6 +593,9 @@ pub fn nav_item(ui: &mut Ui, theme: &Theme, icon: Icon, label: &str, selected: b
     if enabled && resp.is_pointer_button_down_on() {
         painter.rect_filled(rect, 24.0, with_alpha(theme.hover_glide_color(), theme.hover_glide_alpha()));
     }
+    if resp.has_focus() && !theme.glass_active() {
+        painter.rect_stroke(rect.shrink(2.0), 22.0, Stroke::new(2.0, p.primary), StrokeKind::Inside);
+    }
 
     let fg = if !enabled {
         with_alpha(p.on_surface_variant, 120)
@@ -464,13 +617,16 @@ pub fn nav_item(ui: &mut Ui, theme: &Theme, icon: Icon, label: &str, selected: b
         icons::paint(painter, icon, rect.center(), 24.0, fg);
     } else {
         icons::paint(painter, icon, pos2(rect.left() + 28.0, rect.center().y), 24.0, fg);
-        painter.text(pos2(rect.left() + 52.0, rect.center().y), Align2::LEFT_CENTER, label, FontId::proportional(15.0), fg);
+        let label_size = if theme.glass_active() { 15.0 } else { theme.text_size(TextRole::LabelLarge) };
+        painter.text(pos2(rect.left() + 52.0, rect.center().y), Align2::LEFT_CENTER, label, FontId::proportional(label_size), fg);
         if let Some(t) = trailing {
             painter.text(pos2(rect.right() - 14.0, rect.center().y), Align2::RIGHT_CENTER, t, FontId::proportional(11.0), fg);
         }
     }
     let resp = if compact { resp.on_hover_text(label) } else { resp };
-    if enabled { resp.on_hover_cursor(CursorIcon::PointingHand) } else { resp }
+    let resp = if enabled { resp.on_hover_cursor(CursorIcon::PointingHand) } else { resp };
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, enabled, selected, label));
+    resp
 }
 
 /// Результат ползунка: `value` = Some(доля 0..1), пока пользователь тянет или кликает.
@@ -479,9 +635,9 @@ pub struct BarOutput {
     pub value: Option<f32>,
 }
 
-/// Ползунок для перемотки и громкости. В M3 ручка в виде вертикальной «таблетки» (Expressive),
-/// в Liquid Glass круглая.
-pub fn slider_bar(ui: &mut Ui, theme: &Theme, width: f32, frac: f32, enabled: bool) -> BarOutput {
+/// Ползунок для перемотки и громкости. M3 использует круглую ручку и явную дорожку,
+/// Liquid Glass сохраняет своё стеклянное оформление.
+pub fn slider_bar(ui: &mut Ui, theme: &Theme, width: f32, frac: f32, enabled: bool, label: &str) -> BarOutput {
     let p = &theme.palette;
     let sense = if enabled { Sense::click_and_drag() } else { Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 24.0), sense);
@@ -499,18 +655,28 @@ pub fn slider_bar(ui: &mut Ui, theme: &Theme, width: f32, frac: f32, enabled: bo
 
     match theme.design() {
         Design::Material3 => {
-            // Активная часть, зазор, ручка-«таблетка», неактивная часть.
-            let gap = 6.0;
-            let a_end = (x - gap).max(left);
-            if a_end > left {
-                painter.rect_filled(Rect::from_min_max(pos2(left, cy - th / 2.0), pos2(a_end, cy + th / 2.0)), th / 2.0, fg);
+            // Классический M3 Slider: тонкая дорожка и хорошо различимый круглый бегунок.
+            // При наведении/перетаскивании бегунок получает мягкий контейнерный ореол.
+            let track_h = if active { 5.0 } else { 4.0 };
+            painter.rect_filled(
+                Rect::from_min_max(pos2(left, cy - track_h / 2.0), pos2(right, cy + track_h / 2.0)),
+                track_h / 2.0,
+                p.surface_container_highest,
+            );
+            if x > left {
+                painter.rect_filled(
+                    Rect::from_min_max(pos2(left, cy - track_h / 2.0), pos2(x, cy + track_h / 2.0)),
+                    track_h / 2.0,
+                    fg,
+                );
             }
-            let i_start = (x + gap).min(right);
-            if right > i_start {
-                painter.rect_filled(Rect::from_min_max(pos2(i_start, cy - th / 2.0), pos2(right, cy + th / 2.0)), th / 2.0, track_bg);
+            if active {
+                painter.circle_filled(pos2(x, cy), 10.0, p.primary_container);
             }
-            let hw = if resp.dragged() { 3.0 } else { 4.0 };
-            painter.rect_filled(Rect::from_center_size(pos2(x, cy), vec2(hw, 22.0)), hw / 2.0, fg);
+            painter.circle_filled(pos2(x, cy), if active { 6.5 } else { 6.0 }, fg);
+            if resp.has_focus() {
+                painter.circle_stroke(pos2(x, cy), 10.5, Stroke::new(2.0, p.primary));
+            }
         }
         Design::LiquidGlass => {
             painter.rect_filled(Rect::from_min_max(pos2(left, cy - th / 2.0), pos2(right, cy + th / 2.0)), th / 2.0, track_bg);
@@ -523,11 +689,33 @@ pub fn slider_bar(ui: &mut Ui, theme: &Theme, width: f32, frac: f32, enabled: bo
         }
     }
 
-    let value = if resp.dragged() || resp.clicked() || resp.drag_stopped() {
+    let pointer_value = if resp.dragged() || resp.clicked() || resp.drag_stopped() {
         resp.interact_pointer_pos().map(|pos| ((pos.x - left) / (right - left)).clamp(0.0, 1.0))
     } else {
         None
     };
+    // Клавиатурное управление делает прогресс и громкость доступнее: стрелки меняют
+    // значение на 1%, Shift + стрелка — на 10%, Home/End переходят к границам.
+    let keyboard_value = if enabled && resp.has_focus() {
+        ui.input(|input| {
+            let step = if input.modifiers.shift { 0.10 } else { 0.01 };
+            if input.key_pressed(egui::Key::ArrowLeft) || input.key_pressed(egui::Key::ArrowDown) {
+                Some((frac - step).clamp(0.0, 1.0))
+            } else if input.key_pressed(egui::Key::ArrowRight) || input.key_pressed(egui::Key::ArrowUp) {
+                Some((frac + step).clamp(0.0, 1.0))
+            } else if input.key_pressed(egui::Key::Home) {
+                Some(0.0)
+            } else if input.key_pressed(egui::Key::End) {
+                Some(1.0)
+            } else {
+                None
+            }
+        })
+    } else {
+        None
+    };
+    let value = pointer_value.or(keyboard_value);
+    resp.widget_info(|| egui::WidgetInfo::slider(enabled, value.unwrap_or(frac) as f64, label));
     BarOutput { response: resp, value }
 }
 
@@ -569,11 +757,14 @@ pub fn artists_text(track: &Track) -> String {
     }
 }
 
-/// Строка списка треков. Высота фиксированная (56), чтобы работала виртуализация списка.
+/// Строка списка треков. В Material 3 двухстрочный элемент занимает 72 px;
+/// Liquid Glass сохраняет исходные 56 px для совместимости с прежней геометрией.
 /// Индекс выводится отдельной колонкой: он нужен для порядка в библиотеке и списка «Мои треки».
 pub fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track, is_current: bool, is_playing: bool, time: f64) -> Response {
     let p = &theme.palette;
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 56.0), Sense::click());
+    let row_height = theme.list_item_height(2);
+    let cover_size = if theme.glass_active() { 40.0 } else { 48.0 };
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::click());
     // Подсветку под курсором рисует список (`glide_end`: она скользит между строками); здесь только сжатие при нажатии.
     if !ui.is_rect_visible(rect) {
         return resp; // не в кадре: ничего не считаем и не рисуем
@@ -590,7 +781,7 @@ pub fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track, is_cur
                 with_alpha(p.primary, 210),
             );
         } else {
-            painter.rect_filled(rect, 18.0, with_alpha(p.primary, if p.dark { 34 } else { 28 }));
+            painter.rect_filled(rect, theme.shape_radius(ShapeRole::Large), p.secondary_container);
         }
     }
 
@@ -602,8 +793,9 @@ pub fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track, is_cur
         FontId::proportional(12.5),
         p.on_surface_variant,
     );
-    let cover = Rect::from_min_size(pos2(rect.left() + 34.0, rect.center().y - 20.0), Vec2::splat(40.0));
-    cover_tile(ui, theme, cover, &track.id, 12.0);
+    let cover = Rect::from_min_size(pos2(rect.left() + 34.0, rect.center().y - cover_size * 0.5), Vec2::splat(cover_size));
+    let cover_radius = if theme.glass_active() { 12.0 } else { theme.shape_radius(ShapeRole::Medium) as f32 };
+    cover_tile(ui, theme, cover, &track.id, cover_radius);
     let painter = ui.painter();
     if is_current {
         painter.rect_filled(cover, 12.0, egui::Color32::from_black_alpha(110));
@@ -614,12 +806,23 @@ pub fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track, is_cur
     let dur_x = rect.right() - 16.0;
     let clip = Rect::from_min_max(pos2(text_left, rect.top()), pos2(dur_x - 56.0, rect.bottom()));
     let clipped = painter.with_clip_rect(clip);
-    let title_color = if is_current { p.primary } else { p.on_surface };
-    clipped.text(pos2(text_left, rect.center().y - 9.0), Align2::LEFT_CENTER, &track.title, FontId::proportional(15.0), title_color);
-    clipped.text(pos2(text_left, rect.center().y + 10.0), Align2::LEFT_CENTER, artists_text(track), FontId::proportional(12.5), p.on_surface_variant);
-    painter.text(pos2(dur_x, rect.center().y), Align2::RIGHT_CENTER, fmt_time(track.duration_secs as u64), FontId::proportional(13.0), p.on_surface_variant);
+    let title_color = if is_current {
+        if theme.glass_active() { p.primary } else { p.on_secondary_container }
+    } else {
+        p.on_surface
+    };
+    let title_offset = if theme.glass_active() { 9.0 } else { 11.0 };
+    let caption_offset = if theme.glass_active() { 10.0 } else { 12.0 };
+    let supporting_role = if theme.glass_active() { TextRole::BodySmall } else { TextRole::BodyMedium };
+    clipped.text(pos2(text_left, rect.center().y - title_offset), Align2::LEFT_CENTER, &track.title, FontId::proportional(theme.text_size(TextRole::TitleMedium)), title_color);
+    clipped.text(pos2(text_left, rect.center().y + caption_offset), Align2::LEFT_CENTER, artists_text(track), FontId::proportional(theme.text_size(supporting_role)), p.on_surface_variant);
+    let time_size = if theme.glass_active() { 12.5 } else { theme.text_size(TextRole::LabelSmall) };
+    painter.text(pos2(dur_x, rect.center().y), Align2::RIGHT_CENTER, fmt_time(track.duration_secs as u64), FontId::proportional(time_size), p.on_surface_variant);
 
-    resp.on_hover_cursor(CursorIcon::PointingHand)
+    let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
+    let accessible_label = format!("{} — {}", track.title, artists_text(track));
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, is_current, accessible_label));
+    resp
 }
 
 /// Маленький заголовок группы (например «Сервисы»).

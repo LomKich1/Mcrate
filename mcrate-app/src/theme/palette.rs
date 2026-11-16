@@ -462,12 +462,22 @@ impl Palette {
             ThemePreset::MistyWave => ([0x96, 0xE5, 0xE3], true),
             ThemePreset::Glacier => ([0x94, 0xD3, 0xEE], true),
             ThemePreset::GreenDusk => ([0xE2, 0xE2, 0x7C], true),
-            ThemePreset::UrbanGray => ([0xC9, 0xC6, 0xC9], true),
+            // Для «Городского серого» сохраняем исходную палитру проекта:
+            // акцент #C9C6C9, фон #1B1B1D и базовую поверхность #262628.
+            // M3-дополнительные роли берутся из той же серой основы.
+            ThemePreset::UrbanGray => return material3_urban_gray(),
             ThemePreset::SilentDawn => ([0x88, 0xD8, 0x9C], true),
             ThemePreset::Sky => ([0x58, 0xC4, 0xDC], true),
             ThemePreset::Custom => (seed, custom_is_dark),
         };
         from_seed(source, dark)
+    }
+
+    /// Материализованная M3-схема с прежними цветами авторской темы Urban Gray.
+    /// Семантические роли, которых не было в старой палитре, дополняются из MCU,
+    /// но уже существовавшие цвета акцента и поверхностей остаются неизменными.
+    fn material3_urban_gray() -> Self {
+        dark_scheme_from(hex(0xC9C6C9), hex(0x1B1B1D), hex(0x262628))
     }
 
     /// Выбрать палитру в зависимости от дизайна. Это изолирует Material 3 от Liquid Glass:
@@ -519,6 +529,37 @@ mod tests {
         for (x, y) in [(c.r(), back.r()), (c.g(), back.g()), (c.b(), back.b())] {
             assert!((x as i32 - y as i32).abs() <= 1);
         }
+    }
+
+    #[test]
+    fn urban_gray_keeps_legacy_palette_roles_in_material3() {
+        let seed = [0x4F, 0x7C, 0xFF];
+        let p = Palette::for_material3_preset(ThemePreset::UrbanGray, seed, true);
+        let legacy = Palette::for_glass_preset(ThemePreset::UrbanGray, seed, true);
+
+        // Все цветовые роли, существовавшие до M3, совпадают с исходной
+        // «Городской серой»; недостающие M3-роли остаются дополнением схемы.
+        assert_eq!(p.primary, hex(0xC9C6C9));
+        assert_eq!(p.surface, hex(0x1B1B1D));
+        assert_eq!(p.surface_container, hex(0x262628));
+        assert_eq!(p.dark, legacy.dark);
+        assert_eq!(p.primary, legacy.primary);
+        assert_eq!(p.on_primary, legacy.on_primary);
+        assert_eq!(p.primary_container, legacy.primary_container);
+        assert_eq!(p.on_primary_container, legacy.on_primary_container);
+        assert_eq!(p.secondary_container, legacy.secondary_container);
+        assert_eq!(p.on_secondary_container, legacy.on_secondary_container);
+        assert_eq!(p.tertiary_container, legacy.tertiary_container);
+        assert_eq!(p.surface, legacy.surface);
+        assert_eq!(p.surface_container_lowest, legacy.surface_container_lowest);
+        assert_eq!(p.surface_container_low, legacy.surface_container_low);
+        assert_eq!(p.surface_container, legacy.surface_container);
+        assert_eq!(p.surface_container_high, legacy.surface_container_high);
+        assert_eq!(p.surface_container_highest, legacy.surface_container_highest);
+        assert_eq!(p.on_surface, legacy.on_surface);
+        assert_eq!(p.on_surface_variant, legacy.on_surface_variant);
+        assert_eq!(p.outline_variant, legacy.outline_variant);
+        assert_eq!(p.error, legacy.error);
     }
 
     #[test]

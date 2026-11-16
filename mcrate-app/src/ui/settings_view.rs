@@ -4,12 +4,12 @@ use egui::collapsing_header::CollapsingState;
 use egui::{Color32, CornerRadius, CursorIcon, FontId, Margin, Rect, RichText, Sense, Stroke, Ui, Vec2, pos2, vec2};
 
 use super::layout::{bleed_clip, centered_column, scroll_end_padding};
-use super::widgets::{ButtonKind, pill_button};
+use super::widgets::{ButtonKind, error_banner, pill_button};
 use crate::app::{McrateApp, View};
 use crate::platform;
 use crate::settings::{Design, GlassQuality, GraphicsSettings, ThemePreset, WindowBackdrop};
 use crate::theme::Palette;
-use crate::theme::{Theme, with_alpha};
+use crate::theme::{ShapeRole, TextRole, Theme, with_alpha};
 
 impl McrateApp {
     /// Главный экран настроек: список разделов. Каждый раздел это отдельный экран (`View::Settings*`),
@@ -20,7 +20,7 @@ impl McrateApp {
             ui.add_space(8.0);
 
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                bleed_clip(ui, self.bleed, 0.0, self.bleed);
+                bleed_clip(ui, self.bleed.below_header());
                 let design = match self.settings.design {
                     Design::Material3 => "Material 3",
                     Design::LiquidGlass => "Liquid Glass",
@@ -43,7 +43,8 @@ impl McrateApp {
                 }
 
                 ui.add_space(12.0);
-                if pill_button(ui, theme, "Сбросить все настройки", None, ButtonKind::Tonal).clicked() {
+                let reset_kind = if theme.glass_active() { ButtonKind::Tonal } else { ButtonKind::Outlined };
+                if pill_button(ui, theme, "Сбросить все настройки", None, reset_kind).clicked() {
                     self.settings = GraphicsSettings::default();
                 }
                 scroll_end_padding(ui, self.bottom_inset);
@@ -61,8 +62,8 @@ impl McrateApp {
             ui.add_space(4.0);
 
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                bleed_clip(ui, self.bleed, 0.0, self.bleed);
-                group_title(ui, "Дизайн");
+                bleed_clip(ui, self.bleed.below_header());
+                group_title(ui, theme, "Дизайн");
                 let w = ((ui.available_width() - 14.0) / 2.0).min(340.0);
                 ui.horizontal(|ui| {
                     for (design, name) in [(Design::Material3, "Material 3"), (Design::LiquidGlass, "Liquid Glass")] {
@@ -83,13 +84,21 @@ impl McrateApp {
                     );
                 }
 
-                group_title(ui, "Цветовая тема");
+                group_title(ui, theme, "Цветовая тема");
                 theme_menu(ui, theme, &mut self.settings);
                 if self.settings.theme == ThemePreset::Custom {
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
                         let dark = self.settings.dark;
-                        let kind = |on: bool| if on { ButtonKind::Filled } else { ButtonKind::Tonal };
+                        let kind = |on: bool| {
+                            if on {
+                                ButtonKind::Filled
+                            } else if theme.glass_active() {
+                                ButtonKind::Tonal
+                            } else {
+                                ButtonKind::Outlined
+                            }
+                        };
                         if pill_button(ui, theme, "Светлая", None, kind(!dark)).clicked() {
                             self.settings.dark = false;
                         }
@@ -106,6 +115,18 @@ impl McrateApp {
                         .size(12.5)
                         .color(p.on_surface_variant),
                 );
+
+                group_title(ui, theme, "Движение и анимация");
+                ui.checkbox(&mut self.settings.reduce_motion, "Уменьшить анимацию");
+                ui.label(
+                    RichText::new("Отключает непрерывное движение волны и визуализатора, оставляя спокойное статичное состояние.")
+                        .size(12.0)
+                        .color(p.on_surface_variant),
+                );
+
+                group_title(ui, theme, "Предпросмотр палитры");
+                let preview = Palette::from_settings(&self.settings, self.settings.design);
+                palette_preview(ui, theme, &preview);
                 scroll_end_padding(ui, self.bottom_inset);
             });
         });
@@ -121,8 +142,8 @@ impl McrateApp {
             ui.add_space(4.0);
 
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                bleed_clip(ui, self.bleed, 0.0, self.bleed);
-                group_title(ui, "Материал окна (Windows 11)");
+                bleed_clip(ui, self.bleed.below_header());
+                group_title(ui, theme, "Материал окна (Windows 11)");
                 ui.add_enabled_ui(platform::BACKDROP_SUPPORTED, |ui| {
                     ui.horizontal(|ui| {
                         ui.selectable_value(&mut self.settings.window_backdrop, WindowBackdrop::Off, "Выкл");
@@ -137,7 +158,7 @@ impl McrateApp {
                 };
                 ui.label(RichText::new(note).size(12.5).color(p.on_surface_variant));
                 if let Some(err) = &self.backdrop_error {
-                    ui.label(RichText::new(err).size(12.5).color(p.error));
+                    error_banner(ui, theme, err);
                 }
                 let (diag, ok) = if self.gpu_backend == "Dx12" {
                     ("Графический API: DX12 (прозрачность окна доступна).".to_string(), true)
@@ -147,7 +168,11 @@ impl McrateApp {
                         !platform::BACKDROP_SUPPORTED,
                     )
                 };
-                ui.label(RichText::new(diag).size(12.5).color(if ok { p.on_surface_variant } else { p.error }));
+                if ok {
+                    ui.label(RichText::new(diag).size(12.5).color(p.on_surface_variant));
+                } else {
+                    error_banner(ui, theme, &diag);
+                }
                 scroll_end_padding(ui, self.bottom_inset);
             });
         });
@@ -163,8 +188,8 @@ impl McrateApp {
             ui.add_space(4.0);
 
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                bleed_clip(ui, self.bleed, 0.0, self.bleed);
-                group_title(ui, "Mcrate");
+                bleed_clip(ui, self.bleed.below_header());
+                group_title(ui, theme, "Mcrate");
                 ui.label(RichText::new("Музыкальный плеер на Rust и egui.").color(p.on_surface_variant));
                 ui.add_space(12.0);
                 egui::Grid::new("about_grid").num_columns(2).spacing([24.0, 8.0]).show(ui, |ui| {
@@ -183,6 +208,24 @@ impl McrateApp {
         });
     }
 
+}
+
+/// Компактная M3-проба основных семантических ролей выбранной палитры.
+fn palette_preview(ui: &mut Ui, theme: &Theme, palette: &Palette) {
+    let samples = [
+        ("Primary", palette.primary, palette.on_primary),
+        ("Secondary", palette.secondary_container, palette.on_secondary_container),
+        ("Tertiary", palette.tertiary_container, palette.on_tertiary_container),
+        ("Surface", palette.surface_container_high, palette.on_surface),
+        ("Error", palette.error_container, palette.on_error_container),
+    ];
+    ui.horizontal_wrapped(|ui| {
+        for (label, fill, foreground) in samples {
+            let (rect, _) = ui.allocate_exact_size(vec2(104.0, 48.0), Sense::hover());
+            ui.painter().rect_filled(rect, theme.shape_radius(ShapeRole::Medium), fill);
+            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, label, FontId::proportional(12.0), foreground);
+        }
+    });
 }
 
 /// Шапка подэкрана настроек: круглая кнопка «назад» и заголовок. Возвращает `true`, если нажали «назад».
@@ -211,7 +254,8 @@ fn settings_header(ui: &mut Ui, theme: &Theme, title: &str) -> bool {
 /// Строка-переход главного экрана настроек: название, подпись и шеврон «>» справа.
 fn settings_nav_row(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str) -> egui::Response {
     let p = &theme.palette;
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width().min(700.0), 64.0), Sense::click());
+    let row_height = if theme.glass_active() { 64.0 } else { theme.list_item_height(2) };
+    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width().min(700.0), row_height), Sense::click());
     let painter = ui.painter();
     if theme.glass_active() {
         if resp.hovered() {
@@ -220,13 +264,15 @@ fn settings_nav_row(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str) -> 
         }
         painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(0.7, with_alpha(p.on_surface, 22)));
     } else {
-        painter.rect_filled(rect, 16.0, p.surface_container_high);
+            painter.rect_filled(rect, theme.shape_radius(ShapeRole::Large), p.surface_container_high);
         if resp.hovered() {
-            painter.rect_filled(rect, 16.0, theme.row_hover_fill());
+            painter.rect_filled(rect, theme.shape_radius(ShapeRole::Large), theme.row_hover_fill());
         }
     }
-    painter.text(pos2(rect.left() + 18.0, rect.center().y - 10.0), egui::Align2::LEFT_CENTER, title, FontId::proportional(16.0), p.on_surface);
-    painter.text(pos2(rect.left() + 18.0, rect.center().y + 12.0), egui::Align2::LEFT_CENTER, subtitle, FontId::proportional(12.5), p.on_surface_variant);
+    let title_size = if theme.glass_active() { 16.0 } else { theme.text_size(TextRole::TitleMedium) };
+    let subtitle_size = if theme.glass_active() { 12.5 } else { theme.text_size(TextRole::BodySmall) };
+    painter.text(pos2(rect.left() + 18.0, rect.center().y - 10.0), egui::Align2::LEFT_CENTER, title, FontId::proportional(title_size), p.on_surface);
+    painter.text(pos2(rect.left() + 18.0, rect.center().y + 12.0), egui::Align2::LEFT_CENTER, subtitle, FontId::proportional(subtitle_size), p.on_surface_variant);
     let c = pos2(rect.right() - 26.0, rect.center().y);
     let pts = vec![c + vec2(-3.0, -6.0), c + vec2(3.0, 0.0), c + vec2(-3.0, 6.0)];
     painter.add(egui::Shape::line(pts, Stroke::new(2.0, p.on_surface_variant)));
@@ -416,17 +462,18 @@ fn theme_menu_button(ui: &mut Ui, theme: &Theme, label: &str, openness: f32, wid
 fn theme_menu_row(ui: &mut Ui, theme: &Theme, s: &GraphicsSettings, preset: ThemePreset, selected: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), MENU_ROW_H), Sense::click());
     let painter = ui.painter();
+    let row_radius = if theme.glass_active() { 12.0 } else { theme.shape_radius(ShapeRole::Small) as f32 };
     let fg = if theme.glass_active() { theme.palette.on_surface } else { theme.on_tonal() };
     if theme.glass_active() {
         if selected {
-            painter.rect_filled(rect, 12.0, with_alpha(theme.palette.primary, 34));
+            painter.rect_filled(rect, row_radius, with_alpha(theme.palette.primary, 34));
         } else if resp.hovered() {
-            painter.rect_filled(rect, 12.0, with_alpha(theme.palette.on_surface, 18));
+            painter.rect_filled(rect, row_radius, with_alpha(theme.palette.on_surface, 18));
         }
     } else if selected {
-        painter.rect_filled(rect, 12.0, with_alpha(fg, 26));
+        painter.rect_filled(rect, row_radius, with_alpha(fg, 26));
     } else if resp.hovered() {
-        painter.rect_filled(rect, 12.0, theme.row_hover_fill());
+        painter.rect_filled(rect, row_radius, theme.row_hover_fill());
     }
     // Точка показывает главный цвет самой темы (а не текущей), так темы легко различать.
     let swatch_settings = GraphicsSettings { theme: preset, ..s.clone() };
@@ -434,7 +481,8 @@ fn theme_menu_row(ui: &mut Ui, theme: &Theme, s: &GraphicsSettings, preset: Them
     let dot = pos2(rect.left() + 20.0, rect.center().y);
     painter.circle_filled(dot, 8.0, swatch);
     painter.circle_stroke(dot, 8.0, Stroke::new(1.0, with_alpha(fg, 70)));
-    painter.text(pos2(rect.left() + 40.0, rect.center().y), egui::Align2::LEFT_CENTER, preset.label(), FontId::proportional(15.0), fg);
+    let label_size = if theme.glass_active() { 15.0 } else { theme.text_size(TextRole::LabelLarge) };
+    painter.text(pos2(rect.left() + 40.0, rect.center().y), egui::Align2::LEFT_CENTER, preset.label(), FontId::proportional(label_size), fg);
     if selected {
         let c = pos2(rect.right() - 20.0, rect.center().y);
         let pts = vec![c + vec2(-5.0, 0.0), c + vec2(-1.5, 4.0), c + vec2(5.0, -4.0)];
@@ -443,9 +491,10 @@ fn theme_menu_row(ui: &mut Ui, theme: &Theme, s: &GraphicsSettings, preset: Them
     resp.on_hover_cursor(CursorIcon::PointingHand).clicked()
 }
 
-fn group_title(ui: &mut Ui, text: &str) {
+fn group_title(ui: &mut Ui, theme: &Theme, text: &str) {
     ui.add_space(14.0);
-    ui.label(RichText::new(text).size(18.0).strong());
+    let size = if theme.glass_active() { 18.0 } else { theme.text_size(TextRole::TitleLarge) };
+    ui.label(RichText::new(text).size(size).strong());
     ui.add_space(4.0);
 }
 
@@ -454,22 +503,23 @@ fn design_card(ui: &mut Ui, theme: &Theme, design: Design, name: &str, selected:
     let p = &theme.palette;
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 150.0), Sense::click());
     let painter = ui.painter();
+    let shape = if theme.glass_active() { 18.0 } else { theme.shape_radius(ShapeRole::Large) as f32 };
     if theme.glass_active() {
         if resp.hovered() {
-            painter.rect_filled(rect, 18.0, with_alpha(p.on_surface, 14));
+            painter.rect_filled(rect, shape, with_alpha(p.on_surface, 14));
         }
         painter.rect_stroke(
             rect,
-            18.0,
+            shape,
             Stroke::new(if selected { 1.4 } else { 0.8 }, if selected { with_alpha(p.primary, 220) } else { with_alpha(p.on_surface, 36) }),
             egui::StrokeKind::Inside,
         );
     } else {
-        painter.rect_filled(rect, 20.0, p.surface_container_high);
+        painter.rect_filled(rect, shape, p.surface_container_high);
         if selected {
-            painter.rect_stroke(rect, 20.0, egui::Stroke::new(2.5, p.primary), egui::StrokeKind::Inside);
+            painter.rect_stroke(rect, shape, egui::Stroke::new(2.5, p.primary), egui::StrokeKind::Inside);
         } else if resp.hovered() {
-            painter.rect_filled(rect, 20.0, theme.row_hover_fill());
+            painter.rect_filled(rect, shape, theme.row_hover_fill());
         }
     }
 
@@ -477,12 +527,15 @@ fn design_card(ui: &mut Ui, theme: &Theme, design: Design, name: &str, selected:
     let r = 12.0;
     match design {
         Design::Material3 => {
-            painter.rect_filled(pv, r, p.surface);
-            painter.rect_filled(Rect::from_min_size(pv.min + vec2(8.0, 10.0), vec2(pv.width() * 0.22, 14.0)), 7.0, p.secondary_container);
+            let extra_small = theme.shape_radius(ShapeRole::ExtraSmall) as f32;
+            let small = theme.shape_radius(ShapeRole::Small) as f32;
+            let medium = theme.shape_radius(ShapeRole::Medium) as f32;
+            painter.rect_filled(pv, medium, p.surface);
+            painter.rect_filled(Rect::from_min_size(pv.min + vec2(8.0, 10.0), vec2(pv.width() * 0.22, 14.0)), extra_small, p.secondary_container);
             let pane = Rect::from_min_max(pos2(pv.left() + pv.width() * 0.28, pv.top() + 8.0), pos2(pv.right() - 8.0, pv.bottom() - 26.0));
-            painter.rect_filled(pane, 10.0, p.surface_container_low);
+            painter.rect_filled(pane, small, p.surface_container_low);
             let bar = Rect::from_min_max(pos2(pv.left() + 10.0, pv.bottom() - 20.0), pos2(pv.right() - 10.0, pv.bottom() - 6.0));
-            painter.rect_filled(bar, 8.0, p.surface_container_highest);
+            painter.rect_filled(bar, extra_small, p.surface_container_highest);
             painter.circle_filled(pos2(bar.center().x, bar.center().y), 5.0, p.primary);
         }
         Design::LiquidGlass => {

@@ -10,7 +10,7 @@ use mcrate_core::Track;
 
 use crate::controller::Controller;
 use crate::icons;
-use crate::ui::layout::Breakpoint;
+use crate::ui::layout::{Bleed, Breakpoint};
 use crate::ui::transition::ViewTransition;
 use crate::settings::{Design, GraphicsSettings, STORAGE_KEY, ThemePreset, WindowBackdrop};
 use crate::theme::{Surface, Theme, glass, with_alpha};
@@ -26,7 +26,7 @@ const GLASS_BAR_SIDE_INSET: f32 = 16.0;
 /// тогда низ плеера совпадал с низом рейки. Больше число = плеер выше.
 const GLASS_BAR_BOTTOM_GAP: f32 = 28.0;
 /// Отступ содержимого страницы от краёв контентной панели (Liquid Glass). Содержимое
-/// прокрутки при этом уходит под край панели, а не режется в этих 20 px (см. `bleed_clip`).
+/// прокрутки при этом уходит под край панели, а не режется в этих 20 px (см. `Bleed`).
 const GLASS_PAGE_PAD: f32 = 20.0;
 
 /// Какой экран открыт.
@@ -76,9 +76,10 @@ pub struct McrateApp {
     /// Сколько пикселей снизу закрыто плавающей панелью плеера (0 вне Liquid Glass).
     /// Экраны добавляют столько пустого места в конец прокручиваемого содержимого.
     pub bottom_inset: f32,
-    /// На сколько пикселей прокрутка может «вылезти» за свою рамку к краям панели (0 вне Liquid Glass).
-    /// Экраны передают это в `bleed_clip`.
-    pub bleed: f32,
+    /// Сколько отступа лежит между страницей и краями панели с каждой стороны (см. `Bleed`).
+    /// Экраны растягивают прокрутку на это значение (`pane_scroll`), чтобы содержимое и полоса
+    /// прокрутки доходили до краёв панели.
+    pub bleed: Bleed,
     pub backdrop_error: Option<String>,
     /// Какой графический API (DX12, Vulkan...) реально работает. Показывается в настройках:
     /// для Mica/Acrylic нужен Dx12.
@@ -135,7 +136,7 @@ impl McrateApp {
             wallpaper_key: None,
             wallpaper_tex: None,
             bottom_inset: 0.0,
-            bleed: 0.0,
+            bleed: Bleed::default(),
             backdrop_error: None,
             gpu_backend,
             ctl,
@@ -267,7 +268,8 @@ impl McrateApp {
             pos2(content_pane.left() + GLASS_PAGE_PAD, content_pane.top() + GLASS_PAGE_PAD),
             pos2(content_pane.right() - GLASS_PAGE_PAD, content_pane.bottom()),
         );
-        self.bleed = GLASS_PAGE_PAD;
+        // Снизу отступа нет: страница доходит до низа панели, а над ней лежит плеер.
+        self.bleed = Bleed { left: GLASS_PAGE_PAD, top: GLASS_PAGE_PAD, right: GLASS_PAGE_PAD, bottom: 0.0 };
         // Плеер лежит над панелью: закрытая им часть считается от низа ПАНЕЛИ, а не окна.
         self.bottom_inset = content_pane.bottom() - bar.top() + 4.0;
 
@@ -368,7 +370,8 @@ impl eframe::App for McrateApp {
             self.glass_layout(ui, &theme, full, rail_width, compact);
         } else {
             self.bottom_inset = 0.0;
-            self.bleed = 0.0;
+            // Рамка Surface::Content (material3.rs) даёт 20 px со всех сторон.
+            self.bleed = Bleed::same(20.0);
             self.panel_layout(ui, &theme, full, rail_width, compact);
         }
 

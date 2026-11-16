@@ -85,25 +85,39 @@ impl McrateApp {
         if st.bars.len() != n {
             st.bars = vec![0.0; n];
         }
-        if playing {
-            st.time += dt as f64; // на паузе время стоит, столбики плавно опускаются
+        let reduce_motion = theme.settings.reduce_motion;
+        if playing && !reduce_motion {
+            st.time += dt as f64;
         }
 
         // Откуда берём цель для столбиков: настоящий спектр (когда он появится) или имитация.
-        let target = match real_spectrum(&self.ctl, n) {
-            Some(v) if v.len() == n => v,
-            _ if playing => demo_spectrum(n, st.time, seed),
-            _ => vec![0.0; n],
+        // При уменьшении анимации оставляем статичный рисунок, не запуская кадровый цикл.
+        let target = if reduce_motion {
+            if playing {
+                (0..n).map(|i| 0.18 + hash01(seed, i as u64) as f32 * 0.26).collect()
+            } else {
+                vec![0.0; n]
+            }
+        } else {
+            match real_spectrum(&self.ctl, n) {
+                Some(v) if v.len() == n => v,
+                _ if playing => demo_spectrum(n, st.time, seed),
+                _ => vec![0.0; n],
+            }
         };
 
         let mut moving = false;
-        for (bar, t) in st.bars.iter_mut().zip(target) {
-            if t > *bar {
-                *bar += (t - *bar) * (1.0 - (-dt * ATTACK).exp()); // быстрый взлёт
-            } else {
-                *bar = (*bar - dt * FALL_PER_SEC).max(t); // плавное падение
+        if reduce_motion {
+            st.bars.clone_from(&target);
+        } else {
+            for (bar, t) in st.bars.iter_mut().zip(target) {
+                if t > *bar {
+                    *bar += (t - *bar) * (1.0 - (-dt * ATTACK).exp()); // быстрый взлёт
+                } else {
+                    *bar = (*bar - dt * FALL_PER_SEC).max(t); // плавное падение
+                }
+                moving |= *bar > 0.002;
             }
-            moving |= *bar > 0.002;
         }
 
         // ---- рисуем ----
@@ -127,7 +141,7 @@ impl McrateApp {
         }
 
         ui.ctx().data_mut(|d| d.insert_temp(id, st));
-        if playing || moving {
+        if !reduce_motion && (playing || moving) {
             ui.ctx().request_repaint(); // пока играет или опускаются столбики, рисуем каждый кадр
         }
     }

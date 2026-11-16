@@ -21,6 +21,7 @@
 
 use egui::{Rect, Sense, Ui, UiBuilder, vec2};
 
+use super::layout::Bleed;
 use crate::app::{McrateApp, View};
 use crate::theme::Theme;
 
@@ -140,7 +141,7 @@ fn sync(transition: &mut Option<ViewTransition>, shown: &mut View, view: View, n
 
 /// Рисует экран или два экрана (во время перехода). Не зависит от `McrateApp`, чтобы это
 /// можно было проверить тестами без видеокарты.
-fn host(ui: &mut Ui, transition: Option<ViewTransition>, view: View, draw: &mut dyn FnMut(&mut Ui, View)) {
+fn host(ui: &mut Ui, transition: Option<ViewTransition>, view: View, bleed: Bleed, draw: &mut dyn FnMut(&mut Ui, View)) {
     let rect = ui.available_rect_before_wrap();
 
     // ВАЖНО: `new_child` строит id слоя из счётчика родителя, а счётчик растёт с каждым созданным
@@ -150,7 +151,7 @@ fn host(ui: &mut Ui, transition: Option<ViewTransition>, view: View, draw: &mut 
     // приходящий экран). Пустой слот просто пропускает номер (`skip_ahead_auto_ids`).
     let Some(tr) = transition else {
         ui.skip_ahead_auto_ids(1); // пустой нижний слот
-        layer(ui, view, rect, LayerPose { dx: 0.0, alpha: 1.0 }, draw);
+        layer(ui, view, rect, bleed, LayerPose { dx: 0.0, alpha: 1.0 }, draw);
         return;
     };
 
@@ -162,15 +163,15 @@ fn host(ui: &mut Ui, transition: Option<ViewTransition>, view: View, draw: &mut 
     let (out_pose, in_pose) = poses(tr.progress(), dir, rect.width());
 
     // Уходящий рисуется первым (под низом), новый поверх.
-    layer(ui, tr.from, rect, out_pose, draw);
+    layer(ui, tr.from, rect, bleed, out_pose, draw);
     // «Щит»: невидимая область поверх уходящего экрана. Клики и наведение достаются ему,
     // а не кнопкам под ним. Виджеты нового экрана добавляются позже, поэтому они выше щита.
     ui.interact(rect, ui.scope_id().with("view_transition_shield"), Sense::click_and_drag());
-    layer(ui, tr.to, rect, in_pose, draw);
+    layer(ui, tr.to, rect, bleed, in_pose, draw);
 }
 
 /// Один слой: экран, сдвинутый по X и с заданной прозрачностью, обрезанный по `rect`.
-fn layer(ui: &mut Ui, view: View, rect: Rect, pose: LayerPose, draw: &mut dyn FnMut(&mut Ui, View)) {
+fn layer(ui: &mut Ui, view: View, rect: Rect, bleed: Bleed, pose: LayerPose, draw: &mut dyn FnMut(&mut Ui, View)) {
     // Слой прозрачнее одного шага 8-битного канала не виден: не тратим на него кадр.
     // Но номер в нумерации id занимаем (см. комментарий в `host`).
     if pose.alpha < 1.0 / 255.0 {
@@ -186,7 +187,8 @@ fn layer(ui: &mut Ui, view: View, rect: Rect, pose: LayerPose, draw: &mut dyn Fn
             .layout(*ui.layout()),
     );
     // Не даём содержимому вылезать за пределы области (при сдвиге оно чуть уезжает под край).
-    child.set_clip_rect(rect.intersect(ui.clip_rect()));
+    // Область отсечения шире рамки страницы на вылет: так прокрутка может дойти до краёв панели.
+    child.set_clip_rect(bleed.expand(rect).intersect(ui.clip_rect()));
     child.set_opacity(pose.alpha);
     // Сам `match` по экранам лежит в app.rs (`draw_view`): так новые экраны добавляются в одном месте.
     draw(&mut child, view);
@@ -213,7 +215,8 @@ impl McrateApp {
         sync(&mut self.transition, &mut self.shown_view, self.view, self.frame_time);
 
         let (transition, view) = (self.transition, self.view);
-        host(ui, transition, view, &mut |ui, v| self.draw_view(ui, theme, v));
+        let bleed = self.bleed;
+        host(ui, transition, view, bleed, &mut |ui, v| self.draw_view(ui, theme, v));
     }
 }
 
@@ -337,7 +340,7 @@ mod tests {
 
         frame(&ctx, 0.0, vec![], |ui| {
             sync(&mut tr, &mut shown, view, 0.0);
-            host(ui, tr, view, &mut |_, v| drawn.borrow_mut().push(v));
+            host(ui, tr, view, Bleed::default(), &mut |_, v| drawn.borrow_mut().push(v));
         });
         drawn.borrow_mut().clear();
 
@@ -345,7 +348,7 @@ mod tests {
             sync(&mut tr, &mut shown, view, 0.1); // update_transition в начале кадра
             view = View::Settings; // клик по рейке
             sync(&mut tr, &mut shown, view, 0.1); // начало view_host
-            host(ui, tr, view, &mut |_, v| drawn.borrow_mut().push(v));
+            host(ui, tr, view, Bleed::default(), &mut |_, v| drawn.borrow_mut().push(v));
         });
         assert_eq!(orders(&drawn), vec![View::Library.order()], "в кадре клика виден только старый экран");
 
@@ -356,7 +359,7 @@ mod tests {
             let now = 0.1 + i as f64 / 60.0;
             frame(&ctx, now, vec![], |ui| {
                 sync(&mut tr, &mut shown, view, now);
-                host(ui, tr, view, &mut |_, v| drawn.borrow_mut().push(v));
+                host(ui, tr, view, Bleed::default(), &mut |_, v| drawn.borrow_mut().push(v));
             });
             both |= drawn.borrow().len() == 2;
         }
@@ -385,7 +388,7 @@ mod tests {
                 let mut run = |events: Vec<Event>, t: f64, tr: &mut Option<ViewTransition>| {
                     frame(&ctx, t, events, |ui| {
                         sync(tr, &mut shown, view, t);
-                        host(ui, *tr, view, &mut |ui, v| {
+                        host(ui, *tr, view, Bleed::default(), &mut |ui, v| {
                             let (label, idx, x) = match v {
                                 View::Library => ("old", 0, 10.0),
                                 _ => ("new", 1, 400.0),

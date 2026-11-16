@@ -3,7 +3,7 @@
 use egui::{Align, Layout, RichText, Sense, Ui, Vec2};
 
 use super::layout::{bleed_clip, centered_column};
-use super::widgets::{ButtonKind, glide_begin, glide_end, pill_button, search_bar, track_row};
+use super::widgets::{ButtonKind, error_banner, glide_begin, glide_end, pill_button, search_bar, status_snackbar, track_row};
 use crate::app::McrateApp;
 use crate::icons::{self, Icon};
 use crate::theme::{Theme, with_alpha};
@@ -36,9 +36,13 @@ impl McrateApp {
 
             search_bar(ui, theme, &mut self.search, "Поиск по названию и исполнителю");
 
-            if let Some(status) = &self.ctl.status {
+            if let Some(status) = self.ctl.status.clone() {
                 ui.add_space(6.0);
-                ui.label(RichText::new(status).size(13.0).color(p.on_surface_variant));
+                if theme.glass_active() {
+                    ui.label(RichText::new(status).size(13.0).color(p.on_surface_variant));
+                } else if status_snackbar(ui, theme, &status) {
+                    self.ctl.status = None;
+                }
             }
             ui.add_space(10.0);
 
@@ -55,25 +59,26 @@ impl McrateApp {
             let current_id = self.ctl.now.as_ref().map(|t| t.id.clone());
             let playing = self.ctl.is_playing();
             let time = ui.input(|i| i.time);
-            let bleed = self.bleed;
+            let bleed = self.bleed.below_header();
             let mut clicked: Option<usize> = None;
             // show_rows использует фиксированную высоту строки. Резервируем безопасную зону
             // целыми невидимыми строками, чтобы список можно было прокрутить над Glass-плеером.
+            let row_height = theme.list_item_height(2);
             let spacer_rows = if self.bottom_inset > 0.0 {
-                ((self.bottom_inset + 16.0) / 56.0).ceil() as usize
+                ((self.bottom_inset + 16.0) / row_height).ceil() as usize
             } else {
                 0
             };
 
             ui.scope(|ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 56.0, count + spacer_rows, |ui, range| {
-                    bleed_clip(ui, bleed, 0.0, bleed);
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, row_height, count + spacer_rows, |ui, range| {
+                    bleed_clip(ui, bleed);
                     let glide_slot = glide_begin(ui);
                     let mut hovered = None;
                     for i in range {
                         if i >= count {
-                            ui.allocate_exact_size(Vec2::new(1.0, 56.0), Sense::hover());
+                            ui.allocate_exact_size(Vec2::new(1.0, row_height), Sense::hover());
                             continue;
                         }
                         let track = &self.filtered[i];
@@ -119,7 +124,7 @@ impl McrateApp {
             );
             if let Some(err) = &self.ctl.audio_error {
                 ui.add_space(10.0);
-                ui.label(RichText::new(format!("Звук недоступен: {err}")).size(13.0).color(p.error));
+                error_banner(ui, theme, &format!("Звук недоступен: {err}"));
             }
         });
     }

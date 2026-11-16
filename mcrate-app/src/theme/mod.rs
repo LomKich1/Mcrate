@@ -12,6 +12,39 @@ use egui::{Color32, Context, CornerRadius, Ui};
 use crate::settings::{Design, GraphicsSettings, WindowBackdrop};
 pub use palette::{Palette, with_alpha, with_alpha_over};
 
+/// Семантические роли формы. Значения задаются в логических пикселях egui.
+/// Матрица используется только Material 3; Liquid Glass сохраняет исходную геометрию.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ShapeRole {
+    None,
+    ExtraSmall,
+    Small,
+    Medium,
+    Large,
+    ExtraLarge,
+    Full,
+}
+
+/// Основные уровни типографической шкалы Material 3.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TextRole {
+    DisplayLarge,
+    DisplayMedium,
+    DisplaySmall,
+    HeadlineLarge,
+    HeadlineMedium,
+    HeadlineSmall,
+    TitleLarge,
+    TitleMedium,
+    TitleSmall,
+    BodyLarge,
+    BodyMedium,
+    BodySmall,
+    LabelLarge,
+    LabelMedium,
+    LabelSmall,
+}
+
 /// Какие бывают поверхности (контейнеры) в интерфейсе.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Surface {
@@ -55,11 +88,86 @@ impl Theme {
         self.settings.window_backdrop != WindowBackdrop::Off
     }
 
-    /// Радиус скругления больших панелей.
+    /// Радиус скругления больших панелей (совместимость с существующими вызовами).
     pub fn pane_radius(&self) -> u8 {
-        match self.settings.design {
-            Design::Material3 => 28, // M3 Expressive: extra-large
-            Design::LiquidGlass => 28,
+        self.shape_radius(ShapeRole::ExtraLarge)
+    }
+
+    /// Токен формы. У Liquid Glass намеренно сохранена прежняя шкала радиусов.
+    pub fn shape_radius(&self, role: ShapeRole) -> u8 {
+        match self.design() {
+            Design::Material3 => match role {
+                ShapeRole::None => 0,
+                ShapeRole::ExtraSmall => 4,
+                ShapeRole::Small => 8,
+                ShapeRole::Medium => 12,
+                ShapeRole::Large => 16,
+                ShapeRole::ExtraLarge => 28,
+                ShapeRole::Full => 28,
+            },
+            Design::LiquidGlass => match role {
+                ShapeRole::None => 0,
+                ShapeRole::ExtraSmall => 8,
+                ShapeRole::Small => 12,
+                ShapeRole::Medium => 16,
+                ShapeRole::Large => 20,
+                ShapeRole::ExtraLarge | ShapeRole::Full => 28,
+            },
+        }
+    }
+
+    /// Размеры текста для компонентов, которые используют общую шкалу.
+    /// Значения M3 соответствуют базовым ролям (Display/Headline/Title/Body/Label),
+    /// а размеры Liquid Glass оставлены близкими к прежним значениям интерфейса.
+    pub fn text_size(&self, role: TextRole) -> f32 {
+        match self.design() {
+            Design::Material3 => match role {
+                TextRole::DisplayLarge => 57.0,
+                TextRole::DisplayMedium => 45.0,
+                TextRole::DisplaySmall => 36.0,
+                TextRole::HeadlineLarge => 32.0,
+                TextRole::HeadlineMedium => 28.0,
+                TextRole::HeadlineSmall => 24.0,
+                TextRole::TitleLarge => 22.0,
+                TextRole::TitleMedium => 16.0,
+                TextRole::TitleSmall => 14.0,
+                TextRole::BodyLarge => 16.0,
+                TextRole::BodyMedium => 14.0,
+                TextRole::BodySmall => 12.0,
+                TextRole::LabelLarge => 14.0,
+                TextRole::LabelMedium => 12.0,
+                TextRole::LabelSmall => 11.0,
+            },
+            Design::LiquidGlass => match role {
+                TextRole::DisplayLarge => 34.0,
+                TextRole::DisplayMedium => 32.0,
+                TextRole::DisplaySmall => 34.0,
+                TextRole::HeadlineLarge => 26.0,
+                TextRole::HeadlineMedium => 24.0,
+                TextRole::HeadlineSmall => 26.0,
+                TextRole::TitleLarge => 22.0,
+                TextRole::TitleMedium => 15.0,
+                TextRole::TitleSmall => 14.0,
+                TextRole::BodyLarge => 16.0,
+                TextRole::BodyMedium => 15.0,
+                TextRole::BodySmall => 12.5,
+                TextRole::LabelLarge => 14.0,
+                TextRole::LabelMedium => 12.5,
+                TextRole::LabelSmall => 12.0,
+            },
+        }
+    }
+
+    /// Высота двухстрочного элемента библиотеки. M3 использует размерный ряд 56/72/88;
+    /// Liquid Glass остаётся на прежних 56 px, чтобы не сдвигать его прокрутку и inset.
+    pub fn list_item_height(&self, lines: u8) -> f32 {
+        if self.design() == Design::LiquidGlass {
+            return 56.0;
+        }
+        match lines {
+            0 | 1 => 56.0,
+            2 => 72.0,
+            _ => 88.0,
         }
     }
 
@@ -124,8 +232,8 @@ impl Theme {
         v.panel_fill = Color32::TRANSPARENT; // фон рисуем сами (см. paint_background)
         v.window_fill = p.surface_container_high;
         v.window_stroke = egui::Stroke::new(1.0, p.outline_variant);
-        v.window_corner_radius = CornerRadius::same(28);
-        v.menu_corner_radius = CornerRadius::same(16);
+        v.window_corner_radius = CornerRadius::same(self.shape_radius(ShapeRole::ExtraLarge));
+        v.menu_corner_radius = CornerRadius::same(self.shape_radius(ShapeRole::Medium));
         // Фон полей ввода. Раньше был почти чёрный (surface_container_lowest), из-за чего поиск
         // выглядел чёрной полосой. В M3 поле заполняется тональным цветом поверхности; в стекле
         // это лёгкая полупрозрачная подсветка, сквозь которую видно фон.
@@ -138,7 +246,9 @@ impl Theme {
         v.selection.bg_fill = with_alpha(p.primary, 90);
         v.selection.stroke = egui::Stroke::new(1.0, p.primary);
 
-        let pill = CornerRadius::same(20); // «таблетка»: M3 любит полностью скруглённые кнопки
+        // Универсальный базовый радиус egui-контролов оставляем 20 px:
+        // полный M3-пилюльный радиус рассчитывают компоненты с учётом собственной высоты.
+        let pill = CornerRadius::same(20);
         let w = &mut v.widgets;
         w.noninteractive.bg_fill = p.surface_container;
         w.noninteractive.fg_stroke = egui::Stroke::new(1.0, p.on_surface_variant);
@@ -161,13 +271,14 @@ impl Theme {
         // Типографика по шкале M3 (размеры в пикселях).
         ctx.all_styles_mut(|style| {
             use egui::{FontFamily::Proportional, FontId, TextStyle};
-            style.text_styles.insert(TextStyle::Heading, FontId::new(26.0, Proportional));
-            style.text_styles.insert(TextStyle::Body, FontId::new(15.0, Proportional));
-            style.text_styles.insert(TextStyle::Button, FontId::new(14.0, Proportional));
-            style.text_styles.insert(TextStyle::Small, FontId::new(12.0, Proportional));
+            style.text_styles.insert(TextStyle::Heading, FontId::new(self.text_size(TextRole::HeadlineSmall), Proportional));
+            style.text_styles.insert(TextStyle::Body, FontId::new(self.text_size(TextRole::BodyMedium), Proportional));
+            style.text_styles.insert(TextStyle::Button, FontId::new(self.text_size(TextRole::LabelLarge), Proportional));
+            let small_size = if self.glass_active() { 12.0 } else { self.text_size(TextRole::BodySmall) };
+            style.text_styles.insert(TextStyle::Small, FontId::new(small_size, Proportional));
             style.spacing.item_spacing = egui::vec2(10.0, 8.0);
             style.spacing.button_padding = egui::vec2(16.0, 8.0);
-            style.spacing.interact_size.y = 36.0;
+            style.spacing.interact_size.y = if self.glass_active() { 36.0 } else { 40.0 };
         });
     }
 
@@ -185,5 +296,40 @@ impl Theme {
             Design::Material3 => material3::surface(self, ui, role, add),
             Design::LiquidGlass => glass::surface(self, ui, role, add),
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::{ShapeRole, TextRole, Theme};
+    use crate::settings::{Design, GraphicsSettings};
+
+    #[test]
+    fn material3_exposes_standard_shape_scale_and_list_heights() {
+        let settings = GraphicsSettings { design: Design::Material3, ..GraphicsSettings::default() };
+        let theme = Theme::new(&settings);
+
+        assert_eq!(theme.shape_radius(ShapeRole::None), 0);
+        assert_eq!(theme.shape_radius(ShapeRole::ExtraSmall), 4);
+        assert_eq!(theme.shape_radius(ShapeRole::Small), 8);
+        assert_eq!(theme.shape_radius(ShapeRole::Medium), 12);
+        assert_eq!(theme.shape_radius(ShapeRole::Large), 16);
+        assert_eq!(theme.shape_radius(ShapeRole::ExtraLarge), 28);
+        assert_eq!(theme.list_item_height(1), 56.0);
+        assert_eq!(theme.list_item_height(2), 72.0);
+        assert_eq!(theme.list_item_height(3), 88.0);
+    }
+
+    #[test]
+    fn liquid_glass_keeps_legacy_list_geometry_and_core_text_sizes() {
+        let settings = GraphicsSettings { design: Design::LiquidGlass, ..GraphicsSettings::default() };
+        let theme = Theme::new(&settings);
+
+        assert_eq!(theme.list_item_height(1), 56.0);
+        assert_eq!(theme.list_item_height(2), 56.0);
+        assert_eq!(theme.text_size(TextRole::DisplaySmall), 34.0);
+        assert_eq!(theme.text_size(TextRole::BodyMedium), 15.0);
+        assert_eq!(theme.text_size(TextRole::LabelSmall), 12.0);
     }
 }

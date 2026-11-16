@@ -102,6 +102,8 @@ pub struct GraphicsSettings {
     pub glass_opacity: f32,
     /// Качество живого фона стекла (см. `GlassQuality`).
     pub glass_quality: GlassQuality,
+    /// Отключает непрерывное движение декоративной волны и визуализатора.
+    pub reduce_motion: bool,
     pub window_backdrop: WindowBackdrop,
 }
 
@@ -116,6 +118,7 @@ impl Default for GraphicsSettings {
             refraction: 5.0,
             glass_opacity: 0.28,
             glass_quality: GlassQuality::Balanced,
+            reduce_motion: false,
             window_backdrop: WindowBackdrop::Off,
         }
     }

@@ -10,8 +10,9 @@
 //!
 //! Блоков «Для вас», «Новые релизы», «Популярные артисты» и настоящего чарта здесь нет: у ядра пока нет ни подборок,
 //! ни обложек, ни истории (см. AUDIT_UI_vs_core.md). Когда они появятся, это ещё одна полка через `shelf`.
-//! Волна всегда анимирована и реагирует на курсор (притяжение, пузырь, рябь, кольцо от клика). К звуку пока не
-//! привязана: когда у движка появится спектр (spectrum_request_for_LomKich.md), амплитуду можно взять оттуда.
+//! Волна анимируется во время воспроизведения и реагирует на курсор; в покое остаётся статичной.
+//! В настройках доступно уменьшение движения. К звуку волна пока не привязана: спектр должен
+//! поступать из аудиодвижка, отдельной реализации которого в текущем API ещё нет.
 
 use std::collections::HashMap;
 use std::f64::consts::{PI, TAU};
@@ -24,11 +25,11 @@ use egui::{
 };
 use mcrate_core::Track;
 
-use super::layout::{bleed_clip, scroll_end_padding};
+use super::layout::{Bleed, bleed_clip, pane_scroll, scroll_end_padding};
 use super::widgets::{ButtonKind, artists_text, cover_tile, glide_begin, glide_end, icon_button, pill_button, search_bar, track_row};
 use crate::app::{McrateApp, View};
 use crate::icons::{self, Icon};
-use crate::theme::{Theme, with_alpha};
+use crate::theme::{TextRole, Theme, with_alpha};
 
 const WAVE_H: f32 = 200.0; // высота волны
 const SHELF_GAP: f32 = 12.0; // зазор между карточками на полке
@@ -44,9 +45,9 @@ const CHART_COUNT: usize = 10; // строк в списке «Мои треки
 impl McrateApp {
     pub fn home_view(&mut self, ui: &mut Ui, theme: &Theme) {
         let bleed = self.bleed;
-        ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            // Содержимое уходит под края панели, а не режется в отступе от них (Liquid Glass).
-            bleed_clip(ui, bleed, bleed, bleed);
+        // Прокрутка растянута до краёв панели: полоса прокрутки лежит на самом краю, а карточки
+        // и заголовки уходят под край, а не режутся в отступе от него (см. `pane_scroll`).
+        pane_scroll(ui, bleed, ScrollArea::vertical().auto_shrink([false, false]), |area, ui| area.show(ui, |ui| {
             // ---------- поиск ----------
             let search = search_bar(ui, theme, &mut self.search, "Поиск по названию и исполнителю");
             // Enter в поле: результаты показывает экран «Моя музыка» (там же будут и сервисы).
@@ -69,7 +70,7 @@ impl McrateApp {
                 self.home_chart(ui, theme);
             }
             scroll_end_padding(ui, self.bottom_inset);
-        });
+        }));
     }
 
     /// «Моя волна»: заголовок, две кнопки и анимированная волна из точек.
@@ -84,15 +85,21 @@ impl McrateApp {
         let backdrop_pass = (ctx_time - now).abs() > 1e-3;
         let wave_id = ui.scope_id().with("wave_state");
         let mut st: WaveState = ui.ctx().data_mut(|d| d.get_temp(wave_id)).unwrap_or_default();
-        // Анимация идёт ВСЕГДА (и на паузе, и без музыки); музыка только добавляет размах.
-        let amp = ui.ctx().animate_value_with_time(wave_id.with("amp"), if playing { 1.0 } else { 0.7 }, 0.6);
+        // В покое волна статична; движение усиливается при воспроизведении.
+        // Настройка уменьшения анимации отключает и фазовое движение, и реакцию на курсор.
+        let reduce_motion = theme.settings.reduce_motion;
+        let amp = if reduce_motion {
+            if playing { 0.9 } else { 0.55 }
+        } else {
+            ui.ctx().animate_value_with_time(wave_id.with("amp"), if playing { 1.0 } else { 0.7 }, 0.6)
+        };
 
         // Шапка: текст слева, кнопки справа.
         let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), 64.0), Sense::hover());
         let text_rect = Rect::from_min_max(head.min, pos2((head.right() - 140.0).max(head.left() + 120.0), head.bottom()));
         ui.scope_builder(UiBuilder::new().max_rect(text_rect), |ui| {
-            ui.add(egui::Label::new(RichText::new("Моя волна").size(34.0).strong()).truncate());
-            ui.add(egui::Label::new(RichText::new("Ваша музыка вперемешку: нажмите ▶ и слушайте").size(14.0).color(p.on_surface_variant)).truncate());
+            ui.add(egui::Label::new(RichText::new("Моя волна").size(theme.text_size(TextRole::DisplaySmall)).strong()).truncate());
+            ui.add(egui::Label::new(RichText::new("Ваша музыка вперемешку: нажмите ▶ и слушайте").size(theme.text_size(TextRole::LabelLarge)).color(p.on_surface_variant)).truncate());
         });
         let btn_rect = Rect::from_min_max(pos2(head.right() - 120.0, head.top()), head.max);
         ui.scope_builder(UiBuilder::new().max_rect(btn_rect).layout(Layout::right_to_left(Align::Center)), |ui| {
@@ -111,18 +118,28 @@ impl McrateApp {
 
         // Холст волны слушает курсор (hover) и клик.
         let wave_height = if ui.clip_rect().height() < 640.0 { 148.0 } else { WAVE_H };
-        let (canvas, resp) = ui.allocate_exact_size(vec2(ui.available_width(), wave_height), Sense::click());
+        // В Liquid Glass волна идёт от края до края панели: холст шире страницы на её отступы.
+        // Нажатие и наведение ловим на всём широком холсте (`interact`), а не на узкой рамке.
+        let wave_bleed = if theme.glass_active() { self.bleed.left.min(self.bleed.right) } else { 0.0 };
+        let (page_rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), wave_height), Sense::hover());
+        let canvas = page_rect.expand2(vec2(wave_bleed, 0.0));
+        let resp = ui.interact(canvas, wave_id.with("hit"), Sense::click());
         // Волна прокручена за экран (или скрыта): не считаем и не рисуем, и не просим перерисовку.
         if !ui.is_rect_visible(canvas) {
             return;
         }
-        if !backdrop_pass {
-            // ~60 кадров в секунду, а не по частоте монитора: волне хватает, видеокарта и процессор отдыхают.
+        if !reduce_motion {
+            st.update(now, resp.hover_pos().map(|p| p - canvas.min), resp.clicked());
+        } else {
+            st = WaveState::default();
+        }
+        let motion_active = !reduce_motion && (playing || resp.hovered() || st.hover > 0.002 || st.burst > 0.01);
+        if !backdrop_pass && motion_active {
+            // 60 FPS только пока есть реальное движение: в паузе волна не расходует CPU.
             ui.ctx().request_repaint_after(Duration::from_millis(16));
         }
-        st.update(now, resp.hover_pos().map(|p| p - canvas.min), resp.clicked());
         ui.ctx().data_mut(|d| d.insert_temp(wave_id, st));
-        let look = WaveLook { time: now, amp, base: p.on_surface, accent: p.primary };
+        let look = WaveLook { time: if playing && !reduce_motion { now } else { 0.0 }, amp, base: p.on_surface, accent: p.primary };
         let n = ((canvas.width() * 0.9 / 20.0).round() as usize * 20).clamp(240, 1100); // точек на ленту: меньше окно, меньше точек
         let table = wave_table(ui.ctx(), n);
         paint_wave(ui.painter(), canvas, &look, &st, &table, if backdrop_pass { 3 } else { 1 });
@@ -131,7 +148,7 @@ impl McrateApp {
     /// Пустая библиотека: подсказка вместо полок.
     fn home_empty(&mut self, ui: &mut Ui, theme: &Theme) {
         let p = &theme.palette;
-        ui.label(RichText::new("Здесь пока пусто").size(22.0).strong());
+        ui.label(RichText::new("Здесь пока пусто").size(theme.text_size(TextRole::TitleLarge)).strong());
         ui.add_space(4.0);
         ui.label(RichText::new("Перетащите файлы в окно или добавьте музыку на экране «Моя музыка».").color(p.on_surface_variant));
         ui.add_space(12.0);
@@ -234,7 +251,7 @@ impl McrateApp {
         let time = ui.input(|i| i.time);
 
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Мои треки").size(22.0).strong());
+            ui.label(RichText::new("Мои треки").size(theme.text_size(TextRole::TitleLarge)).strong());
             ui.add_space(12.0);
             let link = ui.add(egui::Label::new(RichText::new("вся музыка →").size(13.0).color(p.on_surface_variant)).sense(Sense::click()));
             if link.on_hover_cursor(CursorIcon::PointingHand).clicked() {
@@ -260,7 +277,8 @@ impl McrateApp {
         glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_home_tracks"), hovered, 18.0);
         if count > CHART_COUNT {
             ui.add_space(4.0);
-            if pill_button(ui, theme, "Показать всё", None, ButtonKind::Tonal).clicked() {
+            let kind = if theme.glass_active() { ButtonKind::Tonal } else { ButtonKind::Text };
+            if pill_button(ui, theme, "Показать всё", None, kind).clicked() {
                 self.view = View::Library;
             }
         }
@@ -296,7 +314,7 @@ struct ShelfState {
 
 /// Полка: заголовок с подписью, справа две круглые стрелки, под ними ряд карточек, который
 /// прокручивается стрелками (плавно), колесом при зажатом Shift или перетаскиванием.
-fn shelf(ui: &mut Ui, theme: &Theme, bleed: f32, id: &str, title: &str, subtitle: &str, add_cards: impl FnOnce(&mut Ui)) {
+fn shelf(ui: &mut Ui, theme: &Theme, bleed: Bleed, id: &str, title: &str, subtitle: &str, add_cards: impl FnOnce(&mut Ui)) {
     let p = &theme.palette;
     let sid = ui.scope_id().with(("shelf", id));
     let mut st: ShelfState = ui.ctx().data_mut(|d| d.get_temp(sid)).unwrap_or_default();
@@ -346,7 +364,7 @@ fn shelf(ui: &mut Ui, theme: &Theme, bleed: f32, id: &str, title: &str, subtitle
     }
     let out = area.show(ui, |ui| {
         // Карточки при прокрутке уходят до самых краёв панели, а не обрезаются в отступе от них.
-        bleed_clip(ui, bleed, 0.0, bleed);
+        bleed_clip(ui, bleed.sides());
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = SHELF_GAP;
             add_cards(ui);
@@ -496,7 +514,7 @@ fn media_card(ui: &mut Ui, theme: &Theme, card: &MediaCard, is_current: bool, is
 }
 
 // ============================================================================================
-// Волна из точек: всегда анимирована, реагирует на курсор
+// Волна из точек: активна во время воспроизведения и реагирует на курсор
 // ============================================================================================
 
 /// Состояние взаимодействия волны с курсором (хранится в памяти egui между кадрами).
@@ -606,7 +624,7 @@ fn wave_table(ctx: &egui::Context, n: usize) -> Arc<WaveTable> {
     t
 }
 
-/// Три ленты точек, которые плывут по синусоидам. Время идёт всегда. Курсор:
+/// Три ленты точек, которые плывут по синусоидам. Время идёт во время воспроизведения. Курсор:
 ///  - притягивает гребень волны к себе по вертикали;
 ///  - раздвигает точки вокруг (пузырь) и пускает по ним круговую рябь, сильнее при быстром движении;
 ///  - подкрашивает ближние точки акцентным цветом;
