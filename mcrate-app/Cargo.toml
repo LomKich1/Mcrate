@@ -19,8 +19,8 @@ egui_glass = "0.2.0"
 material-colors = "0.5"
 # Системные диалоги выбора файлов/папок
 rfd = "0.18"
-# tokio нужен, чтобы вызывать async-методы MusicProvider из UI (block_on)
-tokio = { version = "1.54.1", features = ["rt"] }
+# tokio нужен Controller: многопоточная среда для поиска (SoundCloud) и block_on для локальной библиотеки
+tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread"] }
 serde = { version = "1", features = ["derive"] }
 
 # Только Windows: winit даёт доступ к DWM (Mica/Acrylic) через WindowExtWindows.

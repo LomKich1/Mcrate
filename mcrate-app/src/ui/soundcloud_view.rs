@@ -1,29 +1,22 @@
-//! Экран «SoundCloud» (пока заглушка).
+//! Экран «SoundCloud»: поиск по сервису и воспроизведение результатов (шаг 5c плана в CLAUDE.md).
 //!
-//! Ядро уже умеет искать на SoundCloud и выдавать ссылку на звук (`SoundCloudProvider`, пример
-//! `engine_sc`), но окно к этому не подключено: `Controller` ищет только по локальным файлам и играет
-//! в обход `PlaybackEngine` (шаг 5c плана в CLAUDE.md). Поэтому здесь показываем честный статус, что работает
-//! и что нет, и держим готовым список результатов. Когда 5c будет сделан, достаточно:
-//!   1. заменить `results` ниже на результаты поиска из `Controller`;
-//!   2. включить поле поиска и по Enter отправлять запрос;
-//!   3. по клику на строку вызывать `self.ctl.play_list(results, index)`.
+//! Поиск идёт в фоне (`Controller::sc_search`), окно не замирает: пока ответа нет, показываем
+//! «Ищем…». Играет всё через `PlaybackEngine`: клик по строке ставит в очередь все найденные
+//! треки, начиная с выбранного. Онлайн-трек сначала скачивается (первые секунды тишина,
+//! на медленном интернете дольше), а потом играет по мере докачки.
 
-use egui::{Color32, Frame, Margin, RichText, ScrollArea, Sense, Ui, vec2};
-use mcrate_core::Track;
+use egui::{Frame, Key, Margin, RichText, ScrollArea, Sense, Ui, vec2};
 
 use super::layout::{bleed_clip, centered_column, scroll_end_padding};
-use super::widgets::{glide_begin, glide_end, track_row};
+use super::widgets::{error_banner, glide_begin, glide_end, search_bar, track_row};
 use crate::app::McrateApp;
 use crate::theme::Theme;
 
-/// Насколько функция готова. (Вариант `Yes` пока не используется: появится, когда окно подключат к ядру.)
-#[allow(dead_code)]
+/// Насколько функция готова.
 #[derive(Clone, Copy)]
 enum Ready {
-    /// Работает в ядре и подключено к окну.
+    /// Работает и подключено к окну.
     Yes,
-    /// Работает в ядре, но окно к этому ещё не подключено.
-    CoreOnly,
     /// Не поддерживается.
     No,
 }
@@ -37,56 +30,108 @@ impl McrateApp {
 
             ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 bleed_clip(ui, self.bleed.below_header());
-                // ---------- поиск (пока выключен) ----------
-                let mut query = String::new();
-                ui.add_enabled(
-                    false,
-                    egui::TextEdit::singleline(&mut query)
-                        .hint_text("Поиск по SoundCloud (появится после шага 5c)")
-                        .desired_width(f32::INFINITY)
-                        .margin(Margin::symmetric(16, 10)),
-                );
-                ui.add_space(12.0);
 
-                let status_frame = if theme.glass_active() {
-                    Frame::new()
-                        .fill(crate::theme::with_alpha(p.surface_container_low, if p.dark { 82 } else { 96 }))
-                        .stroke(egui::Stroke::new(0.8, crate::theme::with_alpha(p.on_surface, 28)))
-                        .corner_radius(18)
-                        .inner_margin(Margin::same(16))
-                } else {
-                    Frame::new()
-                        .fill(p.surface_container_low)
-                        .corner_radius(20)
-                        .inner_margin(Margin::same(16))
-                };
-                status_frame.show(ui, |ui| {
+                // ---------- поиск ----------
+                // Подсказка входит в id поля (см. `search_bar`), поэтому она отличается от подсказок других экранов.
+                let search = search_bar(ui, theme, &mut self.sc_input, "Поиск по SoundCloud");
+                if search.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+                    let query = self.sc_input.clone();
+                    self.ctl.sc_search(&query);
+                }
+                ui.add_space(10.0);
+
+                // ---------- состояние: поиск, загрузка, ошибки ----------
+                if self.ctl.sc.searching {
+                    ui.label(
+                        RichText::new(format!(
+                            "Ищем «{}»… первый поиск после установки может занять до полуминуты",
+                            self.ctl.sc.query
+                        ))
+                        .size(13.0)
+                        .color(p.on_surface_variant),
+                    );
+                    ui.add_space(8.0);
+                }
+                if let Some(err) = self.ctl.sc.error.clone() {
+                    error_banner(ui, theme, &err);
+                    ui.add_space(8.0);
+                }
+                if let Some(err) = self.ctl.play_error.clone() {
+                    error_banner(ui, theme, &err);
+                    ui.add_space(8.0);
+                }
+                if self.ctl.is_loading() {
+                    let title = self.ctl.now.as_ref().map(|t| t.title.clone()).unwrap_or_default();
+                    ui.label(
+                        RichText::new(format!("Загружается «{title}»… звук начнётся, как только скачается начало трека"))
+                            .size(13.0)
+                            .color(p.primary),
+                    );
+                    ui.add_space(8.0);
+                } else if let Some(percent) = self.ctl.download_percent() {
+                    ui.label(
+                        RichText::new(format!("Трек докачивается: {percent}%")).size(13.0).color(p.on_surface_variant),
+                    );
+                    ui.add_space(8.0);
+                }
+
+                // ---------- пока ничего не искали: что умеет сервис ----------
+                if !self.ctl.sc.searched && !self.ctl.sc.searching {
+                    let status_frame = if theme.glass_active() {
+                        Frame::new()
+                            .fill(crate::theme::with_alpha(p.surface_container_low, if p.dark { 82 } else { 96 }))
+                            .stroke(egui::Stroke::new(0.8, crate::theme::with_alpha(p.on_surface, 28)))
+                            .corner_radius(18)
+                            .inner_margin(Margin::same(16))
+                    } else {
+                        Frame::new().fill(p.surface_container_low).corner_radius(20).inner_margin(Margin::same(16))
+                    };
+                    status_frame.show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.label(RichText::new("Состояние сервиса").size(16.0).strong());
                         ui.add_space(8.0);
-                        status_row(ui, theme, Ready::CoreOnly, "Поиск треков", "Умеет ядро (SoundCloudProvider). В окне появится вместе с шагом 5c: сейчас поиск идёт только по локальным файлам.");
-                        status_row(ui, theme, Ready::CoreOnly, "Воспроизведение", "Движок качает и играет треки (aac_160k, запасной aac_96k). Окно пока играет в обход движка, поэтому онлайн-треки не запускаются.");
-                        status_row(ui, theme, Ready::CoreOnly, "30-секундные превью", "Ядро отсеивает превью (policy=SNIP), в списке будут только полные треки.");
+                        status_row(ui, theme, Ready::Yes, "Поиск треков", "Введите запрос и нажмите Enter. Доступ неофициальный, сервис может закрыть его в любой момент.");
+                        status_row(ui, theme, Ready::Yes, "Воспроизведение", "Трек сначала скачивается (формат aac_160k, запасной aac_96k), звук идёт по мере докачки. Перемотка вперёд ограничена скачанным.");
+                        status_row(ui, theme, Ready::Yes, "30-секундные превью", "Ядро отсеивает превью (policy=SNIP), в списке только полные треки.");
                         status_row(ui, theme, Ready::No, "Вход в аккаунт и лайки", "Не поддерживается: официальный API закрыт, работаем через публичный client_id.");
                     });
-                ui.add_space(16.0);
+                    ui.add_space(16.0);
+                }
 
-                ui.label(RichText::new("Результаты поиска").size(18.0).strong());
-                ui.add_space(6.0);
-                let results: &[Track] = &[];
-                if results.is_empty() {
-                    ui.label(RichText::new("Здесь появятся результаты поиска по SoundCloud.").color(p.on_surface_variant));
-                } else {
+                // ---------- результаты ----------
+                let count = self.ctl.sc.results.len();
+                if self.ctl.sc.searched && count == 0 && !self.ctl.sc.searching && self.ctl.sc.error.is_none() {
+                    ui.label(RichText::new("Ничего не найдено").color(p.on_surface_variant));
+                }
+                if count > 0 {
+                    ui.label(
+                        RichText::new(format!("Результаты по «{}»: {count}", self.ctl.sc.query)).size(18.0).strong(),
+                    );
+                    ui.add_space(6.0);
+
+                    let current = self.ctl.now.as_ref().map(|t| (t.id.clone(), t.provider));
+                    let playing = self.ctl.is_playing();
                     let time = ui.input(|i| i.time);
                     let glide_slot = glide_begin(ui);
                     let mut hovered = None;
-                    for (i, track) in results.iter().enumerate() {
-                        let resp = track_row(ui, theme, i, track, false, false, time);
+                    let mut clicked: Option<usize> = None;
+                    for (i, track) in self.ctl.sc.results.iter().enumerate() {
+                        let is_current = current.as_ref().is_some_and(|(id, kind)| *id == track.id && *kind == track.provider);
+                        let resp = track_row(ui, theme, i, track, is_current, is_current && playing, time);
                         if resp.hovered() {
                             hovered = Some((egui::Id::unique(&track.id).value(), resp.rect));
                         }
+                        if resp.clicked() {
+                            clicked = Some(i);
+                        }
                     }
                     glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_soundcloud"), hovered, 18.0);
+
+                    if let Some(i) = clicked {
+                        // Очередь = все найденные треки, старт с выбранного (как в «Моей музыке»).
+                        let items = self.ctl.sc.results.clone();
+                        self.ctl.play_list(items, i);
+                    }
                 }
                 scroll_end_padding(ui, self.bottom_inset);
             });
@@ -94,12 +139,11 @@ impl McrateApp {
     }
 }
 
-/// Строка статуса: цветная точка (готово, только в ядре, нет), название и пояснение.
+/// Строка статуса: цветная точка (работает, нет), название и пояснение.
 fn status_row(ui: &mut Ui, theme: &Theme, ready: Ready, title: &str, text: &str) {
     let p = &theme.palette;
     let (dot, state) = match ready {
         Ready::Yes => (p.primary, "работает"),
-        Ready::CoreOnly => (Color32::from_rgb(0xE0, 0xA8, 0x30), "в ядре"),
         Ready::No => (p.error, "нет"),
     };
     ui.horizontal_top(|ui| {

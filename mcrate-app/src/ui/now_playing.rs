@@ -15,7 +15,7 @@ use egui::{Rect, RichText, Sense, Ui, Vec2, pos2};
 use super::layout::cover_side;
 use super::widgets::{artists_text, cover_tile};
 use crate::app::McrateApp;
-use crate::controller::Controller;
+use crate::controller::{Controller, provider_label};
 use crate::theme::{Theme, with_alpha};
 
 /// Шаг между столбиками по горизонтали, в логических пикселях (от него зависит их число).
@@ -61,7 +61,7 @@ impl McrateApp {
             );
             ui.add_space(6.0);
             ui.label(
-                RichText::new(format!("Свои файлы · в очереди: {}", self.ctl.queue.len()))
+                RichText::new(format!("{} · в очереди: {}", provider_label(track.provider), self.ctl.queue.len()))
                     .size(12.0)
                     .color(p.on_surface_variant),
             );

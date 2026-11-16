@@ -12,12 +12,23 @@ mod settings;
 mod theme;
 mod ui;
 
+/// Иконка окна и панели задач: 256x256, сырые байты RGBA (без новых зависимостей).
+/// Исходник: assets/icon.svg; пересборка: см. assets/README.md.
+fn app_icon() -> eframe::egui::IconData {
+    eframe::egui::IconData {
+        rgba: include_bytes!("../assets/icon_256.rgba").to_vec(),
+        width: 256,
+        height: 256,
+    }
+}
+
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu, // egui_glass работает только на wgpu
         wgpu_options: platform::wgpu_configuration(), // DX12 + DirectComposition: без него Mica/Acrylic не видны
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Mcrate")
+            .with_icon(app_icon())
             .with_inner_size([1180.0, 760.0])
             .with_min_inner_size([880.0, 560.0])
             .with_transparent(true), // нужно для Mica/Acrylic

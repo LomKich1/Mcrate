@@ -635,7 +635,7 @@ pub struct BarOutput {
     pub value: Option<f32>,
 }
 
-/// Ползунок для перемотки и громкости. M3 использует круглую ручку и явную дорожку,
+/// Ползунок для перемотки и громкости. M3 Expressive: ручка-палочка и дорожка с зазором,
 /// Liquid Glass сохраняет своё стеклянное оформление.
 pub fn slider_bar(ui: &mut Ui, theme: &Theme, width: f32, frac: f32, enabled: bool, label: &str) -> BarOutput {
     let p = &theme.palette;
@@ -655,27 +655,53 @@ pub fn slider_bar(ui: &mut Ui, theme: &Theme, width: f32, frac: f32, enabled: bo
 
     match theme.design() {
         Design::Material3 => {
-            // Классический M3 Slider: тонкая дорожка и хорошо различимый круглый бегунок.
-            // При наведении/перетаскивании бегунок получает мягкий контейнерный ореол.
-            let track_h = if active { 5.0 } else { 4.0 };
-            painter.rect_filled(
-                Rect::from_min_max(pos2(left, cy - track_h / 2.0), pos2(right, cy + track_h / 2.0)),
-                track_h / 2.0,
-                p.surface_container_highest,
+            // M3 Expressive Slider (спецификация 2024): ручка — вертикальная палочка
+            // (4dp, при перетаскивании сужается до 2dp), дорожка разрезана на две части
+            // зазором 6dp вокруг ручки, у концов, обращённых к ручке, углы 2dp,
+            // а на дальнем конце неактивной части стоит точка-стоп 4dp.
+            const HANDLE_W: f32 = 4.0;
+            const HANDLE_W_PRESSED: f32 = 2.0;
+            const GAP: f32 = 6.0; // зазор между ручкой и дорожкой
+            const TRACK_H: f32 = 6.0;
+            const INNER_R: u8 = 2; // скругление «внутренних» углов дорожки
+            const STOP_D: f32 = 4.0; // диаметр точки-стопа
+            let outer_r = (TRACK_H / 2.0) as u8;
+
+            // Ширина ручки меняется плавно (0.1 с), как в M3.
+            let hw = ui.ctx().animate_value_with_time(
+                resp.id.with("handle_w"),
+                if resp.dragged() { HANDLE_W_PRESSED } else { HANDLE_W },
+                0.1,
             );
-            if x > left {
+            let handle_h = (rect.height() - 4.0).max(HANDLE_W);
+            let active_end = x - hw / 2.0 - GAP;
+            let inactive_start = x + hw / 2.0 + GAP;
+
+            // Активная часть (слева от ручки). Если ручка у левого края, её нет.
+            if active_end > left {
                 painter.rect_filled(
-                    Rect::from_min_max(pos2(left, cy - track_h / 2.0), pos2(x, cy + track_h / 2.0)),
-                    track_h / 2.0,
+                    Rect::from_min_max(pos2(left, cy - TRACK_H / 2.0), pos2(active_end, cy + TRACK_H / 2.0)),
+                    CornerRadius { nw: outer_r, sw: outer_r, ne: INNER_R, se: INNER_R },
                     fg,
                 );
             }
-            if active {
-                painter.circle_filled(pos2(x, cy), 10.0, p.primary_container);
+            // Неактивная часть (справа от ручки) и точка-стоп у её дальнего края.
+            if inactive_start < right {
+                painter.rect_filled(
+                    Rect::from_min_max(pos2(inactive_start, cy - TRACK_H / 2.0), pos2(right, cy + TRACK_H / 2.0)),
+                    CornerRadius { nw: INNER_R, sw: INNER_R, ne: outer_r, se: outer_r },
+                    track_bg,
+                );
+                let dot_x = right - STOP_D / 2.0 - 1.0;
+                if dot_x - STOP_D / 2.0 > inactive_start + 2.0 {
+                    painter.circle_filled(pos2(dot_x, cy), STOP_D / 2.0, fg);
+                }
             }
-            painter.circle_filled(pos2(x, cy), if active { 6.5 } else { 6.0 }, fg);
+            // Ручка-палочка.
+            let handle = Rect::from_center_size(pos2(x, cy), vec2(hw, handle_h));
+            painter.rect_filled(handle, hw / 2.0, fg);
             if resp.has_focus() {
-                painter.circle_stroke(pos2(x, cy), 10.5, Stroke::new(2.0, p.primary));
+                painter.rect_stroke(handle.expand(3.0), 4.0, Stroke::new(2.0, p.primary), StrokeKind::Outside);
             }
         }
         Design::LiquidGlass => {

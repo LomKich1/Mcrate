@@ -95,6 +95,8 @@ pub struct McrateApp {
     /// контексте со своими часами; чтобы переход экранов шёл в такт и там, время берём отсюда.
     pub frame_time: f64,
     pub search: String,
+    /// Текст в поле поиска экрана SoundCloud (запрос уходит по Enter).
+    pub sc_input: String,
     pub filtered: Vec<Track>,
     filter_key: Option<(String, usize)>,
     pub seek_drag: Option<f32>,
@@ -145,6 +147,7 @@ impl McrateApp {
             transition: None,
             frame_time: 0.0,
             search: String::new(),
+            sc_input: String::new(),
             filtered: Vec::new(),
             filter_key: None,
             seek_drag: None,
@@ -395,8 +398,9 @@ impl eframe::App for McrateApp {
             ctx.request_repaint();
         }
 
-        // Пока играет музыка, перерисовываем ~10 раз в секунду (полоса времени, эквалайзер).
-        if self.ctl.is_playing() {
+        // Пока играет музыка, грузится трек или идёт поиск, перерисовываем ~10 раз в секунду
+        // (полоса времени, эквалайзер, и чтобы заметить конец загрузки без движения мыши).
+        if self.ctl.needs_repaint() {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
     }
