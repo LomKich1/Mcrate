@@ -71,6 +71,20 @@ pub fn centered_column<R>(ui: &mut Ui, max_width: f32, add: impl FnOnce(&mut Ui)
     ui.scope_builder(UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)), add).inner
 }
 
+/// «Вылет» содержимого прокрутки до краёв панели (только Liquid Glass; в M3 `bleed` = 0).
+///
+/// Проблема: страница рисуется с отступом от краёв панели (в Glass это 20 px), а прокрутка
+/// (`ScrollArea`) обрезает содержимое (clip) по своей рамке. Поэтому карточки и заголовки
+/// резались жёсткой линией в 20 px ОТ края панели, а не по самому краю.
+/// Решение: раскладка остаётся прежней, но область отсечения внутри прокрутки расширяется
+/// на отступ, и содержимое уходит под край панели. Вызывать первой строкой в замыкании
+/// `ScrollArea::show`. Рамка (clip rect) отвечает только за то, что видно и куда доходит
+/// наведение мыши; положение виджетов она не меняет.
+pub fn bleed_clip(ui: &mut Ui, left: f32, top: f32, right: f32) {
+    let c = ui.clip_rect();
+    ui.set_clip_rect(Rect::from_min_max(c.min - vec2(left, top), c.max + vec2(right, 0.0)));
+}
+
 /// Единый запас в конце прокручиваемых страниц. В Material 3 это небольшой край,
 /// в Liquid Glass к нему добавляется область, перекрываемая плавающим плеером.
 pub fn scroll_end_padding(ui: &mut Ui, bottom_inset: f32) {

@@ -1,0 +1,46 @@
+diff --git a/mcrate-app/src/app.rs b/mcrate-app/src/app.rs
+index 1cc463e..66e164f 100644
+--- a/mcrate-app/src/app.rs
++++ b/mcrate-app/src/app.rs
+@@ -253,10 +253,10 @@ impl McrateApp {
+             // сверху, слева и снизу независимо от положения нижнего плеера.
+             pos2(full.left() + rail_width - 4.0, pane.bottom()),
+         );
+-        // Основная рабочая область заполняет окно до верхнего, правого и нижнего края.
+-        // Внутренние отступы контента задаются отдельно через `inner`, а не пустой
+-        // полосой между панелью и границами клиентской области окна.
+-        let content_pane = Rect::from_min_max(pos2(rail.right() + 8.0, full.top()), full.right_bottom());
++        // Внутренние отступы контента задаются отдельно через `inner`.
++        // Контентная панель плавает так же, как рейка: тот же отступ EDGE сверху, справа и снизу,
++        // поэтому по высоте она совпадает с рейкой (верх и низ на одной линии).
++        let content_pane = Rect::from_min_max(pos2(rail.right() + 8.0, pane.top()), pane.right_bottom());
+         // Плеер отступает на одинаковое расстояние от левого и правого краёв
+         // центральной области. Его центр совпадает с центром контента, а не всего окна.
+         let bar = Rect::from_min_max(
+@@ -268,7 +268,8 @@ impl McrateApp {
+             pos2(content_pane.right() - GLASS_PAGE_PAD, content_pane.bottom()),
+         );
+         self.bleed = GLASS_PAGE_PAD;
+-        self.bottom_inset = full.bottom() - bar.top() + 4.0;
++        // Плеер лежит над панелью: закрытая им часть считается от низа ПАНЕЛИ, а не окна.
++        self.bottom_inset = content_pane.bottom() - bar.top() + 4.0;
+ 
+         let live = self.glass.live_backdrop().clone(); // дёшево: клоны делят один закадровый контекст
+         let style = ui.style().clone(); // закадровый контекст не знает нашу тему: стиль передаём сами
+diff --git a/mcrate-app/src/theme/glass.rs b/mcrate-app/src/theme/glass.rs
+index d3ce41e..594b022 100644
+--- a/mcrate-app/src/theme/glass.rs
++++ b/mcrate-app/src/theme/glass.rs
+@@ -44,9 +44,9 @@ pub fn paint_wallpaper(painter: &Painter, rect: Rect, tex: Option<TextureId>, ba
+ /// так обои слегка просвечивают, но длинные списки и текст остаются резкими.
+ pub fn paint_pane(theme: &Theme, painter: &Painter, rect: Rect) {
+     let p = &theme.palette;
+-    // Панель примыкает к верхнему, правому и нижнему краям окна: скругляем только
+-    // внутренние углы у сайдбара, чтобы не оставлять внешние полосы фоновых обоев.
+-    let corners = CornerRadius { nw: 24, ne: 0, sw: 24, se: 0 };
++    // Панель плавает с отступом от краёв окна (как рейка), поэтому скруглены все четыре угла.
++    // Радиус тот же, что у рейки (28, см. `surface` ниже).
++    let corners = CornerRadius::same(28);
+     // Большая рабочая область немного плотнее боковой стеклянной панели.
+     // Это сохраняет визуальную связь с Liquid Glass, не снижая читаемость контента.
+     let fill_alpha = if p.dark { 188 } else { 204 };

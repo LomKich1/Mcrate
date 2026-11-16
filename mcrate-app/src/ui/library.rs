@@ -2,7 +2,7 @@
 
 use egui::{Align, Layout, RichText, Sense, Ui, Vec2};
 
-use super::layout::centered_column;
+use super::layout::{bleed_clip, centered_column};
 use super::widgets::{ButtonKind, glide_begin, glide_end, pill_button, search_bar, track_row};
 use crate::app::McrateApp;
 use crate::icons::{self, Icon};
@@ -55,6 +55,7 @@ impl McrateApp {
             let current_id = self.ctl.now.as_ref().map(|t| t.id.clone());
             let playing = self.ctl.is_playing();
             let time = ui.input(|i| i.time);
+            let bleed = self.bleed;
             let mut clicked: Option<usize> = None;
             // show_rows использует фиксированную высоту строки. Резервируем безопасную зону
             // целыми невидимыми строками, чтобы список можно было прокрутить над Glass-плеером.
@@ -67,6 +68,7 @@ impl McrateApp {
             ui.scope(|ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, 56.0, count + spacer_rows, |ui, range| {
+                    bleed_clip(ui, bleed, 0.0, bleed);
                     let glide_slot = glide_begin(ui);
                     let mut hovered = None;
                     for i in range {

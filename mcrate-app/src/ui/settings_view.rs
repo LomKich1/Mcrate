@@ -3,7 +3,7 @@
 use egui::collapsing_header::CollapsingState;
 use egui::{Color32, CornerRadius, CursorIcon, FontId, Margin, Rect, RichText, Sense, Stroke, Ui, Vec2, pos2, vec2};
 
-use super::layout::{centered_column, scroll_end_padding};
+use super::layout::{bleed_clip, centered_column, scroll_end_padding};
 use super::widgets::{ButtonKind, pill_button};
 use crate::app::{McrateApp, View};
 use crate::platform;
@@ -20,6 +20,7 @@ impl McrateApp {
             ui.add_space(8.0);
 
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                bleed_clip(ui, self.bleed, 0.0, self.bleed);
                 let design = match self.settings.design {
                     Design::Material3 => "Material 3",
                     Design::LiquidGlass => "Liquid Glass",
@@ -60,6 +61,7 @@ impl McrateApp {
             ui.add_space(4.0);
 
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                bleed_clip(ui, self.bleed, 0.0, self.bleed);
                 group_title(ui, "Дизайн");
                 let w = ((ui.available_width() - 14.0) / 2.0).min(340.0);
                 ui.horizontal(|ui| {
@@ -119,6 +121,7 @@ impl McrateApp {
             ui.add_space(4.0);
 
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                bleed_clip(ui, self.bleed, 0.0, self.bleed);
                 group_title(ui, "Материал окна (Windows 11)");
                 ui.add_enabled_ui(platform::BACKDROP_SUPPORTED, |ui| {
                     ui.horizontal(|ui| {
@@ -160,6 +163,7 @@ impl McrateApp {
             ui.add_space(4.0);
 
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                bleed_clip(ui, self.bleed, 0.0, self.bleed);
                 group_title(ui, "Mcrate");
                 ui.label(RichText::new("Музыкальный плеер на Rust и egui.").color(p.on_surface_variant));
                 ui.add_space(12.0);

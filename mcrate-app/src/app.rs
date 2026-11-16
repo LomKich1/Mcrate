@@ -22,6 +22,12 @@ const GLASS_BAR_H: f32 = 104.0;
 const EDGE: f32 = 12.0;
 /// Боковой отступ плеера от краёв центральной контентной области.
 const GLASS_BAR_SIDE_INSET: f32 = 16.0;
+/// Расстояние от нижнего края ОКНА до нижнего края плеера (Liquid Glass). Было EDGE (12):
+/// тогда низ плеера совпадал с низом рейки. Больше число = плеер выше.
+const GLASS_BAR_BOTTOM_GAP: f32 = 28.0;
+/// Отступ содержимого страницы от краёв контентной панели (Liquid Glass). Содержимое
+/// прокрутки при этом уходит под край панели, а не режется в этих 20 px (см. `bleed_clip`).
+const GLASS_PAGE_PAD: f32 = 20.0;
 
 /// Какой экран открыт.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -70,6 +76,9 @@ pub struct McrateApp {
     /// Сколько пикселей снизу закрыто плавающей панелью плеера (0 вне Liquid Glass).
     /// Экраны добавляют столько пустого места в конец прокручиваемого содержимого.
     pub bottom_inset: f32,
+    /// На сколько пикселей прокрутка может «вылезти» за свою рамку к краям панели (0 вне Liquid Glass).
+    /// Экраны передают это в `bleed_clip`.
+    pub bleed: f32,
     pub backdrop_error: Option<String>,
     /// Какой графический API (DX12, Vulkan...) реально работает. Показывается в настройках:
     /// для Mica/Acrylic нужен Dx12.
@@ -126,6 +135,7 @@ impl McrateApp {
             wallpaper_key: None,
             wallpaper_tex: None,
             bottom_inset: 0.0,
+            bleed: 0.0,
             backdrop_error: None,
             gpu_backend,
             ctl,
@@ -243,21 +253,23 @@ impl McrateApp {
             // сверху, слева и снизу независимо от положения нижнего плеера.
             pos2(full.left() + rail_width - 4.0, pane.bottom()),
         );
-        // Основная рабочая область заполняет окно до верхнего, правого и нижнего края.
-        // Внутренние отступы контента задаются отдельно через `inner`, а не пустой
-        // полосой между панелью и границами клиентской области окна.
-        let content_pane = Rect::from_min_max(pos2(rail.right() + 8.0, full.top()), full.right_bottom());
+        // Внутренние отступы контента задаются отдельно через `inner`.
+        // Контентная панель плавает так же, как рейка: тот же отступ EDGE сверху, справа и снизу,
+        // поэтому по высоте она совпадает с рейкой (верх и низ на одной линии).
+        let content_pane = Rect::from_min_max(pos2(rail.right() + 8.0, pane.top()), pane.right_bottom());
         // Плеер отступает на одинаковое расстояние от левого и правого краёв
         // центральной области. Его центр совпадает с центром контента, а не всего окна.
         let bar = Rect::from_min_max(
-            pos2(content_pane.left() + GLASS_BAR_SIDE_INSET, pane.bottom() - GLASS_BAR_H),
-            pos2(content_pane.right() - GLASS_BAR_SIDE_INSET, pane.bottom()),
+            pos2(content_pane.left() + GLASS_BAR_SIDE_INSET, full.bottom() - GLASS_BAR_BOTTOM_GAP - GLASS_BAR_H),
+            pos2(content_pane.right() - GLASS_BAR_SIDE_INSET, full.bottom() - GLASS_BAR_BOTTOM_GAP),
         );
         let inner = Rect::from_min_max(
-            pos2(content_pane.left() + 20.0, content_pane.top() + 20.0),
-            pos2(content_pane.right() - 20.0, content_pane.bottom()),
+            pos2(content_pane.left() + GLASS_PAGE_PAD, content_pane.top() + GLASS_PAGE_PAD),
+            pos2(content_pane.right() - GLASS_PAGE_PAD, content_pane.bottom()),
         );
-        self.bottom_inset = full.bottom() - bar.top() + 4.0;
+        self.bleed = GLASS_PAGE_PAD;
+        // Плеер лежит над панелью: закрытая им часть считается от низа ПАНЕЛИ, а не окна.
+        self.bottom_inset = content_pane.bottom() - bar.top() + 4.0;
 
         let live = self.glass.live_backdrop().clone(); // дёшево: клоны делят один закадровый контекст
         let style = ui.style().clone(); // закадровый контекст не знает нашу тему: стиль передаём сами
@@ -356,6 +368,7 @@ impl eframe::App for McrateApp {
             self.glass_layout(ui, &theme, full, rail_width, compact);
         } else {
             self.bottom_inset = 0.0;
+            self.bleed = 0.0;
             self.panel_layout(ui, &theme, full, rail_width, compact);
         }
 

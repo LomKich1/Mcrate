@@ -11,7 +11,7 @@
 use egui::{Color32, Frame, Margin, RichText, ScrollArea, Sense, Ui, vec2};
 use mcrate_core::Track;
 
-use super::layout::{centered_column, scroll_end_padding};
+use super::layout::{bleed_clip, centered_column, scroll_end_padding};
 use super::widgets::{glide_begin, glide_end, track_row};
 use crate::app::McrateApp;
 use crate::theme::Theme;
@@ -36,6 +36,7 @@ impl McrateApp {
             ui.add_space(4.0);
 
             ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                bleed_clip(ui, self.bleed, 0.0, self.bleed);
                 // ---------- поиск (пока выключен) ----------
                 let mut query = String::new();
                 ui.add_enabled(

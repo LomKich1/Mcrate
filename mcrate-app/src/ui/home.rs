@@ -24,7 +24,7 @@ use egui::{
 };
 use mcrate_core::Track;
 
-use super::layout::scroll_end_padding;
+use super::layout::{bleed_clip, scroll_end_padding};
 use super::widgets::{ButtonKind, artists_text, cover_tile, glide_begin, glide_end, icon_button, pill_button, search_bar, track_row};
 use crate::app::{McrateApp, View};
 use crate::icons::{self, Icon};
@@ -43,7 +43,10 @@ const CHART_COUNT: usize = 10; // строк в списке «Мои треки
 
 impl McrateApp {
     pub fn home_view(&mut self, ui: &mut Ui, theme: &Theme) {
+        let bleed = self.bleed;
         ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            // Содержимое уходит под края панели, а не режется в отступе от них (Liquid Glass).
+            bleed_clip(ui, bleed, bleed, bleed);
             // ---------- поиск ----------
             let search = search_bar(ui, theme, &mut self.search, "Поиск по названию и исполнителю");
             // Enter в поле: результаты показывает экран «Моя музыка» (там же будут и сервисы).
@@ -157,7 +160,7 @@ impl McrateApp {
         let time = ui.input(|i| i.time);
         let mut play_index: Option<usize> = None;
 
-        shelf(ui, theme, "quick", "Быстрый выбор", "Недавно добавленные: запустите музыку с любого трека", |ui| {
+        shelf(ui, theme, self.bleed, "quick", "Быстрый выбор", "Недавно добавленные: запустите музыку с любого трека", |ui| {
             for (idx, track) in &recents {
                 let is_current = current_id.as_deref() == Some(track.id.as_str());
                 let artists = artists_text(track);
@@ -182,7 +185,7 @@ impl McrateApp {
         let time = ui.input(|i| i.time);
         let mut play_artist: Option<String> = None;
 
-        shelf(ui, theme, "artists", "Ваши исполнители", "Из вашей библиотеки, больше всего треков сверху", |ui| {
+        shelf(ui, theme, self.bleed, "artists", "Ваши исполнители", "Из вашей библиотеки, больше всего треков сверху", |ui| {
             for (name, count) in &artists {
                 let sub = format!("{count} {}", tracks_word(*count));
                 let card = MediaCard { seed: name, title: name, subtitle: &sub, round: true, w: ARTIST_W, h: ARTIST_H };
@@ -293,7 +296,7 @@ struct ShelfState {
 
 /// Полка: заголовок с подписью, справа две круглые стрелки, под ними ряд карточек, который
 /// прокручивается стрелками (плавно), колесом при зажатом Shift или перетаскиванием.
-fn shelf(ui: &mut Ui, theme: &Theme, id: &str, title: &str, subtitle: &str, add_cards: impl FnOnce(&mut Ui)) {
+fn shelf(ui: &mut Ui, theme: &Theme, bleed: f32, id: &str, title: &str, subtitle: &str, add_cards: impl FnOnce(&mut Ui)) {
     let p = &theme.palette;
     let sid = ui.scope_id().with(("shelf", id));
     let mut st: ShelfState = ui.ctx().data_mut(|d| d.get_temp(sid)).unwrap_or_default();
@@ -342,6 +345,8 @@ fn shelf(ui: &mut Ui, theme: &Theme, id: &str, title: &str, subtitle: &str, add_
         area = area.horizontal_scroll_offset(x);
     }
     let out = area.show(ui, |ui| {
+        // Карточки при прокрутке уходят до самых краёв панели, а не обрезаются в отступе от них.
+        bleed_clip(ui, bleed, 0.0, bleed);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = SHELF_GAP;
             add_cards(ui);
