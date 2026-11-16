@@ -19,14 +19,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use egui::{
-    Align, Color32, CursorIcon, FontId, Key, Layout, Painter, Rect, Response, RichText, ScrollArea,
+    Align, Color32, CursorIcon, FontId, Id, Key, Layout, Painter, Rect, Response, RichText, ScrollArea,
     Sense, Shape, Stroke, Ui, UiBuilder, Vec2, pos2, vec2,
 };
 use mcrate_core::Track;
 
 use super::wave::{self, COL_STEP_PX, WaveInput, WaveSim};
 use super::layout::{Bleed, bleed_clip, pane_scroll, scroll_end_padding};
-use super::widgets::{ButtonKind, artists_text, cover_tile, glide_begin, glide_end, glass_icon_button, pill_button, search_bar, squish, track_row};
+use super::widgets::{ButtonKind, artists_text, cover_tile, glide_begin, glide_end, pill_button, search_bar, squish, track_row};
 use crate::app::{McrateApp, View};
 use crate::icons::{self, Icon};
 use crate::settings::Design;
@@ -35,6 +35,9 @@ use crate::theme::{TextRole, Theme, with_alpha};
 const WAVE_H: f32 = 200.0; // высота волны
 const SHELF_GAP: f32 = 12.0; // зазор между карточками на полке
 const SHELF_STEP: f32 = 420.0; // на сколько пикселей прокручивает стрелка
+const SHELF_HALO: f32 = 8.0; // запас подсветки вокруг выбранной карточки (виден как ореол)
+/// Ключ в памяти egui: карточка пишет сюда свой id и прямоугольник, если курсор на ней.
+const SHELF_HOVER_KEY: &str = "mcrate_shelf_hover";
 const QUICK_W: f32 = 160.0; // карточка «Быстрого выбора» (M3 card: обложка 144 + подпись)
 const QUICK_H: f32 = 214.0;
 const ARTIST_W: f32 = 144.0; // исполнитель: круглый аватар 128 + подпись по центру
@@ -53,8 +56,16 @@ impl McrateApp {
         let corner = theme.pane_radius() as f32;
         let mask = (theme.settings.design == Design::Material3 && !theme.window_backdrop_active()).then_some(theme.palette.surface);
         pane_scroll(ui, bleed, corner, mask, ScrollArea::vertical().auto_shrink([false, false]), |area, ui| area.show(ui, |ui| {
-            // ---------- поиск ----------
-            let search = search_bar(ui, theme, &mut self.search, "Поиск по названию и исполнителю");
+            // ---------- заголовок «Моя волна» и поиск в одной строке ----------
+            let title_w = (ui.available_width() * 0.45).min(360.0);
+            let search = ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_max_width(title_w);
+                    wave_title(ui, theme);
+                });
+                ui.add_space(16.0);
+                search_bar(ui, theme, &mut self.search, "Поиск по названию и исполнителю")
+            }).inner;
             // Enter в поле: результаты показывает экран «Ваши загрузки» (свои файлы).
             if search.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !self.search.trim().is_empty() {
                 self.view = View::Library;
@@ -82,7 +93,6 @@ impl McrateApp {
     fn home_wave(&mut self, ui: &mut Ui, theme: &Theme) {
         let p = &theme.palette;
         let playing = self.ctl.is_playing();
-        let has_music = !self.ctl.library.is_empty();
         // Время берём у основного контекста (в закадровом проходе стекла свои часы).
         let ctx_time = ui.input(|i| i.time);
         let now = if self.frame_time > 0.0 { self.frame_time } else { ctx_time };
@@ -91,27 +101,7 @@ impl McrateApp {
         let wave_id = ui.scope_id().with("wave_state");
         let reduce_motion = theme.settings.reduce_motion;
 
-        // Шапка: текст слева, кнопки справа.
-        let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), 64.0), Sense::hover());
-        let text_rect = Rect::from_min_max(head.min, pos2((head.right() - 140.0).max(head.left() + 120.0), head.bottom()));
-        ui.scope_builder(UiBuilder::new().max_rect(text_rect), |ui| {
-            ui.add(egui::Label::new(RichText::new("Моя волна").size(theme.text_size(TextRole::DisplaySmall)).strong()).truncate());
-            ui.add(egui::Label::new(RichText::new("Ваша музыка вперемешку: нажмите ▶ и слушайте").size(theme.text_size(TextRole::LabelLarge)).color(p.on_surface_variant)).truncate());
-        });
-        let btn_rect = Rect::from_min_max(pos2(head.right() - 120.0, head.top()), head.max);
-        ui.scope_builder(UiBuilder::new().max_rect(btn_rect).layout(Layout::right_to_left(Align::Center)), |ui| {
-            let (icon, tip) = if playing { (Icon::Pause, "Пауза") } else { (Icon::Play, "Запустить волну") };
-            if glass_icon_button(ui, theme, icon, 52.0, ButtonKind::Filled, false, tip).clicked() && has_music {
-                if self.ctl.now.is_some() {
-                    self.ctl.toggle_pause();
-                } else {
-                    self.shuffle_all();
-                }
-            }
-            if glass_icon_button(ui, theme, Icon::Shuffle, 40.0, ButtonKind::Tonal, false, "Перемешать заново").clicked() && has_music {
-                self.shuffle_all();
-            }
-        });
+        // Заголовок «Моя волна» выведен в строку с поиском (см. `wave_title` и `home_view`).
 
         // Холст волны слушает курсор (hover), нажатие и клик.
         let wave_height = if ui.clip_rect().height() < 640.0 { 148.0 } else { WAVE_H };
@@ -164,17 +154,6 @@ impl McrateApp {
         if pill_button(ui, theme, "Добавить музыку", Some(Icon::Plus), ButtonKind::Filled).clicked() {
             self.view = View::Library;
         }
-    }
-
-    /// Включить всю библиотеку вперемешку.
-    fn shuffle_all(&mut self) {
-        // Перемешивание живёт в очереди Controller. Флаг читаем напрямую, пока Controller не переведён
-        // на PlaybackEngine (шаг 5c): после этого заменить на `state().shuffle`.
-        if !self.ctl.queue.shuffle() {
-            self.ctl.toggle_shuffle();
-        }
-        let items = self.ctl.library.clone();
-        self.ctl.play_list(items, 0);
     }
 
     /// Полка «Быстрый выбор»: последние добавленные треки (LocalProvider хранит их в порядке добавления).
@@ -369,7 +348,15 @@ fn shelf(ui: &mut Ui, theme: &Theme, bleed: Bleed, id: &str, title: &str, subtit
         bleed_clip(ui, bleed.sides());
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = SHELF_GAP;
+            // Подсветка одна на всю полку: слот резервируем ДО карточек, чтобы она лежала под ними.
+            let glide_slot = glide_begin(ui);
+            // Сбрасываем прошлый кадр записью None (remove_temp требует Default, а Rect его не имеет).
+            ui.ctx().data_mut(|d| d.insert_temp(Id::new(SHELF_HOVER_KEY), None::<(u64, Rect)>));
             add_cards(ui);
+            let hovered = ui.ctx().data_mut(|d| d.get_temp::<Option<(u64, Rect)>>(Id::new(SHELF_HOVER_KEY))).flatten();
+            let target = hovered.map(|(key, rect)| (key, rect.expand(SHELF_HALO)));
+            let radius = if theme.glass_active() { 22.0 } else { 24.0 };
+            glide_end(ui, theme, glide_slot, ui.scope_id().with(("glide_shelf", id)), target, radius);
         });
     });
     st.offset = out.state.clamped_offset().x;
@@ -380,6 +367,7 @@ fn shelf(ui: &mut Ui, theme: &Theme, bleed: Bleed, id: &str, title: &str, subtit
 /// Круглая кнопка-стрелка полки. Если прокручивать некуда, она бледная и не нажимается.
 fn arrow_button(ui: &mut Ui, theme: &Theme, right: bool, enabled: bool) -> Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(40.0), if enabled { Sense::click() } else { Sense::hover() });
+    let rect = squish(ui, resp.id, &resp, rect, 0.08, 0.08);
     let painter = ui.painter();
     let fade = if enabled { 255 } else { 72 };
     if theme.glass_active() {
@@ -406,6 +394,21 @@ fn arrow_button(ui: &mut Ui, theme: &Theme, right: bool, enabled: bool) -> Respo
 // ============================================================================================
 // Карточки и строки: M3 filled cards и более лёгкая медиаподача Liquid Glass.
 // ============================================================================================
+
+/// Заголовок «Моя волна» и подпись. Стоит в одной строке с поиском (см. `home_view`).
+fn wave_title(ui: &mut Ui, theme: &Theme) {
+    let p = &theme.palette;
+    ui.add(egui::Label::new(
+        RichText::new("Моя волна")
+            .size(theme.text_size(TextRole::DisplaySmall))
+            .strong(),
+    ).truncate());
+    ui.add(egui::Label::new(
+        RichText::new("Ваша музыка вперемешку")
+            .size(theme.text_size(TextRole::LabelLarge))
+            .color(p.on_surface_variant),
+    ).truncate());
+}
 
 /// Что показать на карточке полки.
 struct MediaCard<'a> {
@@ -451,6 +454,11 @@ fn media_card(ui: &mut Ui, theme: &Theme, card: &MediaCard, is_current: bool, is
     // Клик по-прежнему ловится по исходному прямоугольнику (`resp`), поэтому края не «дрожат».
     const PRESS: f32 = 0.05;
     let rect = squish(ui, resp.id, &resp, rect, PRESS, PRESS * card.w / card.h);
+    // Подсветку под карточкой рисует полка (скользит между карточками). Карточка лишь сообщает,
+    // где сейчас курсор; сжатие при нажатии уходит и в подсветку (берём уже сжатый прямоугольник).
+    if resp.hovered() || resp.is_pointer_button_down_on() {
+        ui.ctx().data_mut(|d| d.insert_temp(Id::new(SHELF_HOVER_KEY), Some((resp.id.value(), rect))));
+    }
     let radius = if glass { 14.0 } else { 16.0 };
     let (on_container, on_variant) = if is_current && !glass {
         (p.on_secondary_container, with_alpha(p.on_secondary_container, 200))
@@ -464,10 +472,7 @@ fn media_card(ui: &mut Ui, theme: &Theme, card: &MediaCard, is_current: bool, is
         if glass {
             // Apple Music-подобная медиаполка: обложка и подписи лежат непосредственно
             // на контентной поверхности, без отдельного M3 filled-card контейнера.
-            if resp.hovered() || resp.is_pointer_button_down_on() {
-                painter.rect_filled(rect, radius, with_alpha(p.on_surface, if resp.is_pointer_button_down_on() { 18 } else { 10 }));
-                painter.rect_stroke(rect, radius, Stroke::new(0.8, with_alpha(p.on_surface, 26)), egui::StrokeKind::Inside);
-            }
+            // Подсветку при наведении даёт полка (стекло-выделение под карточкой).
         } else {
             let container = if is_current { p.secondary_container } else { p.surface_container_highest };
             painter.rect_filled(rect, radius, container);

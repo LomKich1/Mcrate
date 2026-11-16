@@ -1,8 +1,8 @@
 //! Левая навигация.
 
-use egui::{Rect, RichText, Sense, Shape, Ui, Vec2, pos2};
+use egui::{Rect, Response, RichText, Sense, Shape, Ui, Vec2, pos2, vec2};
 
-use super::widgets::{cover_tile, nav_item, section_label, spring_step};
+use super::widgets::{cover_tile, nav_item, section_label, spring_step, squish};
 use crate::app::{McrateApp, View};
 use crate::icons::Icon;
 use crate::theme::Theme;
@@ -36,7 +36,8 @@ impl McrateApp {
         // неё резервируем сейчас (Noop), чтобы она легла ПОД пункты, а нарисуем после, когда известны их позиции.
         // Подсветки от курсора нет: тёмная заливка появляется только пока кнопка мыши зажата (см. nav_item).
         let pill_slot = ui.painter().add(Shape::Noop);
-        let mut selected: Option<(usize, Rect)> = None;
+        // Храним весь ответ пункта (а не только прямоугольник): нужны id и нажатие для сжатия пилюли.
+        let mut selected: Option<(usize, Response)> = None;
         let mut idx = 0usize;
 
         for (view, icon, label) in [
@@ -48,7 +49,7 @@ impl McrateApp {
             let is_sel = if view == View::Collection { self.view.is_collection() } else { self.view == view };
             let resp = nav_item(ui, theme, icon, label, is_sel, true, None, compact);
             if is_sel {
-                selected = Some((idx, resp.rect));
+                selected = Some((idx, resp.clone()));
             }
             if resp.clicked() {
                 self.view = view;
@@ -67,7 +68,7 @@ impl McrateApp {
         let is_sel = self.view == View::SoundCloud;
         let resp = nav_item(ui, theme, Icon::Cloud, "SoundCloud", is_sel, true, Some("бета"), compact);
         if is_sel {
-            selected = Some((idx, resp.rect));
+            selected = Some((idx, resp.clone()));
         }
         if resp.clicked() {
             self.view = View::SoundCloud;
@@ -86,7 +87,7 @@ impl McrateApp {
             let is_sel = self.view.is_settings();
             let resp = nav_item(ui, theme, Icon::Settings, "Настройки", is_sel, true, None, compact);
             if is_sel {
-                selected = Some((idx, resp.rect));
+                selected = Some((idx, resp.clone()));
             }
             if resp.clicked() {
                 self.view = View::Settings; // из подэкрана вернёт на список разделов
@@ -96,7 +97,8 @@ impl McrateApp {
         // Физическая пружина совпадает с демо: stiffness=500, damping=34, mass=1.
         // При быстром переключении переносим скорость, поэтому индикатор продолжает
         // движение из текущего состояния и естественно разворачивается к новой цели.
-        if let Some((key, target)) = selected {
+        if let Some((key, sel)) = selected {
+            let target = sel.rect;
             let dt = ui.input(|i| i.stable_dt).clamp(0.0, 0.064);
             let id = ui.scope_id().with("rail_pill");
             let mut a: PillAnim = ui.ctx().data_mut(|d| d.get_temp(id)).unwrap_or(PillAnim {
@@ -123,22 +125,26 @@ impl McrateApp {
                 a.velocity = 0.0;
             }
 
-            let compact_m3 = compact && !theme.glass_active();
+            let glass = theme.glass_active();
+            let compact_m3 = compact && !glass;
             let indicator_size = if compact_m3 { Vec2::new(56.0, 32.0) } else { target.size() };
             let indicator_left = target.center().x - indicator_size.x * 0.5;
             let indicator_top = if compact_m3 { a.y + (target.height() - indicator_size.y) * 0.5 } else { a.y };
             let rect = Rect::from_min_size(pos2(indicator_left, indicator_top), indicator_size);
             let indicator_radius = if compact_m3 { 16.0 } else { 24.0 };
-            ui.painter().set(pill_slot, Shape::rect_filled(rect, indicator_radius, theme.selected_fill()));
-            if theme.glass_active() {
-                // Тонкая внутренняя кромка даёт выбранному пункту лёгкое стеклянное свечение,
-                // не создавая ещё одну стеклянную поверхность поверх рейки.
-                ui.painter().rect_stroke(
-                    rect,
-                    24.0,
-                    egui::Stroke::new(1.0, crate::theme::with_alpha(theme.palette.on_surface, if theme.palette.dark { 24 } else { 56 })),
-                    egui::StrokeKind::Inside,
-                );
+
+            if glass {
+                // Liquid Glass: пилюля — настоящее стекло (эффекты мини-плеера, без заливки).
+                // Кладём в слот ПОД пункты, чтобы иконка и текст оставались сверху.
+                // Сжатие: при нажатии на выбранный пункт пилюля уменьшается тем же приёмом, что и кнопки.
+                let shrink = squish(ui, sel.id, &sel, target, 0.04, 0.08);
+                let kx = shrink.width() / target.width();
+                let ky = shrink.height() / target.height();
+                let pressed_rect = Rect::from_center_size(rect.center(), vec2(rect.width() * kx, rect.height() * ky));
+                let style = crate::theme::glass::selection_style(theme, indicator_radius);
+                ui.painter().set(pill_slot, egui_glass::glass_shape(ui, pressed_rect, &style));
+            } else {
+                ui.painter().set(pill_slot, Shape::rect_filled(rect, indicator_radius, theme.selected_fill()));
             }
             ui.ctx().data_mut(|d| d.insert_temp(id, a));
         }

@@ -62,4 +62,4 @@ pub use live_quality::LiveBackdropQuality;
 pub use renderer::init;
 pub use slider::GlassSlider;
 pub use style::GlassStyle;
-pub use widgets::{paint_glass, Glass, GlassButton, GlassToolbar};
+pub use widgets::{glass_shape, paint_glass, Glass, GlassButton, GlassToolbar};

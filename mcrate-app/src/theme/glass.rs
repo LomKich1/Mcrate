@@ -36,6 +36,21 @@ pub fn control_style(theme: &Theme, prominent: bool, corner_radius: f32) -> Glas
     }
 }
 
+/// Выделение (пункт рейки, строка, карточка) в Liquid Glass: ТОЛЬКО эффекты стекла, как у мини-плеера
+/// (блюр, преломление, блик края). Заливки нет: `tint` прозрачный, поэтому фона у выделения не видно.
+/// Материал тот же, что у PlayerBar, чтобы выделение и плеер выглядели одинаково.
+pub fn selection_style(theme: &Theme, corner_radius: f32) -> GlassStyle {
+    let s = &theme.settings;
+    let base = if theme.palette.dark { GlassStyle::dark() } else { GlassStyle::regular() };
+    GlassStyle {
+        corner_radius,
+        blur: s.blur_radius * 0.92,
+        refraction: s.refraction * 1.35,
+        tint: Color32::TRANSPARENT,
+        ..base.physical(1.50, 14.0, 1.2, 0.30, 0.38)
+    }
+}
+
 /// Наши настройки качества -> перечисление библиотеки.
 pub fn lib_quality(q: GlassQuality) -> LiveBackdropQuality {
     match q {

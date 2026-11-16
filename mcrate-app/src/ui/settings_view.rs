@@ -244,12 +244,23 @@ pub(super) fn nav_list(ui: &mut Ui, theme: &Theme, rows: &[(View, &str, String)]
     let width = ui.available_width().min(max_width);
     let mut clicked = None;
     if theme.glass_active() {
-        for (view, title, subtitle) in rows {
-            if glass_nav_row(ui, theme, title, subtitle, width, chevron).clicked() {
-                clicked = Some(*view);
+        // Одинаковый плотный список для обеих тем: без разделителей и промежутков.
+        // Подсветка glide скользит между строками так же, как в списках треков.
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let glide_slot = glide_begin(ui);
+            let mut hovered = None;
+            for (i, (view, title, subtitle)) in rows.iter().enumerate() {
+                let resp = glass_nav_row(ui, theme, title, subtitle, width, chevron);
+                if resp.hovered() {
+                    hovered = Some((i as u64, resp.rect));
+                }
+                if resp.clicked() {
+                    clicked = Some(*view);
+                }
             }
-            ui.add_space(8.0);
-        }
+            glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_glass_nav_list"), hovered, 14.0);
+        });
         return clicked;
     }
     ui.scope(|ui| {
@@ -305,14 +316,11 @@ fn m3_nav_row(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str) -> egui::
 /// Отдельная строка Liquid Glass (прежний вид): название, подпись, при желании шеврон «>».
 fn glass_nav_row(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str, width: f32, chevron: bool) -> egui::Response {
     let p = &theme.palette;
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, 64.0), Sense::click());
+    let (base_rect, resp) = ui.allocate_exact_size(vec2(width, 64.0), Sense::click());
+    let rect = super::widgets::squish(ui, resp.id, &resp, base_rect, 0.015, 0.07);
     let painter = ui.painter();
-    if resp.hovered() || resp.is_pointer_button_down_on() || resp.has_focus() {
-        let style = crate::theme::glass::control_style(theme, false, 14.0);
-        egui_glass::paint_glass(ui, rect, &style);
-        painter.rect_stroke(rect, 14.0, Stroke::new(0.8, with_alpha(p.on_surface, 42)), egui::StrokeKind::Inside);
-    }
-    painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(0.7, with_alpha(p.on_surface, 22)));
+    // Стеклянная поверхность выбранной строки рисуется единым анимированным слоем
+    // в nav_list/glide_end, чтобы она плавно перемещалась между пунктами.
     painter.text(pos2(rect.left() + 18.0, rect.center().y - 10.0), egui::Align2::LEFT_CENTER, title, FontId::proportional(16.0), p.on_surface);
     painter.text(pos2(rect.left() + 18.0, rect.center().y + 12.0), egui::Align2::LEFT_CENTER, subtitle, FontId::proportional(12.5), p.on_surface_variant);
     if chevron {
@@ -373,7 +381,8 @@ fn glass_options(ui: &mut Ui, theme: &Theme, s: &mut GraphicsSettings) {
 /// поворачивается вместе с раскрытием (`openness`: 0 = закрыто, 1 = открыто).
 fn expander_header(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str, openness: f32) -> egui::Response {
     let p = &theme.palette;
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width().min(700.0), 60.0), Sense::click());
+    let (base_rect, resp) = ui.allocate_exact_size(vec2(ui.available_width().min(700.0), 60.0), Sense::click());
+    let rect = super::widgets::squish(ui, resp.id, &resp, base_rect, 0.015, 0.07);
     let painter = ui.painter();
     if theme.glass_active() {
         if resp.hovered() || resp.is_pointer_button_down_on() || openness > 0.01 || resp.has_focus() {
@@ -477,7 +486,8 @@ fn theme_menu(ui: &mut Ui, theme: &Theme, s: &mut GraphicsSettings) {
 
 /// Кнопка меню тем: название слева, стрелка справа (▼ закрыто, ▲ открыто).
 fn theme_menu_button(ui: &mut Ui, theme: &Theme, label: &str, openness: f32, width: f32) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, MENU_BUTTON_H), Sense::click());
+    let (base_rect, resp) = ui.allocate_exact_size(vec2(width, MENU_BUTTON_H), Sense::click());
+    let rect = super::widgets::squish(ui, resp.id, &resp, base_rect, 0.015, 0.07);
     let painter = ui.painter();
     let bottom = (MENU_CORNER as f32 * (1.0 - openness)).round() as u8;
     let radius = CornerRadius { nw: MENU_CORNER, ne: MENU_CORNER, sw: bottom, se: bottom };
@@ -504,7 +514,8 @@ fn theme_menu_button(ui: &mut Ui, theme: &Theme, label: &str, openness: f32, wid
 
 /// Строка списка: цветная точка темы, название, галочка у выбранной. Возвращает `true` по клику.
 fn theme_menu_row(ui: &mut Ui, theme: &Theme, s: &GraphicsSettings, preset: ThemePreset, selected: bool) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), MENU_ROW_H), Sense::click());
+    let (base_rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), MENU_ROW_H), Sense::click());
+    let rect = super::widgets::squish(ui, resp.id, &resp, base_rect, 0.015, 0.07);
     let painter = ui.painter();
     let row_radius = if theme.glass_active() { 12.0 } else { theme.shape_radius(ShapeRole::Small) as f32 };
     let fg = if theme.glass_active() { theme.palette.on_surface } else { theme.on_tonal() };
@@ -543,7 +554,8 @@ fn group_title(ui: &mut Ui, theme: &Theme, text: &str) {
 /// Карточка выбора дизайна с мини-превью.
 fn design_card(ui: &mut Ui, theme: &Theme, design: Design, name: &str, selected: bool, width: f32) -> egui::Response {
     let p = &theme.palette;
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, 150.0), Sense::click());
+    let (base_rect, resp) = ui.allocate_exact_size(vec2(width, 150.0), Sense::click());
+    let rect = super::widgets::squish(ui, resp.id, &resp, base_rect, 0.025, 0.045);
     let painter = ui.painter();
     let shape = if theme.glass_active() { 18.0 } else { theme.shape_radius(ShapeRole::Large) as f32 };
     if theme.glass_active() {

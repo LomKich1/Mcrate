@@ -9,7 +9,9 @@ pub fn paint_glass(ui: &Ui, rect: Rect, style: &GlassStyle) {
     ui.painter().add(glass_shape(ui, rect, style));
 }
 
-fn glass_shape(ui: &Ui, rect: Rect, style: &GlassStyle) -> Shape {
+/// Публичная (для Mcrate): возвращает фигуру стекла, а не рисует её сразу. Так её можно положить
+/// в заранее зарезервированный слот painter.set(...), то есть ПОД текст и обложки.
+pub fn glass_shape(ui: &Ui, rect: Rect, style: &GlassStyle) -> Shape {
     let (backdrop_rect, fill) = match crate::live::live_state(ui.ctx()) {
         Some(live) => (live.screen_rect, Color32::TRANSPARENT),
         None => backdrop_state(ui.ctx()).map(|s| (s.rect, s.fill)).unwrap_or((rect, Color32::TRANSPARENT)),

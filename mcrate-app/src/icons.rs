@@ -1,8 +1,7 @@
 //! Иконки приложения.
 //!
 //! Material 3 использует Material Symbols Rounded (Google, Apache-2.0), а Liquid Glass —
-//! Ionicons Outline: узнаваемую тонкую iOS-ориентированную графику из открытого набора
-//! ionic-team/ionicons (MIT). Шрифты встраиваются в бинарник и работают на всех платформах.
+//! Liquid Glass использует Lucide (ISC/MIT), Material 3 — Material Symbols Rounded.
 
 use std::sync::OnceLock;
 
@@ -82,32 +81,33 @@ impl Icon {
         }
     }
 
-    /// Отдельные outline-глифы Ionicons. Для RepeatOne цифра «1» дорисовывается поверх repeat.
-    fn ion_name(self) -> &'static str {
+    /// Имена глифов Lucide.
+    fn lucide_name(self) -> &'static str {
         match self {
-            Self::Play => "play-outline",
-            Self::Pause => "pause-outline",
-            Self::Next => "play-skip-forward-outline",
-            Self::Prev => "play-skip-back-outline",
-            Self::Shuffle => "shuffle-outline",
-            Self::Repeat | Self::RepeatOne => "repeat-outline",
-            Self::Volume => "volume-high-outline",
-            Self::VolumeMute => "volume-mute-outline",
-            Self::Note => "musical-note-outline",
-            Self::Queue => "list-outline",
-            Self::Settings => "settings-outline",
-            Self::Plus => "add-outline",
-            Self::Folder => "folder-outline",
-            Self::Home => "home-outline",
-            Self::Cloud => "cloud-outline",
-            Self::Search => "search-outline",
-            Self::Library => "library-outline",
-            Self::ChevronBack => "chevron-back-outline",
-            Self::ChevronForward => "chevron-forward-outline",
-            Self::ChevronDown => "chevron-down-outline",
-            Self::ChevronUp => "chevron-up-outline",
-            Self::Checkmark => "checkmark-outline",
-            Self::Close => "close-outline",
+            Self::Play => "play",
+            Self::Pause => "pause",
+            Self::Next => "skip-forward",
+            Self::Prev => "skip-back",
+            Self::Shuffle => "shuffle",
+            Self::Repeat => "repeat",
+            Self::RepeatOne => "repeat-1",
+            Self::Volume => "volume-2",
+            Self::VolumeMute => "volume-x",
+            Self::Note => "music-2",
+            Self::Queue => "list-music",
+            Self::Settings => "settings",
+            Self::Plus => "plus",
+            Self::Folder => "folder",
+            Self::Home => "house",
+            Self::Cloud => "cloud",
+            Self::Search => "search",
+            Self::Library => "library",
+            Self::ChevronBack => "arrow-left",
+            Self::ChevronForward => "chevron-right",
+            Self::ChevronDown => "chevron-down",
+            Self::ChevronUp => "chevron-up",
+            Self::Checkmark => "check",
+            Self::Close => "x",
         }
     }
 
@@ -121,18 +121,18 @@ impl Icon {
         }
     }
 
-    fn ion_glyph(self) -> IconRef {
+    fn lucide_glyph(self) -> IconRef {
         static GLYPHS: OnceLock<[IconRef; Icon::COUNT]> = OnceLock::new();
         GLYPHS.get_or_init(|| {
             Icon::ALL.map(|icon| {
-                try_icon(Pack::Ionicons, icon.ion_name(), Style::Outline, Size::Regular)
-                    .unwrap_or_else(|error| panic!("Ionicons glyph '{}' is missing: {error}", icon.ion_name()))
+                try_icon(Pack::Lucide, icon.lucide_name(), Style::Regular, Size::Regular)
+                    .unwrap_or_else(|error| panic!("Lucide glyph '{}' is missing: {error}", icon.lucide_name()))
             })
         })[self as usize]
     }
 }
 
-/// Зарегистрировать Material Symbols и Ionicons в одном наборе шрифтов.
+/// Зарегистрировать Material Symbols и Lucide в одном наборе шрифтов.
 /// Оба набора загружаются при старте, чтобы переключение темы не требовало перезагрузки окна.
 pub fn add_to_definitions(fonts: &mut egui::FontDefinitions) {
     use egui::epaint::text::FontPriority;
@@ -147,7 +147,7 @@ pub fn add_to_definitions(fonts: &mut egui::FontDefinitions) {
     }
     fonts.font_data.insert(material.name.clone(), std::sync::Arc::new(material.data));
 
-    // Ionicons embedded TTF: ~0.28 MiB для всего набора, выбирается только Outline.
+    // Lucide embedded TTF (единственный стиль в iconflow — Regular).
     let fallback_fonts: Vec<String> = fonts.font_data.keys().cloned().collect();
     for asset in iconflow::fonts() {
         let name = asset.family.to_owned();
@@ -169,23 +169,20 @@ pub fn add_to_definitions(fonts: &mut egui::FontDefinitions) {
 }
 
 /// Нарисовать символ из набора, соответствующего активной теме.
-/// Ionicons используется только в Liquid Glass; Material 3 остаётся визуально неизменным.
+/// Lucide используется только в Liquid Glass; Material 3 остаётся визуально неизменным.
 pub fn paint(theme: &Theme, painter: &Painter, icon: Icon, center: Pos2, size: f32, color: Color32) {
     if theme.glass_active() {
-        let glyph = icon.ion_glyph();
+        let glyph = icon.lucide_glyph();
         let character = char::from_u32(glyph.codepoint).unwrap_or('?').to_string();
         let font = FontId::new(size, FontFamily::Name(glyph.family.into()));
-        painter.text(center, Align2::CENTER_CENTER, character, font, color);
 
-        if icon == Icon::RepeatOne {
-            painter.text(
-                center + vec2(size * 0.22, -size * 0.22),
-                Align2::CENTER_CENTER,
-                "1",
-                FontId::proportional(size * 0.34),
-                color,
-            );
-        }
+        // У глифов Lucide отличается высота и положение относительно font metrics.
+        // CENTER_CENTER центрирует строковый прямоугольник, из-за чего видимые контуры
+        // разных иконок кажутся стоящими на разной высоте/ширине. Центрируем tight mesh
+        // bounds самого глифа — так все иконки выравниваются по реальному рисунку.
+        let galley = painter.layout_no_wrap(character, font, color);
+        let mesh_center = galley.mesh_bounds.center();
+        painter.galley(center - mesh_center.to_vec2(), galley, color);
     } else {
         let glyph = icon.material_glyph();
         let shift_up = (0.05 + icon.material_nudge_up()) * size;
@@ -236,14 +233,16 @@ mod tests {
                 }
                 if design == Design::LiquidGlass {
                     for icon in Icon::ALL {
-                        let glyph = icon.ion_glyph();
+                        let glyph = icon.lucide_glyph();
                         let galley = ui.painter().layout_no_wrap(
                             char::from_u32(glyph.codepoint).unwrap_or('?').to_string(),
                             FontId::new(24.0, FontFamily::Name(glyph.family.into())),
                             Color32::WHITE,
                         );
                         assert!(galley.size().x >= 1.0 && galley.size().y >= 1.0,
-                            "{icon:?}: Ionicons glyph did not render");
+                            "{icon:?}: Lucide glyph did not render");
+                        assert!(galley.mesh_bounds.width() > 0.0 && galley.mesh_bounds.height() > 0.0,
+                            "{icon:?}: Lucide glyph has no visible mesh bounds");
                     }
                 }
             });
