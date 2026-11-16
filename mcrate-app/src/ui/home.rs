@@ -356,20 +356,30 @@ fn shelf(ui: &mut Ui, theme: &Theme, id: &str, title: &str, subtitle: &str, add_
 fn arrow_button(ui: &mut Ui, theme: &Theme, right: bool, enabled: bool) -> Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(40.0), if enabled { Sense::click() } else { Sense::hover() });
     let painter = ui.painter();
-    let fade = if enabled { 255 } else { 90 };
-    painter.circle_filled(rect.center(), 20.0, with_alpha(theme.tonal_fill(), fade));
-    if enabled && resp.hovered() {
-        painter.circle_filled(rect.center(), 20.0, theme.row_hover_fill());
+    let fade = if enabled { 255 } else { 72 };
+    if theme.glass_active() {
+        // В Liquid Glass стрелки — лёгкие toolbar-контролы: без постоянной M3-заливки.
+        if resp.hovered() || resp.is_pointer_button_down_on() {
+            let alpha = if resp.is_pointer_button_down_on() { 58 } else { 38 };
+            painter.circle_filled(rect.center(), 19.0, with_alpha(theme.palette.on_surface, alpha));
+            painter.circle_stroke(rect.center(), 18.5, Stroke::new(0.8, with_alpha(theme.palette.on_surface, 66)));
+        }
+    } else {
+        painter.circle_filled(rect.center(), 20.0, with_alpha(theme.tonal_fill(), fade));
+        if enabled && resp.hovered() {
+            painter.circle_filled(rect.center(), 20.0, theme.row_hover_fill());
+        }
     }
     let dx = if right { 1.0 } else { -1.0 };
     let c = rect.center();
     let pts = vec![c + vec2(-3.0 * dx, -6.0), c + vec2(3.0 * dx, 0.0), c + vec2(-3.0 * dx, 6.0)];
-    painter.add(Shape::line(pts, Stroke::new(2.0, with_alpha(theme.on_tonal(), fade))));
+    let arrow_color = if theme.glass_active() { theme.palette.on_surface } else { theme.on_tonal() };
+    painter.add(Shape::line(pts, Stroke::new(if theme.glass_active() { 1.8 } else { 2.0 }, with_alpha(arrow_color, fade))));
     if enabled { resp.on_hover_cursor(CursorIcon::PointingHand) } else { resp }
 }
 
 // ============================================================================================
-// Карточки и строки (Material 3)
+// Карточки и строки: M3 filled cards и более лёгкая медиаподача Liquid Glass.
 // ============================================================================================
 
 /// Что показать на карточке полки.
@@ -401,52 +411,82 @@ fn state_layer(painter: &Painter, rect: Rect, radius: f32, resp: &Response, cont
     }
 }
 
-/// Карточка M3 (filled card): контейнер surface_container_highest, внутри обложка, ниже заголовок
-/// (title) и подзаголовок (supporting text). Без рамок, без градиента поверх картинки.
-/// Выбранный (играющий) трек получает secondary_container. При наведении на обложке появляется
-/// маленькая FAB-кнопка «играть», как в карточках M3.
+/// Медиакарточка. В M3 — filled card; в Liquid Glass — обложка и подписи напрямую
+/// на контентной поверхности без отдельного M3-контейнера.
 fn media_card(ui: &mut Ui, theme: &Theme, card: &MediaCard, is_current: bool, is_playing: bool, time: f64) -> Response {
     let p = &theme.palette;
+    let glass = theme.glass_active();
     let (rect, resp) = ui.allocate_exact_size(vec2(card.w, card.h), Sense::click());
     if !ui.is_rect_visible(rect) {
         return resp; // карточка за краем полки или экрана: не рисуем
     }
-    let radius = 16.0; // M3 shape: large
-    let (container, on_container, on_variant) = if is_current {
-        (p.secondary_container, p.on_secondary_container, with_alpha(p.on_secondary_container, 200))
+    let radius = if glass { 14.0 } else { 16.0 };
+    let (on_container, on_variant) = if is_current && !glass {
+        (p.on_secondary_container, with_alpha(p.on_secondary_container, 200))
     } else {
-        (p.surface_container_highest, p.on_surface, p.on_surface_variant)
+        (p.on_surface, p.on_surface_variant)
     };
-    ui.painter().rect_filled(rect, radius, container);
-
-    // Обложка: у трека скруглённый квадрат (12), у исполнителя круг.
-    let pad = 8.0;
-    let side = card.w - pad * 2.0;
-    let cover = Rect::from_min_size(rect.min + vec2(pad, pad), Vec2::splat(side));
-    let cover_radius = if card.round { side / 2.0 } else { 12.0 };
-    cover_tile(ui, theme, cover, card.seed, cover_radius);
-
-    let painter = ui.painter();
-    if is_current {
-        painter.rect_filled(cover, cover_radius, Color32::from_black_alpha(100));
-        icons::paint_equalizer(painter, cover.center(), 32.0, Color32::WHITE, time, is_playing);
-    } else if resp.hovered() {
-        // Small FAB: 40x40, форма medium (12), цвета primary_container / on_primary_container.
-        let fab = Rect::from_min_size(pos2(cover.right() - 8.0 - 40.0, cover.bottom() - 8.0 - 40.0), Vec2::splat(40.0));
-        painter.rect_filled(fab, 12.0, p.primary_container);
-        icons::paint(painter, Icon::Play, fab.center(), 26.0, p.on_primary_container);
+    // Отпускаем неизменяемое заимствование `ui` до `cover_tile()`, которому
+    // требуется `&mut Ui`. После отрисовки обложки painter запрашивается повторно.
+    {
+        let painter = ui.painter();
+        if glass {
+            // Apple Music-подобная медиаполка: обложка и подписи лежат непосредственно
+            // на контентной поверхности, без отдельного M3 filled-card контейнера.
+            if resp.hovered() || resp.is_pointer_button_down_on() {
+                painter.rect_filled(rect, radius, with_alpha(p.on_surface, if resp.is_pointer_button_down_on() { 18 } else { 10 }));
+                painter.rect_stroke(rect, radius, Stroke::new(0.8, with_alpha(p.on_surface, 26)), egui::StrokeKind::Inside);
+            }
+        } else {
+            let container = if is_current { p.secondary_container } else { p.surface_container_highest };
+            painter.rect_filled(rect, radius, container);
+        }
     }
 
-    // Подписи: title (14, средний), supporting text (12).
+    // Обложка: у трека скруглённый квадрат, у исполнителя круг.
+    let pad = if glass { 4.0 } else { 8.0 };
+    let side = card.w - pad * 2.0;
+    let cover = Rect::from_min_size(rect.min + vec2(pad, pad), Vec2::splat(side));
+    let cover_radius = if card.round { side / 2.0 } else if glass { 10.0 } else { 12.0 };
+    cover_tile(ui, theme, cover, card.seed, cover_radius);
+    let painter = ui.painter();
+    if glass {
+        painter.rect_stroke(cover, cover_radius, Stroke::new(0.8, with_alpha(p.on_surface, 36)), egui::StrokeKind::Inside);
+    }
+
+    if is_current {
+        painter.rect_filled(cover, cover_radius, Color32::from_black_alpha(if glass { 84 } else { 100 }));
+        icons::paint_equalizer(painter, cover.center(), 32.0, Color32::WHITE, time, is_playing);
+        if glass {
+            painter.rect_stroke(cover, cover_radius, Stroke::new(1.4, with_alpha(p.primary, 210)), egui::StrokeKind::Inside);
+        }
+    } else if resp.hovered() {
+        // Для Liquid Glass — компактная круглая prominent-кнопка поверх обложки;
+        // в M3 оставляем квадратную FAB.
+        if glass {
+            let fab = Rect::from_min_size(pos2(cover.right() - 42.0, cover.bottom() - 42.0), Vec2::splat(34.0));
+            painter.circle_filled(fab.center() + vec2(0.0, 1.0), 17.0, Color32::from_black_alpha(46));
+            painter.circle_filled(fab.center(), 17.0, with_alpha(p.surface_container_high, 218));
+            painter.circle_stroke(fab.center(), 16.5, Stroke::new(0.9, with_alpha(p.on_surface, 70)));
+            icons::paint(painter, Icon::Play, fab.center(), 21.0, p.on_surface);
+        } else {
+            let fab = Rect::from_min_size(pos2(cover.right() - 8.0 - 40.0, cover.bottom() - 8.0 - 40.0), Vec2::splat(40.0));
+            painter.rect_filled(fab, 12.0, p.primary_container);
+            icons::paint(painter, Icon::Play, fab.center(), 26.0, p.on_primary_container);
+        }
+    }
+
     let text_w = card.w - pad * 2.0 - 4.0;
-    let ty = cover.bottom() + 10.0;
+    let ty = cover.bottom() + if glass { 8.0 } else { 10.0 };
     let title = elided(painter, card.title, FontId::proportional(14.5), on_container, text_w);
     let sub = elided(painter, card.subtitle, FontId::proportional(12.0), on_variant, text_w);
     let tx = rect.left() + pad + 2.0;
     painter.galley(pos2(tx, ty), title.clone(), on_container);
     painter.galley(pos2(tx, ty + title.size().y + 2.0), sub, on_variant);
 
-    state_layer(painter, rect, radius, &resp, on_container);
+    if !glass {
+        state_layer(painter, rect, radius, &resp, on_container);
+    }
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
 

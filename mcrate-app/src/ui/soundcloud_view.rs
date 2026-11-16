@@ -47,11 +47,19 @@ impl McrateApp {
                 );
                 ui.add_space(12.0);
 
-                Frame::new()
-                    .fill(p.surface_container_low)
-                    .corner_radius(20)
-                    .inner_margin(Margin::same(16))
-                    .show(ui, |ui| {
+                let status_frame = if theme.glass_active() {
+                    Frame::new()
+                        .fill(crate::theme::with_alpha(p.surface_container_low, if p.dark { 82 } else { 96 }))
+                        .stroke(egui::Stroke::new(0.8, crate::theme::with_alpha(p.on_surface, 28)))
+                        .corner_radius(18)
+                        .inner_margin(Margin::same(16))
+                } else {
+                    Frame::new()
+                        .fill(p.surface_container_low)
+                        .corner_radius(20)
+                        .inner_margin(Margin::same(16))
+                };
+                status_frame.show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.label(RichText::new("Состояние сервиса").size(16.0).strong());
                         ui.add_space(8.0);

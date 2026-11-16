@@ -3,7 +3,7 @@
 //! Рейка плавает над обоями; плеер — над содержимым страницы. Раскладка собрана в
 //! `app.rs` (glass_layout), здесь только материал и кирпичики фоновых поверхностей.
 
-use egui::{Color32, ColorImage, Margin, Painter, Rect, Stroke, StrokeKind, TextureId, Ui, pos2, vec2};
+use egui::{Color32, ColorImage, CornerRadius, Margin, Painter, Rect, Stroke, StrokeKind, TextureId, Ui, pos2, vec2};
 use egui_glass::{Glass, GlassStyle, LiveBackdropQuality};
 
 use super::{Palette, Surface, Theme, material3, with_alpha};
@@ -44,15 +44,17 @@ pub fn paint_wallpaper(painter: &Painter, rect: Rect, tex: Option<TextureId>, ba
 /// так обои слегка просвечивают, но длинные списки и текст остаются резкими.
 pub fn paint_pane(theme: &Theme, painter: &Painter, rect: Rect) {
     let p = &theme.palette;
-    let radius = theme.pane_radius() as f32;
+    // Панель примыкает к верхнему, правому и нижнему краям окна: скругляем только
+    // внутренние углы у сайдбара, чтобы не оставлять внешние полосы фоновых обоев.
+    let corners = CornerRadius { nw: 24, ne: 0, sw: 24, se: 0 };
     // Большая рабочая область немного плотнее боковой стеклянной панели.
     // Это сохраняет визуальную связь с Liquid Glass, не снижая читаемость контента.
     let fill_alpha = if p.dark { 188 } else { 204 };
-    let outline_alpha = if p.dark { 42 } else { 68 };
-    painter.rect_filled(rect, radius, with_alpha(p.surface_container_low, fill_alpha));
+    let outline_alpha = if p.dark { 34 } else { 48 };
+    painter.rect_filled(rect, corners, with_alpha(p.surface_container_low, fill_alpha));
     painter.rect_stroke(
         rect,
-        radius,
+        corners,
         Stroke::new(1.0, with_alpha(p.outline_variant, outline_alpha)),
         StrokeKind::Inside,
     );

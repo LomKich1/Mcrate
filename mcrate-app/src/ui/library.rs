@@ -6,7 +6,7 @@ use super::layout::centered_column;
 use super::widgets::{ButtonKind, glide_begin, glide_end, pill_button, search_bar, track_row};
 use crate::app::McrateApp;
 use crate::icons::{self, Icon};
-use crate::theme::Theme;
+use crate::theme::{Theme, with_alpha};
 
 /// Расширения для диалога выбора файлов. Список такой же, как в LocalProvider.
 const AUDIO_EXT: [&str; 6] = ["mp3", "flac", "ogg", "wav", "m4a", "aac"];
@@ -101,8 +101,13 @@ impl McrateApp {
         ui.vertical_centered(|ui| {
             ui.add_space(((ui.available_height() - self.bottom_inset).max(1.0) * 0.22).max(16.0));
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(88.0), Sense::hover());
-            ui.painter().circle_filled(rect.center(), 44.0, theme.tonal_fill());
-            icons::paint(ui.painter(), Icon::Note, rect.center(), 40.0, theme.on_tonal());
+            if theme.glass_active() {
+                ui.painter().circle_stroke(rect.center(), 42.0, egui::Stroke::new(0.9, with_alpha(p.on_surface, 46)));
+                icons::paint(ui.painter(), Icon::Note, rect.center(), 40.0, p.on_surface);
+            } else {
+                ui.painter().circle_filled(rect.center(), 44.0, theme.tonal_fill());
+                icons::paint(ui.painter(), Icon::Note, rect.center(), 40.0, theme.on_tonal());
+            }
             ui.add_space(14.0);
             ui.label(RichText::new("Здесь пока пусто").size(20.0).strong());
             ui.label(

@@ -186,7 +186,12 @@ fn settings_header(ui: &mut Ui, theme: &Theme, title: &str) -> bool {
     ui.horizontal(|ui| {
         let (rect, resp) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::click());
         let painter = ui.painter();
-        if resp.hovered() {
+        if theme.glass_active() {
+            if resp.hovered() {
+                painter.circle_filled(rect.center(), 19.0, with_alpha(theme.palette.on_surface, 24));
+                painter.circle_stroke(rect.center(), 19.0, Stroke::new(0.8, with_alpha(theme.palette.on_surface, 54)));
+            }
+        } else if resp.hovered() {
             painter.circle_filled(rect.center(), 20.0, theme.row_hover_fill());
         }
         // Шеврон «<» рисуем линиями, отдельная иконка не нужна.
@@ -204,9 +209,17 @@ fn settings_nav_row(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str) -> 
     let p = &theme.palette;
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width().min(700.0), 64.0), Sense::click());
     let painter = ui.painter();
-    painter.rect_filled(rect, 16.0, p.surface_container_high);
-    if resp.hovered() {
-        painter.rect_filled(rect, 16.0, theme.row_hover_fill());
+    if theme.glass_active() {
+        if resp.hovered() {
+            painter.rect_filled(rect, 14.0, with_alpha(p.on_surface, 16));
+            painter.rect_stroke(rect, 14.0, Stroke::new(0.8, with_alpha(p.on_surface, 36)), egui::StrokeKind::Inside);
+        }
+        painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(0.7, with_alpha(p.on_surface, 22)));
+    } else {
+        painter.rect_filled(rect, 16.0, p.surface_container_high);
+        if resp.hovered() {
+            painter.rect_filled(rect, 16.0, theme.row_hover_fill());
+        }
     }
     painter.text(pos2(rect.left() + 18.0, rect.center().y - 10.0), egui::Align2::LEFT_CENTER, title, FontId::proportional(16.0), p.on_surface);
     painter.text(pos2(rect.left() + 18.0, rect.center().y + 12.0), egui::Align2::LEFT_CENTER, subtitle, FontId::proportional(12.5), p.on_surface_variant);
@@ -228,11 +241,19 @@ fn glass_options(ui: &mut Ui, theme: &Theme, s: &mut GraphicsSettings) {
     }
     state.show_body_unindented(ui, |ui| {
         ui.add_space(6.0);
-        egui::Frame::new()
-            .fill(p.surface_container_low)
-            .corner_radius(16)
-            .inner_margin(egui::Margin::same(14))
-            .show(ui, |ui| {
+        let options_frame = if theme.glass_active() {
+            egui::Frame::new()
+                .fill(with_alpha(p.surface_container_low, if p.dark { 82 } else { 96 }))
+                .stroke(Stroke::new(0.8, with_alpha(p.on_surface, 28)))
+                .corner_radius(16)
+                .inner_margin(egui::Margin::same(14))
+        } else {
+            egui::Frame::new()
+                .fill(p.surface_container_low)
+                .corner_radius(16)
+                .inner_margin(egui::Margin::same(14))
+        };
+        options_frame.show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.add(egui::Slider::new(&mut s.blur_radius, 2.0..=48.0).text("Радиус блюра"));
                 ui.add(egui::Slider::new(&mut s.refraction, 0.0..=14.0).text("Преломление"));
@@ -262,9 +283,17 @@ fn expander_header(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str, open
     let p = &theme.palette;
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width().min(700.0), 60.0), Sense::click());
     let painter = ui.painter();
-    painter.rect_filled(rect, 16.0, p.surface_container_high);
-    if resp.hovered() {
-        painter.rect_filled(rect, 16.0, theme.row_hover_fill());
+    if theme.glass_active() {
+        if resp.hovered() {
+            painter.rect_filled(rect, 14.0, with_alpha(p.on_surface, 16));
+            painter.rect_stroke(rect, 14.0, Stroke::new(0.8, with_alpha(p.on_surface, 36)), egui::StrokeKind::Inside);
+        }
+        painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(0.7, with_alpha(p.on_surface, 22)));
+    } else {
+        painter.rect_filled(rect, 16.0, p.surface_container_high);
+        if resp.hovered() {
+            painter.rect_filled(rect, 16.0, theme.row_hover_fill());
+        }
     }
     painter.text(
         pos2(rect.left() + 16.0, rect.center().y - 9.0),
@@ -317,11 +346,19 @@ fn theme_menu(ui: &mut Ui, theme: &Theme, s: &mut GraphicsSettings) {
         state.show_body_unindented(ui, |ui| {
             // Прямые верхние углы (стык с кнопкой) и скруглённые нижние: вместе одна форма.
             // Отступ 8 px слева, справа и снизу нужен, чтобы подсветка строки не торчала за скруглением.
-            egui::Frame::new()
-                .fill(theme.tonal_fill())
-                .corner_radius(CornerRadius { nw: 0, ne: 0, sw: MENU_CORNER, se: MENU_CORNER })
-                .inner_margin(Margin { left: 8, right: 8, top: 0, bottom: 8 })
-                .show(ui, |ui| {
+            let menu_frame = if theme.glass_active() {
+                egui::Frame::new()
+                    .fill(with_alpha(theme.palette.surface_container_high, if theme.palette.dark { 104 } else { 122 }))
+                    .stroke(Stroke::new(0.8, with_alpha(theme.palette.on_surface, 42)))
+                    .corner_radius(CornerRadius { nw: 0, ne: 0, sw: MENU_CORNER, se: MENU_CORNER })
+                    .inner_margin(Margin { left: 8, right: 8, top: 0, bottom: 8 })
+            } else {
+                egui::Frame::new()
+                    .fill(theme.tonal_fill())
+                    .corner_radius(CornerRadius { nw: 0, ne: 0, sw: MENU_CORNER, se: MENU_CORNER })
+                    .inner_margin(Margin { left: 8, right: 8, top: 0, bottom: 8 })
+            };
+            menu_frame.show(ui, |ui| {
                     ui.set_width(width - 16.0);
                     egui::ScrollArea::vertical()
                         .max_height(MENU_MAX_H)
@@ -350,11 +387,16 @@ fn theme_menu_button(ui: &mut Ui, theme: &Theme, label: &str, openness: f32, wid
     let painter = ui.painter();
     let bottom = (MENU_CORNER as f32 * (1.0 - openness)).round() as u8;
     let radius = CornerRadius { nw: MENU_CORNER, ne: MENU_CORNER, sw: bottom, se: bottom };
-    painter.rect_filled(rect, radius, theme.tonal_fill());
-    if resp.hovered() {
-        painter.rect_filled(rect, radius, theme.row_hover_fill());
+    let fg = if theme.glass_active() { theme.palette.on_surface } else { theme.on_tonal() };
+    if theme.glass_active() {
+        painter.rect_filled(rect, radius, with_alpha(theme.palette.surface_container_high, if resp.hovered() { 118 } else { 86 }));
+        painter.rect_stroke(rect, radius, Stroke::new(0.8, with_alpha(theme.palette.on_surface, if openness > 0.01 { 66 } else { 38 })), egui::StrokeKind::Inside);
+    } else {
+        painter.rect_filled(rect, radius, theme.tonal_fill());
+        if resp.hovered() {
+            painter.rect_filled(rect, radius, theme.row_hover_fill());
+        }
     }
-    let fg = theme.on_tonal();
     painter.text(pos2(rect.left() + 20.0, rect.center().y), egui::Align2::LEFT_CENTER, label, FontId::proportional(15.0), fg);
 
     // Треугольник ▼, поворачивается на 180° по мере раскрытия.
@@ -370,8 +412,14 @@ fn theme_menu_button(ui: &mut Ui, theme: &Theme, label: &str, openness: f32, wid
 fn theme_menu_row(ui: &mut Ui, theme: &Theme, s: &GraphicsSettings, preset: ThemePreset, selected: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), MENU_ROW_H), Sense::click());
     let painter = ui.painter();
-    let fg = theme.on_tonal();
-    if selected {
+    let fg = if theme.glass_active() { theme.palette.on_surface } else { theme.on_tonal() };
+    if theme.glass_active() {
+        if selected {
+            painter.rect_filled(rect, 12.0, with_alpha(theme.palette.primary, 34));
+        } else if resp.hovered() {
+            painter.rect_filled(rect, 12.0, with_alpha(theme.palette.on_surface, 18));
+        }
+    } else if selected {
         painter.rect_filled(rect, 12.0, with_alpha(fg, 26));
     } else if resp.hovered() {
         painter.rect_filled(rect, 12.0, theme.row_hover_fill());
@@ -401,11 +449,23 @@ fn design_card(ui: &mut Ui, theme: &Theme, design: Design, name: &str, selected:
     let p = &theme.palette;
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 150.0), Sense::click());
     let painter = ui.painter();
-    painter.rect_filled(rect, 20.0, p.surface_container_high);
-    if selected {
-        painter.rect_stroke(rect, 20.0, egui::Stroke::new(2.5, p.primary), egui::StrokeKind::Inside);
-    } else if resp.hovered() {
-        painter.rect_filled(rect, 20.0, theme.row_hover_fill());
+    if theme.glass_active() {
+        if resp.hovered() {
+            painter.rect_filled(rect, 18.0, with_alpha(p.on_surface, 14));
+        }
+        painter.rect_stroke(
+            rect,
+            18.0,
+            Stroke::new(if selected { 1.4 } else { 0.8 }, if selected { with_alpha(p.primary, 220) } else { with_alpha(p.on_surface, 36) }),
+            egui::StrokeKind::Inside,
+        );
+    } else {
+        painter.rect_filled(rect, 20.0, p.surface_container_high);
+        if selected {
+            painter.rect_stroke(rect, 20.0, egui::Stroke::new(2.5, p.primary), egui::StrokeKind::Inside);
+        } else if resp.hovered() {
+            painter.rect_filled(rect, 20.0, theme.row_hover_fill());
+        }
     }
 
     let pv = Rect::from_min_max(rect.min + vec2(12.0, 12.0), pos2(rect.right() - 12.0, rect.bottom() - 42.0));
