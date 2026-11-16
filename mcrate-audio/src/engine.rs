@@ -20,6 +20,7 @@ use mcrate_core::{MusicProvider, ProviderKind, StreamSource, Track};
 use mcrate_net::{DownloadProgress, StreamDownloader};
 
 use crate::stream_cache::{part_path, StreamCache};
+use crate::visualizer::{VisualizerFeed, VisualizerFrame};
 use crate::{AudioError, AudioPlayer, PlayQueue, RepeatMode};
 
 /// Сколько последних скачанных онлайн-треков хранить в кэше (остальные удаляются).
@@ -117,6 +118,8 @@ pub struct PlaybackEngine {
     commands: mpsc::Sender<Command>,
     events: mpsc::Receiver<PlaybackEvent>,
     state: Arc<Mutex<PlaybackState>>, // общий снимок: движок пишет, UI читает
+    /// Атомарный снимок аудиоогибающей; UI читает его независимо от цикла состояния (100 мс).
+    visualizer: VisualizerFeed,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -142,6 +145,8 @@ impl PlaybackEngine {
         let (init_tx, init_rx) = mpsc::channel::<Result<(), String>>();
         let state = Arc::new(Mutex::new(PlaybackState::initial()));
         let thread_state = Arc::clone(&state);
+        let visualizer = VisualizerFeed::new();
+        let thread_visualizer = visualizer.clone();
         // Копия отправителя команд для самого движка: через неё фоновые задачи
         // возвращают результат загрузки в поток движка
         let worker_tx = cmd_tx.clone();
@@ -151,7 +156,7 @@ impl PlaybackEngine {
             // Устройство вывода и среду для async открываем ВНУТРИ потока.
             // new_multi_thread = у среды свои рабочие потоки, поэтому фоновые задачи
             // (скачивание) идут сами, пока поток движка занят командами. Двух потоков хватит.
-            let init = AudioPlayer::new().map_err(|e| e.to_string()).and_then(|player| {
+            let init = AudioPlayer::with_visualizer(thread_visualizer).map_err(|e| e.to_string()).and_then(|player| {
                 tokio::runtime::Builder::new_multi_thread()
                     .worker_threads(2)
                     .enable_all()
@@ -200,7 +205,7 @@ impl PlaybackEngine {
 
         // Ждём, пока поток сообщит, удалось ли открыть звук
         match init_rx.recv() {
-            Ok(Ok(())) => Ok(Self { commands: cmd_tx, events: evt_rx, state, thread: Some(handle) }),
+            Ok(Ok(())) => Ok(Self { commands: cmd_tx, events: evt_rx, state, visualizer, thread: Some(handle) }),
             Ok(Err(msg)) => Err(AudioError::Engine(msg)),
             Err(_) => Err(AudioError::Engine("поток движка завершился при запуске".to_string())),
         }
@@ -229,6 +234,12 @@ impl PlaybackEngine {
     /// Копия текущего снимка состояния.
     pub fn state(&self) -> PlaybackState {
         self.state.lock().unwrap().clone()
+    }
+
+    /// Последняя аудиоогибающая, обновляемая самим потоком вывода примерно 120 раз/с.
+    /// Чтение использует атомарные значения и никогда не блокирует звуковой поток.
+    pub fn visualizer(&self) -> VisualizerFrame {
+        self.visualizer.snapshot()
     }
 }
 

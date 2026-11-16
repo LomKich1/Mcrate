@@ -11,6 +11,7 @@ use mcrate_core::Track;
 use crate::controller::Controller;
 use crate::icons;
 use crate::ui::layout::{Bleed, Breakpoint};
+use crate::ui::now_playing::NowPlayingState;
 use crate::ui::transition::ViewTransition;
 use crate::settings::{Design, GraphicsSettings, STORAGE_KEY, ThemePreset, WindowBackdrop};
 use crate::theme::{Surface, Theme, glass, with_alpha};
@@ -33,6 +34,13 @@ const GLASS_PAGE_PAD: f32 = 20.0;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Home,
+    /// Раздел «Библиотека»: главный экран и подэкраны.
+    Collection,
+    CollectionLiked,
+    CollectionPlaylists,
+    CollectionDownloaded,
+    CollectionHistory,
+    /// «Ваши загрузки»: свои файлы (подэкран раздела «Библиотека»).
     Library,
     NowPlaying,
     SoundCloud,
@@ -48,20 +56,38 @@ impl View {
         matches!(self, View::Settings | View::SettingsAppearance | View::SettingsWindow | View::SettingsAbout)
     }
 
+    /// Относится ли экран к разделу «Библиотека» (для подсветки пункта в меню).
+    pub fn is_collection(self) -> bool {
+        matches!(
+            self,
+            View::Collection
+                | View::CollectionLiked
+                | View::CollectionPlaylists
+                | View::CollectionDownloaded
+                | View::CollectionHistory
+                | View::Library
+        )
+    }
+
     /// Порядок экранов в меню сверху вниз. От него зависит направление анимации перехода
     /// (см. ui/transition.rs): к большему номеру экран выезжает справа, к меньшему слева.
     /// Новые экраны вставляем сюда в том порядке, в каком они стоят в меню.
     pub fn order(self) -> u8 {
         match self {
             View::Home => 0,
-            View::Library => 1,
-            View::NowPlaying => 2,
-            View::SoundCloud => 3,
-            View::Settings => 4,
-            // Подэкраны настроек идут сразу за главным экраном настроек: «внутрь» = вправо, «назад» = влево.
-            View::SettingsAppearance => 5,
-            View::SettingsWindow => 6,
-            View::SettingsAbout => 7,
+            View::Collection => 1,
+            // Подэкраны раздела идут сразу за его главным экраном: «внутрь» = вправо, «назад» = влево.
+            View::CollectionLiked => 2,
+            View::CollectionPlaylists => 3,
+            View::CollectionDownloaded => 4,
+            View::Library => 5,
+            View::CollectionHistory => 6,
+            View::NowPlaying => 7,
+            View::SoundCloud => 8,
+            View::Settings => 9,
+            View::SettingsAppearance => 10,
+            View::SettingsWindow => 11,
+            View::SettingsAbout => 12,
         }
     }
 }
@@ -101,6 +127,8 @@ pub struct McrateApp {
     filter_key: Option<(String, usize)>,
     pub seek_drag: Option<f32>,
     pub volume_before_mute: f32,
+    /// Состояние экрана «Сейчас играет»: панель текста, её анимация, раскладка карточек.
+    pub np: NowPlayingState,
 }
 
 impl McrateApp {
@@ -152,6 +180,7 @@ impl McrateApp {
             filter_key: None,
             seek_drag: None,
             volume_before_mute: 0.8,
+            np: NowPlayingState::default(),
         }
     }
 
@@ -160,6 +189,11 @@ impl McrateApp {
     pub fn draw_view(&mut self, ui: &mut egui::Ui, theme: &Theme, view: View) {
         match view {
             View::Home => self.home_view(ui, theme),
+            View::Collection => self.collection_view(ui, theme),
+            View::CollectionLiked => self.collection_liked_view(ui, theme),
+            View::CollectionPlaylists => self.collection_playlists_view(ui, theme),
+            View::CollectionDownloaded => self.collection_downloaded_view(ui, theme),
+            View::CollectionHistory => self.collection_history_view(ui, theme),
             View::Library => self.library_view(ui, theme),
             View::NowPlaying => self.now_playing_view(ui, theme),
             View::SoundCloud => self.soundcloud_view(ui, theme),
@@ -288,6 +322,9 @@ impl McrateApp {
         // Плеер лежит над панелью: закрытая им часть считается от низа ПАНЕЛИ, а не окна.
         self.bottom_inset = content_pane.bottom() - bar.top() + 4.0;
 
+        // Раскладку карточек «Сейчас играет» заново пишет страница ниже (в обоих её проходах).
+        self.np.layout = None;
+
         let live = self.glass.live_backdrop().clone(); // дёшево: клоны делят один закадровый контекст
         let style = ui.style().clone(); // закадровый контекст не знает нашу тему: стиль передаём сами
         let tex = self.wallpaper_tex;
@@ -302,6 +339,10 @@ impl McrateApp {
             glass::paint_pane(theme, page.painter(), content_pane);
             page.scope_builder(UiBuilder::new().max_rect(inner), |ui| self.screen(ui, theme));
         });
+
+        // Карточки «Сейчас играет» (трек и текст) тоже стеклянные: лежат над страницей, как рейка и плеер.
+        // Рисуются до рейки и плеера, чтобы те оставались поверх.
+        self.now_playing_glass_cards(ui, theme);
 
         // Стекло. Прозрачный «щит» (Sense::click_and_drag) идёт до содержимого и не даёт кликам
         // и прокрутке проваливаться в список, который лежит под панелью.
@@ -368,6 +409,7 @@ impl eframe::App for McrateApp {
         self.ctl.tick();
         self.refresh_filter();
         self.update_transition(&ctx);
+        self.step_now_playing(&ctx); // анимация панели текста: ровно один раз за кадр
 
         // Копия темы нужна, потому что внутри замыканий мы меняем self (borrow checker
         // не даст держать &self.theme и &mut self одновременно).
@@ -398,10 +440,19 @@ impl eframe::App for McrateApp {
             ctx.request_repaint();
         }
 
-        // Пока играет музыка, грузится трек или идёт поиск, перерисовываем ~10 раз в секунду
-        // (полоса времени, эквалайзер, и чтобы заметить конец загрузки без движения мыши).
+        // На экране «Сейчас играет» не ограничиваем частоту перерисовки таймером:
+        // egui обновляет волну с частотой рендеринга окна. В остальных состояниях
+        // сохраняем редкий опрос движка, чтобы не тратить CPU впустую.
         if self.ctl.needs_repaint() {
-            ctx.request_repaint_after(Duration::from_millis(100));
+            if self.view == View::NowPlaying
+                && self.ctl.is_playing()
+                && !self.ctl.is_loading()
+                && !theme.settings.reduce_motion
+            {
+                ctx.request_repaint();
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(100));
+            }
         }
     }
 

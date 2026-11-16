@@ -7,6 +7,8 @@ pub mod engine;
 pub use engine::{PlaybackEngine, PlaybackEvent, PlaybackState};
 mod growing_file; // чтение файла, который ещё докачивается (внутренний)
 mod stream_cache; // кэш скачанных онлайн-треков (внутренний, наружу не торчит)
+mod visualizer; // неблокирующий анализатор аудио для визуализатора
+pub use visualizer::{VisualizerFrame, VISUALIZER_POINTS};
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -22,6 +24,7 @@ use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use thiserror::Error;
 
 use crate::growing_file::{GrowingFile, HEADER_LEN};
+use crate::visualizer::{AnalyzedSource, VisualizerFeed};
 
 #[derive(Debug, Error)]
 pub enum AudioError {
@@ -44,6 +47,7 @@ pub struct AudioPlayer {
     player: Player,
     /// Some(...) = сейчас играет файл, который ещё докачивается (см. `play_stream`).
     stream: Mutex<Option<StreamCtx>>,
+    visualizer: VisualizerFeed,
     _sink: MixerDeviceSink, // `_` в начале = «поле нужно, чтобы жить, но мы его не читаем»
 }
 
@@ -65,10 +69,15 @@ struct StreamCtx {
 impl AudioPlayer {
     /// Открывает звуковое устройство по умолчанию (то, что выбрано в Windows).
     pub fn new() -> Result<Self, AudioError> {
+        Self::with_visualizer(VisualizerFeed::new())
+    }
+
+    /// Внутренний конструктор: движок передаёт общий атомарный буфер UI и аудиопотоку.
+    pub(crate) fn with_visualizer(visualizer: VisualizerFeed) -> Result<Self, AudioError> {
         let mut sink = DeviceSinkBuilder::open_default_sink()?;
         sink.log_on_drop(false); // не печатать предупреждение при закрытии
         let player = Player::connect_new(sink.mixer()); // подключаем очередь к «выходу»
-        Ok(Self { player, stream: Mutex::new(None), _sink: sink })
+        Ok(Self { player, stream: Mutex::new(None), visualizer, _sink: sink })
     }
 
     /// Доступ к данным докачиваемого файла. Если другой поток упал с паникой, держа замок,
@@ -85,7 +94,8 @@ impl AudioPlayer {
 
         *self.stream_ctx() = None;   // это обычный файл, а не докачиваемый
         self.player.clear();        // убрать предыдущий трек (заодно ставит на паузу)
-        self.player.append(decoder); // добавить новый в очередь
+        self.visualizer.clear();
+        self.player.append(AnalyzedSource::new(decoder, self.visualizer.clone())); // анализировать исходный звук
         self.player.play();         // снять паузу
         Ok(total)
     }
@@ -135,7 +145,8 @@ impl AudioPlayer {
             offset: Duration::ZERO,
         });
         self.player.clear();
-        self.player.append(decoder);
+        self.visualizer.clear();
+        self.player.append(AnalyzedSource::new(decoder, self.visualizer.clone()));
         self.player.play();
         Ok(total)
     }
@@ -145,6 +156,7 @@ impl AudioPlayer {
     pub fn stop(&self) {
         *self.stream_ctx() = None;
         self.player.clear();
+        self.visualizer.clear();
     }
     pub fn is_paused(&self) -> bool { self.player.is_paused() }
 
@@ -152,7 +164,10 @@ impl AudioPlayer {
     pub fn is_finished(&self) -> bool { self.player.empty() }
 
     /// Громкость: 1.0 = как в файле, 0.5 = вдвое тише.
-    pub fn set_volume(&self, volume: f32) { self.player.set_volume(volume); }
+    pub fn set_volume(&self, volume: f32) {
+        // Визуализатор от громкости не зависит: он анализирует звук ДО ползунка громкости.
+        self.player.set_volume(volume);
+    }
 
     /// Текущая позиция воспроизведения.
     pub fn position(&self) -> Duration {
@@ -181,7 +196,8 @@ impl AudioPlayer {
         decoder.try_seek(pos)?; // читает данные вперёд до нужного места
         let was_paused = self.player.is_paused();
         self.player.clear(); // заодно ставит на паузу
-        self.player.append(decoder);
+        self.visualizer.clear();
+        self.player.append(AnalyzedSource::new(decoder, self.visualizer.clone()));
         if !was_paused {
             self.player.play();
         }

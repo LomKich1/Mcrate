@@ -4,6 +4,7 @@
 //! `player_bar`, `view_host` и остальные). Тип приложения и раскладка окна — в `app.rs`.
 //! Цвета, стекло и Material 3 живут в `crate::theme`, не здесь.
 
+pub mod collection;
 pub mod home;
 pub mod layout;
 pub mod library;
@@ -14,3 +15,4 @@ pub mod settings_view;
 pub mod soundcloud_view;
 pub mod transition;
 pub mod widgets;
+pub mod wave;

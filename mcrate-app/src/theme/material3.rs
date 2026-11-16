@@ -3,7 +3,7 @@
 
 use egui::{Color32, CornerRadius, Frame, Margin, Stroke, Ui};
 
-use super::{Surface, Theme};
+use super::{Surface, Theme, with_alpha};
 
 pub fn paint_background(theme: &Theme, ui: &mut Ui, rect: egui::Rect) {
     // Если включён Mica/Acrylic, фон не закрашиваем: системный материал виден сквозь окно.
@@ -24,7 +24,9 @@ pub fn surface<R>(theme: &Theme, ui: &mut Ui, role: Surface, add: impl FnOnce(&m
         Surface::Rail => (Color32::TRANSPARENT, Margin::symmetric(12, 14), Stroke::NONE),
         Surface::Content => (p.surface_container_low, Margin::same(20), Stroke::NONE),
         Surface::PlayerBar => (p.surface_container_high, Margin::symmetric(22, 12), Stroke::NONE),
-        Surface::Dialog => (p.surface_container_high, Margin::same(24), Stroke::new(1.0, p.outline_variant)),
+        // На экране «Сейчас играет» панель остаётся тональной, но слегка просвечивает,
+        // чтобы фоновая аудиоволна была видна и в Material 3.
+        Surface::Dialog => (with_alpha(p.surface_container_high, 224), Margin::same(24), Stroke::new(1.0, p.outline_variant)),
     };
 
     let mut frame = Frame::new().fill(fill).corner_radius(radius).inner_margin(margin).stroke(stroke);

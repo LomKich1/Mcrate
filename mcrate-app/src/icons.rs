@@ -27,6 +27,7 @@ pub enum Icon {
     Home,
     Cloud,
     Search,
+    Library,
 }
 
 impl Icon {
@@ -49,6 +50,7 @@ impl Icon {
             Icon::Home => mi::ICON_HOME,
             Icon::Cloud => mi::ICON_CLOUD,
             Icon::Search => mi::ICON_SEARCH,
+            Icon::Library => mi::ICON_LIBRARY_MUSIC,
         }
     }
 

@@ -41,10 +41,11 @@ impl McrateApp {
 
         for (view, icon, label) in [
             (View::Home, Icon::Home, "Главная"),
-            (View::Library, Icon::Note, "Моя музыка"),
+            (View::Collection, Icon::Library, "Библиотека"),
             (View::NowPlaying, Icon::Queue, "Сейчас играет"),
         ] {
-            let is_sel = self.view == view;
+            // «Библиотека» подсвечена и на её подэкранах (в том числе «Ваши загрузки»).
+            let is_sel = if view == View::Collection { self.view.is_collection() } else { self.view == view };
             let resp = nav_item(ui, theme, icon, label, is_sel, true, None, compact);
             if is_sel {
                 selected = Some((idx, resp.rect));

@@ -1,198 +1,432 @@
 //! Экран «Сейчас играет».
-//! Список «дальше в очереди» пока показать нельзя: у PlayQueue нет публичного доступа
-//! к элементам. Если он понадобится, надо согласовать с LomKich метод вроде `items()`.
 //!
-//! Под обложкой и текстом рисуется визуализация в стиле cava: столбики, которые прыгают в такт музыке.
-//! Слои снизу вверх: фон стеклянной панели, столбики, обложка, название и исполнитель.
-//! Для этого столбики рисуются САМЫМИ ПЕРВЫМИ в экране: в egui всё, что нарисовано позже, лежит выше.
+//! Аудиовизуализатор рисуется отдельным фоновым слоем у нижнего края — как в исходном экране,
+//! но теперь это гладкая непрерывная линия спектра (слева низкие частоты, справа высокие) из mcrate-audio.
+//! Поверх неё располагаются карточка трека и анимируемая панель текста.
 
-use std::collections::hash_map::DefaultHasher;
-use std::f64::consts::TAU;
-use std::hash::{Hash, Hasher};
+use egui::{
+    Align, Layout, Rect, RichText, ScrollArea, Sense, Shape, Stroke, Ui,
+    pos2, vec2,
+};
 
-use egui::{Rect, RichText, Sense, Ui, Vec2, pos2};
-
+use super::widgets::{ButtonKind, artists_text, cover_tile, icon_button, spring_step};
+use crate::app::{McrateApp, View};
+use crate::controller::provider_label;
+use crate::icons::Icon;
+use crate::theme::{Surface, Theme, with_alpha};
 use super::layout::cover_side;
-use super::widgets::{artists_text, cover_tile};
-use crate::app::McrateApp;
-use crate::controller::{Controller, provider_label};
-use crate::theme::{Theme, with_alpha};
 
-/// Шаг между столбиками по горизонтали, в логических пикселях (от него зависит их число).
-const BAR_STEP: f32 = 14.0;
-/// Во сколько раз быстро столбик взлетает (чем больше, тем резче).
-const ATTACK: f32 = 30.0;
-/// Как быстро столбик падает вниз: долей максимальной высоты в секунду.
-const FALL_PER_SEC: f32 = 1.3;
+const PANEL_GAP: f32 = 16.0;
+const LEFT_MIN: f32 = 280.0;
+const RIGHT_MIN: f32 = 250.0;
+const FOOTER_HEIGHT: f32 = 48.0;
+/// Пружина двигает число от 0 до этого значения (а не до 1): у `spring_step` порог остановки
+/// 0,05 задан для пикселей, и на шкале 0..1 пружина «замирала» бы, не дойдя 5% до цели.
+const SPRING_SCALE: f32 = 100.0;
+
+/// Где лежат две карточки экрана в этом кадре.
+/// Страница считает их один раз, а рисует либо сама (обычные темы), либо стеклянный слой
+/// поверх страницы (Liquid Glass): стекло должно лежать НАД страницей, иначе ему нечего преломлять.
+#[derive(Clone, Copy, Debug)]
+pub struct NpLayout {
+    /// Карточка трека (обложка, название). Её размер плавно меняется, когда уезжает текст.
+    pub left: Rect,
+    /// Карточка текста уже со сдвигом вправо. Её размер НЕ меняется: она целиком выезжает за окно.
+    pub lyrics: Rect,
+    /// `false`, когда карточка текста уехала за правый край окна целиком (рисовать нечего).
+    pub lyrics_visible: bool,
+}
+
+/// Состояние экрана. Лежит в `McrateApp`, а не во временной памяти egui: страница в Liquid Glass
+/// рисуется дважды за кадр (на экран и за кадр), а стеклянный слой ещё и отдельно от неё.
+#[derive(Clone, Debug)]
+pub struct NowPlayingState {
+    /// Хочет ли пользователь видеть панель текста (по умолчанию да).
+    pub lyrics_open: bool,
+    /// Положение панели на шкале 0..=`SPRING_SCALE` (0 спрятана, `SPRING_SCALE` показана).
+    /// Двигает его пружина (см. `step_now_playing`), поэтому в пути оно слегка перелетает цель.
+    pub lyrics_pos: f32,
+    /// Скорость пружины. При повторном нажатии не обнуляется: панель разворачивается плавно.
+    pub lyrics_vel: f32,
+    /// Раскладка этого кадра. Страница пишет её, стеклянный слой читает. Перед страницей стирается.
+    pub layout: Option<NpLayout>,
+}
+
+impl Default for NowPlayingState {
+    fn default() -> Self {
+        Self { lyrics_open: true, lyrics_pos: SPRING_SCALE, lyrics_vel: 0.0, layout: None }
+    }
+}
+
+/// Раскладка карточек в области `body`. `shown` = 0..1 (у пружины в пути чуть выходит за границы),
+/// `window_right` = правый край окна (до него панель текста уезжает).
+fn np_layout(body: Rect, shown: f32, window_right: f32) -> NpLayout {
+    let side_by_side = body.width() >= LEFT_MIN + RIGHT_MIN + PANEL_GAP;
+    // `final_lyrics` = где карточка текста стоит, когда открыта полностью. Размер всегда этот.
+    let (left, final_lyrics) = if side_by_side {
+        let target_right = (body.width() * 0.55).clamp(RIGHT_MIN, body.width() - LEFT_MIN - PANEL_GAP);
+        // Карточка трека занимает всё, что не заняла панель текста (плюс зазор между ними).
+        // `.min(..)` нужен из-за перелёта пружины: при закрытии `shown` кратко уходит ниже нуля.
+        let left_width = (body.width() - (target_right + PANEL_GAP) * shown).clamp(LEFT_MIN, body.width());
+        (
+            Rect::from_min_size(body.min, vec2(left_width, body.height())),
+            Rect::from_min_max(pos2(body.right() - target_right, body.top()), body.max),
+        )
+    } else {
+        // Узкое окно: карточки друг под другом.
+        let target_left = body.height() * 0.54;
+        let target_right = (body.height() - target_left - PANEL_GAP).max(0.0);
+        let left_height = (body.height() - (target_right + PANEL_GAP) * shown).clamp(0.0, body.height());
+        (
+            Rect::from_min_size(body.min, vec2(body.width(), left_height)),
+            Rect::from_min_max(pos2(body.left(), body.bottom() - target_right), body.max),
+        )
+    };
+    // Сдвиг вправо: при `shown = 1` нулевой, при `shown = 0` левый край карточки как раз у края окна.
+    let shift = (1.0 - shown) * (window_right - final_lyrics.left()).max(0.0);
+    let lyrics = final_lyrics.translate(vec2(shift, 0.0));
+    NpLayout { left, lyrics, lyrics_visible: lyrics.left() < window_right - 0.5 && lyrics.height() > 1.0 }
+}
 
 impl McrateApp {
+    /// Двигает панель текста той же пружиной, что и пилюлю выделения в рейке (`spring_step`):
+    /// небольшой перелёт и остановка, а при повторном нажатии посреди пути скорость сохраняется.
+    /// Вызывать РОВНО раз за кадр из `McrateApp::ui` (а не из страницы: её замыкание выполняется
+    /// дважды за кадр, и время шло бы вдвое быстрее).
+    pub fn step_now_playing(&mut self, ctx: &egui::Context) {
+        let target = if self.np.lyrics_open { SPRING_SCALE } else { 0.0 };
+        if self.theme.settings.reduce_motion {
+            // «Уменьшить анимацию»: без пружины, сразу на месте.
+            self.np.lyrics_pos = target;
+            self.np.lyrics_vel = 0.0;
+            return;
+        }
+        // `stable_dt` = сглаженная длительность кадра в секундах. Верхний предел такой же, как у
+        // пилюли: долгий кадр не должен «взрывать» пружину.
+        let dt = ctx.input(|i| i.stable_dt).clamp(0.0, 0.064);
+        if spring_step(&mut self.np.lyrics_pos, &mut self.np.lyrics_vel, target, dt) {
+            ctx.request_repaint(); // следующий кадр сразу, не ждём события мыши
+        }
+    }
+
+    /// Страница экрана: волна, заголовок, кнопка текста и раскладка. Сами карточки она рисует
+    /// только без Liquid Glass; в Liquid Glass их рисует `now_playing_glass_cards` поверх страницы.
     pub fn now_playing_view(&mut self, ui: &mut Ui, theme: &Theme) {
         let p = &theme.palette;
-        let track = self.ctl.now.clone();
 
-        // Визуализация идёт первой, чтобы лежать под всем остальным.
-        if let Some(track) = &track {
-            self.paint_visualizer(ui, theme, hash_seed(&track.id));
-        }
+        // Волна рисуется первой: все карточки и надписи останутся поверх неё.
+        self.paint_background_wave(ui, theme);
 
         ui.heading("Сейчас играет");
+        ui.add_space(10.0);
 
-        let Some(track) = track else {
-            ui.add_space(12.0);
-            ui.label(RichText::new("Выберите трек в библиотеке").color(p.on_surface_variant));
-            return;
-        };
+        let available = ui.available_rect_before_wrap();
+        let content_bottom = (available.bottom() - self.bottom_inset).max(available.top() + 180.0);
+        let footer_top = (content_bottom - FOOTER_HEIGHT).max(available.top() + 120.0);
+        let footer_rect = Rect::from_min_max(
+            pos2(available.left(), footer_top),
+            pos2(available.right(), content_bottom),
+        );
+        let body_bottom = (footer_top - 8.0).max(available.top() + 100.0);
+        let body = Rect::from_min_max(available.min, pos2(available.right(), body_bottom));
 
-        ui.vertical_centered(|ui| {
-            let compact_height = ui.clip_rect().height() < 620.0;
-            ui.add_space(if compact_height { 4.0 } else { 12.0 });
-            // В Liquid Glass учитываем место, перекрываемое плавающим плеером.
-            let usable_height = (ui.available_height() - self.bottom_inset).max(1.0);
-            let side = cover_side(ui.available_width(), usable_height, compact_height);
-            let (rect, _) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
-            cover_tile(ui, theme, rect, &track.id, 36.0);
-            ui.add_space(if compact_height { 10.0 } else { 18.0 });
-            let title_size = if compact_height { 21.0 } else { 26.0 };
-            ui.label(RichText::new(&track.title).size(title_size).strong());
+        // Кнопка находится в одном и том же месте и при открытом, и при закрытом тексте.
+        let lyrics_open = self.np.lyrics_open;
+        let mut toggle_clicked = false;
+        let mut footer_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("now-playing-lyrics-toggle")
+                .max_rect(footer_rect)
+                .layout(Layout::top_down(Align::Center)),
+        );
+        footer_ui.horizontal(|ui| {
+            if icon_button(
+                ui,
+                theme,
+                Icon::Note,
+                38.0,
+                ButtonKind::Tonal,
+                false,
+                if lyrics_open { "Скрыть текст трека" } else { "Показать текст трека" },
+            )
+            .clicked()
+            {
+                toggle_clicked = true;
+            }
             ui.label(
-                RichText::new(artists_text(&track))
-                    .size(if compact_height { 14.0 } else { 16.0 })
-                    .color(p.on_surface_variant),
-            );
-            ui.add_space(6.0);
-            ui.label(
-                RichText::new(format!("{} · в очереди: {}", provider_label(track.provider), self.ctl.queue.len()))
-                    .size(12.0)
+                RichText::new(if lyrics_open { "Скрыть текст" } else { "Показать текст" })
+                    .size(13.0)
                     .color(p.on_surface_variant),
             );
         });
+        if toggle_clicked {
+            self.np.lyrics_open = !self.np.lyrics_open;
+            ui.ctx().request_repaint(); // чтобы анимация началась в следующем кадре без задержки
+        }
+
+        let window_right = ui.ctx().viewport_rect().right();
+        let layout = np_layout(body, self.np.lyrics_pos / SPRING_SCALE, window_right);
+        self.np.layout = Some(layout);
+
+        // Liquid Glass: карточки нарисует стеклянный слой (он лежит над страницей и преломляет её).
+        if !theme.glass_active() {
+            self.draw_np_cards(ui, theme, layout, false);
+        }
     }
 
-    /// Столбики cava вдоль нижней кромки экрана.
-    fn paint_visualizer(&self, ui: &mut Ui, theme: &Theme, seed: u64) {
+    /// Стеклянные карточки «Сейчас играет» (только Liquid Glass). Вызывается из `glass_layout`
+    /// ПОСЛЕ страницы, как рейка и плеер: стекло берёт картинку страницы за собой.
+    pub fn now_playing_glass_cards(&mut self, ui: &mut Ui, theme: &Theme) {
+        if self.view != View::NowPlaying {
+            return;
+        }
+        if let Some(layout) = self.np.layout {
+            self.draw_np_cards(ui, theme, layout, true);
+        }
+    }
+
+    /// Нарисовать обе карточки. `shield` = поставить невидимый щит под каждой, чтобы клики и
+    /// прокрутка не проваливались в страницу под стеклом (как у рейки и плеера).
+    fn draw_np_cards(&self, ui: &mut Ui, theme: &Theme, layout: NpLayout, shield: bool) {
+        let track = self.ctl.now.clone();
+
+        if shield {
+            ui.interact(layout.left, egui::Id::unique("np_left_shield"), Sense::click_and_drag());
+        }
+        let mut left_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("now-playing-left")
+                .max_rect(layout.left)
+                .layout(Layout::top_down(Align::Min)),
+        );
+        self.track_panel(&mut left_ui, theme, track.as_ref());
+
+        if layout.lyrics_visible {
+            if shield {
+                ui.interact(layout.lyrics, egui::Id::unique("np_lyrics_shield"), Sense::click_and_drag());
+            }
+            let mut lyrics_ui = ui.new_child(
+                egui::UiBuilder::new()
+                    .id_salt("now-playing-lyrics")
+                    .max_rect(layout.lyrics)
+                    .layout(Layout::top_down(Align::Min)),
+            );
+            self.lyrics_panel(&mut lyrics_ui, theme, track.as_ref());
+        }
+    }
+
+    fn track_panel(&self, ui: &mut Ui, theme: &Theme, track: Option<&mcrate_core::Track>) {
+        let p = &theme.palette;
+        theme.surface(ui, Surface::Dialog, |ui| {
+            ui.set_min_size(ui.available_size());
+            ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                ui.add_space(4.0);
+                if let Some(track) = track {
+                    ui.vertical_centered(|ui| {
+                        let compact = ui.available_height() < 560.0;
+                        let side = cover_side(ui.available_width(), ui.available_height(), compact)
+                            .min(340.0);
+                        let (cover, _) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
+                        cover_tile(ui, theme, cover, &track.id, 28.0);
+                        ui.add_space(18.0);
+                        ui.label(RichText::new(&track.title).size(if compact { 21.0 } else { 25.0 }).strong());
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(artists_text(track))
+                                .size(15.0)
+                                .color(p.on_surface_variant),
+                        );
+                        ui.add_space(12.0);
+                        let queue_count = self.ctl.queue.len();
+                        let queue_position = if queue_count > 0 {
+                            format!(
+                                "В очереди · {} из {queue_count}",
+                                self.ctl.queue.index().saturating_add(1).min(queue_count)
+                            )
+                        } else {
+                            "Очередь пуста".to_owned()
+                        };
+                        ui.label(
+                            RichText::new(format!("{}  ·  {queue_position}", provider_label(track.provider)))
+                                .size(12.5)
+                                .color(p.on_surface_variant),
+                        );
+                    });
+                    if let Some(percent) = self.ctl.download_percent() {
+                        ui.add_space(12.0);
+                        ui.label(
+                            RichText::new(format!("Загрузка трека · {percent}%"))
+                                .size(12.0)
+                                .color(p.on_surface_variant),
+                        );
+                    }
+                } else {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(60.0);
+                        ui.label(RichText::new("Сейчас ничего не играет").size(20.0).strong());
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("Выберите трек в библиотеке или SoundCloud").color(p.on_surface_variant));
+                    });
+                }
+            });
+        });
+    }
+
+    fn lyrics_panel(&self, ui: &mut Ui, theme: &Theme, track: Option<&mcrate_core::Track>) {
+        let p = &theme.palette;
+        theme.surface(ui, Surface::Dialog, |ui| {
+            ui.set_min_size(ui.available_size());
+            ui.label(RichText::new("Текст трека").size(18.0).strong());
+            ui.add_space(8.0);
+            ui.separator();
+            ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                ui.add_space(18.0);
+                if let Some(track) = track {
+                    ui.label(RichText::new(&track.title).size(15.0).strong());
+                    ui.label(RichText::new(artists_text(track)).size(12.5).color(p.on_surface_variant));
+                    ui.add_space(32.0);
+                }
+                ui.vertical_centered(|ui| {
+                    ui.add_space(24.0);
+                    let (icon_rect, _) = ui.allocate_exact_size(vec2(48.0, 48.0), Sense::hover());
+                    crate::icons::paint(ui.painter(), Icon::Note, icon_rect.center(), 38.0, p.on_surface_variant);
+                    ui.add_space(14.0);
+                    ui.label(RichText::new("Текст пока недоступен").size(16.0).strong());
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new("В текущем бэкенде ещё нет источника и API для получения текстов песен.")
+                            .size(13.0)
+                            .color(p.on_surface_variant),
+                    );
+                });
+            });
+        });
+    }
+
+    /// Гладкая линия спектра из mcrate-audio (форма стоит на месте и пульсирует, вбок не едет). Рисуется у нижней кромки всей страницы,
+    /// позади обложки и панели текста. Никакой прогресс трека здесь не отображается.
+    fn paint_background_wave(&self, ui: &mut Ui, theme: &Theme) {
         let rect = ui.max_rect();
         if rect.width() < 80.0 || rect.height() < 80.0 {
             return;
         }
-        let playing = self.ctl.is_playing();
-        let dt = ui.input(|i| i.stable_dt).min(0.1);
-        let n = ((rect.width() / BAR_STEP) as usize).clamp(16, 96);
 
-        // Состояние (высота каждого столбика и «музыкальное время») храним в памяти egui.
-        // Так не нужно добавлять поля в McrateApp, а состояние у каждого экрана своё.
-        let id = ui.scope_id().with("visualizer");
-        let mut st: VisState = ui.ctx().data_mut(|d| d.get_temp(id)).unwrap_or_default();
-        if st.bars.len() != n {
-            st.bars = vec![0.0; n];
-        }
-        let reduce_motion = theme.settings.reduce_motion;
-        if playing && !reduce_motion {
-            st.time += dt as f64;
+        let target = &self.ctl.visualizer().samples;
+        let id = ui.make_persistent_id("now-playing-wave-smoothing");
+        let mut smooth = ui.ctx().data_mut(|d| d.get_temp::<Vec<f32>>(id))
+            .unwrap_or_else(|| vec![0.0; target.len()]);
+        if smooth.len() != target.len() {
+            smooth.resize(target.len(), 0.0);
         }
 
-        // Откуда берём цель для столбиков: настоящий спектр (когда он появится) или имитация.
-        // При уменьшении анимации оставляем статичный рисунок, не запуская кадровый цикл.
-        let target = if reduce_motion {
-            if playing {
-                (0..n).map(|i| 0.18 + hash01(seed, i as u64) as f32 * 0.26).collect()
-            } else {
-                vec![0.0; n]
-            }
-        } else {
-            match real_spectrum(&self.ctl, n) {
-                Some(v) if v.len() == n => v,
-                _ if playing => demo_spectrum(n, st.time, seed),
-                _ => vec![0.0; n],
-            }
-        };
-
+        let dt = ui.input(|i| i.stable_dt).clamp(0.0, 0.05);
         let mut moving = false;
-        if reduce_motion {
-            st.bars.clone_from(&target);
+        if theme.settings.reduce_motion {
+            smooth.copy_from_slice(target);
         } else {
-            for (bar, t) in st.bars.iter_mut().zip(target) {
-                if t > *bar {
-                    *bar += (t - *bar) * (1.0 - (-dt * ATTACK).exp()); // быстрый взлёт
-                } else {
-                    *bar = (*bar - dt * FALL_PER_SEC).max(t); // плавное падение
-                }
-                moving |= *bar > 0.002;
+            for (current, &goal) in smooth.iter_mut().zip(target.iter()) {
+                let speed = if goal > *current { 15.0 } else { 5.5 };
+                *current += (goal - *current) * (1.0 - (-dt * speed).exp());
+                moving |= (goal - *current).abs() > 0.002;
             }
         }
 
-        // ---- рисуем ----
+        // Одна непрерывная линия без заливки, подложки и второй параллельной дорожки.
+        // Низкая амплитуда остаётся у нижнего края, пики поднимаются вверх.
+        let baseline = rect.bottom() - 8.0;
+        let max_height = (rect.height() * 0.34).clamp(80.0, 260.0);
+        let segments = (target.len() * 3).max(192);
+        let mut wave = Vec::with_capacity(segments + 1);
+
+        for i in 0..=segments {
+            let x = i as f32 / segments as f32;
+            let index = x * (smooth.len() - 1) as f32;
+            let left = index.floor() as usize;
+            let right = (left + 1).min(smooth.len() - 1);
+            let t = index - left as f32;
+            let level = smooth[left] + (smooth[right] - smooth[left]) * t;
+            let y = baseline - level.clamp(0.0, 1.0) * max_height;
+            wave.push(pos2(rect.left() + rect.width() * x, y));
+        }
+
         let p = &theme.palette;
-        let max_h = (rect.height() * 0.42).clamp(120.0, 360.0);
-        let step = rect.width() / n as f32;
-        let bw = (step * 0.62).max(3.0);
-        // Столбики растут от самого низа панели: добавляем 20 px, это отступ стеклянной панели.
-        let bottom = rect.bottom() + 20.0;
-        let clip = ui.clip_rect();
-        let painter = ui.painter().with_clip_rect(Rect::from_min_max(clip.min, pos2(clip.max.x, clip.max.y + 20.0)));
-        let color = with_alpha(p.primary, if theme.glass_active() { 80 } else { 100 });
-        for (i, &v) in st.bars.iter().enumerate() {
-            let h = v.clamp(0.0, 1.0) * max_h;
-            if h < 1.0 {
-                continue;
-            }
-            let x = rect.left() + step * (i as f32 + 0.5);
-            let bar = Rect::from_min_max(pos2(x - bw / 2.0, bottom - h), pos2(x + bw / 2.0, bottom));
-            painter.rect_filled(bar, bw / 2.0, color);
-        }
+        let painter = ui.painter().with_clip_rect(rect);
+        let line = with_alpha(p.primary, if theme.glass_active() { 190 } else { 205 });
+        painter.add(Shape::line(wave, Stroke::new(2.2, line)));
 
-        ui.ctx().data_mut(|d| d.insert_temp(id, st));
-        if !reduce_motion && (playing || moving) {
-            ui.ctx().request_repaint(); // пока играет или опускаются столбики, рисуем каждый кадр
+        ui.ctx().data_mut(|d| d.insert_temp(id, smooth));
+        if !theme.settings.reduce_motion && self.ctl.is_playing() && !self.ctl.is_loading() {
+            ui.ctx().request_repaint();
+        } else if moving && !theme.settings.reduce_motion {
+            ui.ctx().request_repaint();
         }
     }
 }
 
-/// Высоты столбиков и время анимации между кадрами.
-#[derive(Clone, Default)]
-struct VisState {
-    bars: Vec<f32>,
-    time: f64,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// ТОЧКА ПОДКЛЮЧЕНИЯ НАСТОЯЩЕГО СПЕКТРА.
-/// Сейчас движок звука не отдаёт данных для визуализации, поэтому возвращаем `None`
-/// и ниже рисуется имитация. Когда LomKich добавит в `PlaybackEngine` метод вроде
-/// `spectrum(bands) -> Vec<f32>` (значения 0..1, от низких частот к высоким),
-/// достаточно вернуть его результат здесь через `Controller`, остальной код менять не надо.
-fn real_spectrum(_ctl: &Controller, _bands: usize) -> Option<Vec<f32>> {
-    None
-}
+    fn body(w: f32, h: f32) -> Rect {
+        Rect::from_min_size(pos2(20.0, 20.0), vec2(w, h))
+    }
 
-/// Имитация спектра: басы выше, верха ниже, у каждого столбика своя «скорость качания»
-/// (она зависит от трека, поэтому у разных треков картинка разная), плюс общий «удар» 2 раза в секунду.
-/// Это НЕ анализ звука: движение не связано с тем, что реально играет.
-fn demo_spectrum(n: usize, t: f64, seed: u64) -> Vec<f32> {
-    let beat = (t * TAU * 2.0).sin() * 0.5 + 0.5;
-    let kick = beat.powi(4);
-    (0..n)
-        .map(|i| {
-            let x = i as f64 / (n - 1).max(1) as f64; // 0 = басы, 1 = верха
-            let envelope = 0.9 * (1.0 - x).powf(1.3) + 0.12;
-            let (h1, h2) = (hash01(seed, i as u64), hash01(seed, 1000 + i as u64));
-            let wobble_a = 0.5 + 0.5 * (t * (2.0 + 6.0 * h1) + TAU * h2).sin();
-            let wobble_b = 0.5 + 0.5 * (t * (1.0 + 4.0 * h2) + TAU * h1).sin();
-            let v = envelope * (0.3 + 0.7 * wobble_a * wobble_b) + kick * 0.45 * (1.0 - x).powi(2);
-            v.clamp(0.0, 1.0) as f32
-        })
-        .collect()
-}
+    #[test]
+    fn lyrics_card_keeps_its_size_while_sliding() {
+        // Главное требование: карточка текста не сжимается, а только едет.
+        for (w, h) in [(1100.0, 600.0), (420.0, 700.0)] {
+            let open = np_layout(body(w, h), 1.0, 1300.0).lyrics;
+            for shown in [0.0, 0.25, 0.5, 0.75] {
+                let moving = np_layout(body(w, h), shown, 1300.0).lyrics;
+                assert!((moving.width() - open.width()).abs() < 0.01);
+                assert!((moving.height() - open.height()).abs() < 0.01);
+            }
+        }
+    }
 
-fn hash_seed(id: &str) -> u64 {
-    let mut h = DefaultHasher::new();
-    id.hash(&mut h);
-    h.finish()
-}
+    #[test]
+    fn lyrics_card_leaves_through_the_right_window_edge() {
+        let open = np_layout(body(1100.0, 600.0), 1.0, 1300.0);
+        assert!(open.lyrics_visible);
+        let hidden = np_layout(body(1100.0, 600.0), 0.0, 1300.0);
+        assert!(!hidden.lyrics_visible);
+        assert!(hidden.lyrics.left() >= 1300.0 - 0.5);
+    }
 
-/// Псевдослучайное число 0..1 из (seed, i): один и тот же вход всегда даёт один и тот же результат.
-fn hash01(seed: u64, i: u64) -> f64 {
-    let mut z = seed.wrapping_add(i.wrapping_mul(0x9E37_79B9_7F4A_7C15));
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^= z >> 31;
-    (z >> 11) as f64 / (1u64 << 53) as f64
+    #[test]
+    fn track_card_takes_the_freed_space() {
+        let open = np_layout(body(1100.0, 600.0), 1.0, 1300.0);
+        let closed = np_layout(body(1100.0, 600.0), 0.0, 1300.0);
+        assert!(closed.left.width() > open.left.width());
+        assert!((closed.left.width() - 1100.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn spring_opens_with_a_small_overshoot_and_settles_exactly() {
+        // Как у пилюли: пружина чуть перелетает цель и останавливается ровно на ней.
+        let (mut pos, mut vel) = (0.0_f32, 0.0_f32);
+        let (mut max, mut settled) = (0.0_f32, false);
+        for _ in 0..600 {
+            let moving = spring_step(&mut pos, &mut vel, SPRING_SCALE, 1.0 / 60.0);
+            max = max.max(pos);
+            if !moving {
+                settled = true;
+                break;
+            }
+        }
+        assert!(settled);
+        assert_eq!(pos, SPRING_SCALE);
+        assert!(max > SPRING_SCALE && max < SPRING_SCALE * 1.06, "перелёт {max}");
+    }
+
+    #[test]
+    fn overshoot_never_breaks_the_layout() {
+        // Перелёт в обе стороны: карточка трека остаётся в пределах области, размер текста прежний.
+        let reference = np_layout(body(1100.0, 600.0), 1.0, 1300.0).lyrics;
+        for shown in [-0.05, 0.0, 1.0, 1.05] {
+            let l = np_layout(body(1100.0, 600.0), shown, 1300.0);
+            assert!(l.left.width() <= 1100.0 && l.left.width() >= LEFT_MIN);
+            assert!((l.lyrics.width() - reference.width()).abs() < 0.01);
+        }
+    }
 }

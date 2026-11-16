@@ -45,6 +45,36 @@ pub enum TextRole {
     LabelSmall,
 }
 
+// Полные таблицы токенов. Помимо единого источника значений они позволяют
+// проверить/перебрать всю шкалу, даже если конкретный экран пока не использует роль.
+const SHAPE_TOKENS: [(ShapeRole, u8, u8); 7] = [
+    (ShapeRole::None, 0, 0),
+    (ShapeRole::ExtraSmall, 4, 8),
+    (ShapeRole::Small, 8, 12),
+    (ShapeRole::Medium, 12, 16),
+    (ShapeRole::Large, 16, 20),
+    (ShapeRole::ExtraLarge, 28, 28),
+    (ShapeRole::Full, 28, 28),
+];
+
+const TEXT_TOKENS: [(TextRole, f32, f32); 15] = [
+    (TextRole::DisplayLarge, 57.0, 34.0),
+    (TextRole::DisplayMedium, 45.0, 32.0),
+    (TextRole::DisplaySmall, 36.0, 34.0),
+    (TextRole::HeadlineLarge, 32.0, 26.0),
+    (TextRole::HeadlineMedium, 28.0, 24.0),
+    (TextRole::HeadlineSmall, 24.0, 26.0),
+    (TextRole::TitleLarge, 22.0, 22.0),
+    (TextRole::TitleMedium, 16.0, 15.0),
+    (TextRole::TitleSmall, 14.0, 14.0),
+    (TextRole::BodyLarge, 16.0, 16.0),
+    (TextRole::BodyMedium, 14.0, 15.0),
+    (TextRole::BodySmall, 12.0, 12.5),
+    (TextRole::LabelLarge, 14.0, 14.0),
+    (TextRole::LabelMedium, 12.0, 12.5),
+    (TextRole::LabelSmall, 11.0, 12.0),
+];
+
 /// Какие бывают поверхности (контейнеры) в интерфейсе.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Surface {
@@ -95,67 +125,26 @@ impl Theme {
 
     /// Токен формы. У Liquid Glass намеренно сохранена прежняя шкала радиусов.
     pub fn shape_radius(&self, role: ShapeRole) -> u8 {
-        match self.design() {
-            Design::Material3 => match role {
-                ShapeRole::None => 0,
-                ShapeRole::ExtraSmall => 4,
-                ShapeRole::Small => 8,
-                ShapeRole::Medium => 12,
-                ShapeRole::Large => 16,
-                ShapeRole::ExtraLarge => 28,
-                ShapeRole::Full => 28,
-            },
-            Design::LiquidGlass => match role {
-                ShapeRole::None => 0,
-                ShapeRole::ExtraSmall => 8,
-                ShapeRole::Small => 12,
-                ShapeRole::Medium => 16,
-                ShapeRole::Large => 20,
-                ShapeRole::ExtraLarge | ShapeRole::Full => 28,
-            },
-        }
+        SHAPE_TOKENS
+            .iter()
+            .find(|(candidate, _, _)| *candidate == role)
+            .map(|(_, material3, glass)| {
+                if self.design() == Design::Material3 { *material3 } else { *glass }
+            })
+            .unwrap_or(0)
     }
 
     /// Размеры текста для компонентов, которые используют общую шкалу.
     /// Значения M3 соответствуют базовым ролям (Display/Headline/Title/Body/Label),
     /// а размеры Liquid Glass оставлены близкими к прежним значениям интерфейса.
     pub fn text_size(&self, role: TextRole) -> f32 {
-        match self.design() {
-            Design::Material3 => match role {
-                TextRole::DisplayLarge => 57.0,
-                TextRole::DisplayMedium => 45.0,
-                TextRole::DisplaySmall => 36.0,
-                TextRole::HeadlineLarge => 32.0,
-                TextRole::HeadlineMedium => 28.0,
-                TextRole::HeadlineSmall => 24.0,
-                TextRole::TitleLarge => 22.0,
-                TextRole::TitleMedium => 16.0,
-                TextRole::TitleSmall => 14.0,
-                TextRole::BodyLarge => 16.0,
-                TextRole::BodyMedium => 14.0,
-                TextRole::BodySmall => 12.0,
-                TextRole::LabelLarge => 14.0,
-                TextRole::LabelMedium => 12.0,
-                TextRole::LabelSmall => 11.0,
-            },
-            Design::LiquidGlass => match role {
-                TextRole::DisplayLarge => 34.0,
-                TextRole::DisplayMedium => 32.0,
-                TextRole::DisplaySmall => 34.0,
-                TextRole::HeadlineLarge => 26.0,
-                TextRole::HeadlineMedium => 24.0,
-                TextRole::HeadlineSmall => 26.0,
-                TextRole::TitleLarge => 22.0,
-                TextRole::TitleMedium => 15.0,
-                TextRole::TitleSmall => 14.0,
-                TextRole::BodyLarge => 16.0,
-                TextRole::BodyMedium => 15.0,
-                TextRole::BodySmall => 12.5,
-                TextRole::LabelLarge => 14.0,
-                TextRole::LabelMedium => 12.5,
-                TextRole::LabelSmall => 12.0,
-            },
-        }
+        TEXT_TOKENS
+            .iter()
+            .find(|(candidate, _, _)| *candidate == role)
+            .map(|(_, material3, glass)| {
+                if self.design() == Design::Material3 { *material3 } else { *glass }
+            })
+            .unwrap_or(14.0)
     }
 
     /// Высота двухстрочного элемента библиотеки. M3 использует размерный ряд 56/72/88;

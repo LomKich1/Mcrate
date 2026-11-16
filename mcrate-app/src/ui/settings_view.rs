@@ -229,7 +229,7 @@ fn palette_preview(ui: &mut Ui, theme: &Theme, palette: &Palette) {
 }
 
 /// Шапка подэкрана настроек: круглая кнопка «назад» и заголовок. Возвращает `true`, если нажали «назад».
-fn settings_header(ui: &mut Ui, theme: &Theme, title: &str) -> bool {
+pub(super) fn settings_header(ui: &mut Ui, theme: &Theme, title: &str) -> bool {
     ui.horizontal(|ui| {
         let (rect, resp) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::click());
         let painter = ui.painter();
@@ -252,7 +252,7 @@ fn settings_header(ui: &mut Ui, theme: &Theme, title: &str) -> bool {
 }
 
 /// Строка-переход главного экрана настроек: название, подпись и шеврон «>» справа.
-fn settings_nav_row(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str) -> egui::Response {
+pub(super) fn settings_nav_row(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str) -> egui::Response {
     let p = &theme.palette;
     let row_height = if theme.glass_active() { 64.0 } else { theme.list_item_height(2) };
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width().min(700.0), row_height), Sense::click());

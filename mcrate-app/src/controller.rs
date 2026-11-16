@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use mcrate_audio::{PlaybackEngine, PlaybackEvent, RepeatMode};
+use mcrate_audio::{PlaybackEngine, PlaybackEvent, RepeatMode, VisualizerFrame};
 use mcrate_core::{MusicProvider, ProviderKind, Track};
 use mcrate_providers::{LocalProvider, SoundCloudProvider};
 
@@ -43,6 +43,16 @@ pub fn provider_label(kind: ProviderKind) -> &'static str {
 /// (снимок обновляется раз в ~100 мс; без этого ползунок на миг прыгал бы назад).
 const SEEK_HOLD: Duration = Duration::from_millis(300);
 
+/// Сколько треков помним в истории прослушивания.
+const HISTORY_MAX: usize = 100;
+
+/// Поднять трек наверх истории (убрав прежнюю запись о нём) и обрезать список до `HISTORY_MAX`.
+fn push_history(history: &mut Vec<Track>, track: Track) {
+    history.retain(|t| !(t.id == track.id && t.provider == track.provider));
+    history.insert(0, track);
+    history.truncate(HISTORY_MAX);
+}
+
 /// Снимок очереди движка. Читается методами, как раньше читали `PlayQueue`
 /// (`ctl.queue.shuffle()`, `ctl.queue.len()`), поэтому экраны менять не пришлось.
 #[derive(Debug, Clone, Copy)]
@@ -50,6 +60,8 @@ pub struct QueueView {
     shuffle: bool,
     repeat: RepeatMode,
     len: usize,
+    /// Номер текущего элемента в порядке воспроизведения (с нуля).
+    index: usize,
 }
 
 impl QueueView {
@@ -61,6 +73,9 @@ impl QueueView {
     }
     pub fn len(&self) -> usize {
         self.len
+    }
+    pub fn index(&self) -> usize {
+        self.index
     }
 }
 
@@ -103,6 +118,8 @@ pub struct Controller {
     /// Последняя ошибка воспроизведения (трек не запустился, оборвалась загрузка).
     /// Стирается, когда пошёл следующий трек.
     pub play_error: Option<String>,
+    /// История прослушивания за сеанс: новые сверху, без повторов (трек, сыгранный снова, поднимается наверх).
+    pub history: Vec<Track>,
     pub sc: SoundCloudState,
 
     // --- копия снимка движка (обновляется в `tick`) ---
@@ -110,6 +127,8 @@ pub struct Controller {
     loading: bool,
     position: Duration,
     download_progress: Option<f32>,
+    /// Последний атомарный снимок амплитуды из mcrate-audio.
+    visualizer: VisualizerFrame,
     /// Пауза, нажатая, пока онлайн-трек ещё грузится («стартовать на паузе»).
     pause_intent: bool,
     seek_hold: Option<(Duration, Instant)>,
@@ -189,17 +208,19 @@ impl Controller {
             soundcloud,
             engine,
             audio_error,
-            queue: QueueView { shuffle: false, repeat: RepeatMode::Off, len: 0 },
+            queue: QueueView { shuffle: false, repeat: RepeatMode::Off, len: 0, index: 0 },
             library,
             now: None,
             volume,
             status,
             play_error: None,
+            history: Vec::new(),
             sc: sc_state,
             playing: false,
             loading: false,
             position: Duration::ZERO,
             download_progress: None,
+            visualizer: VisualizerFrame::default(),
             pause_intent: false,
             seek_hold: None,
             sc_tx,
@@ -343,9 +364,14 @@ impl Controller {
                 PlaybackEvent::PauseChanged(paused) => self.pause_intent = paused,
                 PlaybackEvent::TrackChanged(track) => {
                     self.pause_intent = false;
-                    if track.is_some() {
+                    if let Some(track) = track {
                         self.status = None;
                         self.play_error = None;
+                        // Пишем в поле напрямую, а не через `self.remember(..)`: `engine` выше
+                        // занимает `self.engine` только для чтения, и метод на всём `&mut self`
+                        // Rust не пропускает (borrow checker, проверка заимствований).
+                        // Обращение к отдельному полю `self.history` ему не мешает.
+                        push_history(&mut self.history, track);
                     }
                 }
                 PlaybackEvent::ModeChanged { shuffle, repeat } => {
@@ -370,8 +396,14 @@ impl Controller {
         self.loading = state.is_loading;
         self.position = state.position;
         self.download_progress = state.download_progress;
+        self.visualizer = engine.visualizer();
         // Громкость не копируем: её хозяин Controller (ползунок двигается плавно, а снимок отстаёт на кадр).
-        self.queue = QueueView { shuffle: state.shuffle, repeat: state.repeat, len: state.queue_len };
+        self.queue = QueueView {
+            shuffle: state.shuffle,
+            repeat: state.repeat,
+            len: state.queue_len,
+            index: state.queue_index,
+        };
     }
 
     /// Играет ли сейчас музыка. Пока онлайн-трек грузится, считаем, что «играет»
@@ -393,6 +425,11 @@ impl Controller {
     /// Нужна ли перерисовка без участия мыши: играет, грузится или идёт поиск.
     pub fn needs_repaint(&self) -> bool {
         self.is_playing() || self.loading || self.sc.searching
+    }
+
+    /// Неблокирующий снимок последних уровней сигнала для фонового визуализатора.
+    pub fn visualizer(&self) -> &VisualizerFrame {
+        &self.visualizer
     }
 
     pub fn position(&self) -> Duration {
@@ -445,5 +482,42 @@ impl Drop for Controller {
         if let Some(rt) = self.rt.take() {
             rt.shutdown_background();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn track(id: &str, provider: ProviderKind) -> Track {
+        Track { id: id.to_string(), provider, title: id.to_string(), artists: vec![], duration_secs: 1 }
+    }
+
+    #[test]
+    fn history_puts_latest_first_without_duplicates() {
+        let mut h = Vec::new();
+        push_history(&mut h, track("a", ProviderKind::Local));
+        push_history(&mut h, track("b", ProviderKind::Local));
+        push_history(&mut h, track("a", ProviderKind::Local)); // сыгран снова: поднимается наверх
+        let ids: Vec<_> = h.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b"]);
+    }
+
+    #[test]
+    fn same_id_from_other_service_is_a_different_track() {
+        let mut h = Vec::new();
+        push_history(&mut h, track("1", ProviderKind::Local));
+        push_history(&mut h, track("1", ProviderKind::SoundCloud));
+        assert_eq!(h.len(), 2);
+    }
+
+    #[test]
+    fn history_is_capped() {
+        let mut h = Vec::new();
+        for i in 0..HISTORY_MAX + 20 {
+            push_history(&mut h, track(&i.to_string(), ProviderKind::Local));
+        }
+        assert_eq!(h.len(), HISTORY_MAX);
+        assert_eq!(h[0].id, (HISTORY_MAX + 19).to_string());
     }
 }

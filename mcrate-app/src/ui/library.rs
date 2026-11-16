@@ -1,10 +1,11 @@
-//! Экран «Моя музыка»: свои файлы (LocalProvider).
+//! Экран «Ваши загрузки» (раньше «Моя музыка»): свои файлы (LocalProvider). Подэкран раздела «Библиотека».
 
 use egui::{Align, Layout, RichText, Sense, Ui, Vec2};
 
 use super::layout::{bleed_clip, centered_column};
+use super::settings_view::settings_header;
 use super::widgets::{ButtonKind, error_banner, glide_begin, glide_end, pill_button, search_bar, status_snackbar, track_row};
-use crate::app::McrateApp;
+use crate::app::{McrateApp, View};
 use crate::icons::{self, Icon};
 use crate::theme::{Theme, with_alpha};
 
@@ -17,7 +18,9 @@ impl McrateApp {
             let p = &theme.palette;
 
             ui.horizontal(|ui| {
-                ui.heading("Моя музыка");
+                if settings_header(ui, theme, "Ваши загрузки") {
+                    self.view = View::Collection;
+                }
                 // right_to_left: первый добавленный элемент окажется правее остальных.
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if pill_button(ui, theme, "Папка", Some(Icon::Folder), ButtonKind::Tonal).clicked() {

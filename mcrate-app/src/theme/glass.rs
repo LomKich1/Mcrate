@@ -111,8 +111,9 @@ pub fn surface<R>(theme: &Theme, ui: &mut Ui, role: Surface, add: impl FnOnce(&m
     let p = &theme.palette;
 
     let base = match (role, p.dark) {
-        (Surface::PlayerBar, true) => GlassStyle::dark(),
-        (Surface::PlayerBar, false) => GlassStyle::regular(),
+        // Dialog (карточки «Сейчас играет») берёт тот же материал, что мини-плеер.
+        (Surface::PlayerBar | Surface::Dialog, true) => GlassStyle::dark(),
+        (Surface::PlayerBar | Surface::Dialog, false) => GlassStyle::regular(),
         (_, true) => GlassStyle::panel_dark(),
         (_, false) => GlassStyle::panel(),
     };
@@ -125,8 +126,7 @@ pub fn surface<R>(theme: &Theme, ui: &mut Ui, role: Surface, add: impl FnOnce(&m
     // regular preset. У обоих остаётся один вариант материала (Regular), без Clear.
     let (blur_scale, refraction_scale) = match role {
         Surface::Rail => (1.18, 0.82),
-        Surface::PlayerBar => (0.92, 1.35),
-        Surface::Dialog => (1.0, 1.0),
+        Surface::PlayerBar | Surface::Dialog => (0.92, 1.35),
         Surface::Content => unreachable!("content layer is never glass"),
     };
     // Физическая модель линзы из liquid-glass-generator (преломление по закону Снеллиуса:
@@ -134,16 +134,15 @@ pub fn surface<R>(theme: &Theme, ui: &mut Ui, role: Surface, add: impl FnOnce(&m
     // кривизна, резкость края (1/pt), свечение края.
     let base = match role {
         Surface::Rail => base.physical(1.45, 6.0, 1.0, 0.35, 0.22),
-        Surface::PlayerBar => base.physical(1.50, 14.0, 1.2, 0.30, 0.38),
-        Surface::Dialog => base.physical(1.50, 10.0, 1.0, 0.35, 0.30),
+        Surface::PlayerBar | Surface::Dialog => base.physical(1.50, 14.0, 1.2, 0.30, 0.38),
         Surface::Content => unreachable!("content layer is never glass"),
     };
     let style = GlassStyle {
         blur: s.blur_radius * blur_scale,
         refraction: s.refraction * refraction_scale,
         corner_radius: match role {
-            Surface::Rail | Surface::Dialog => 28.0,
-            Surface::PlayerBar => 26.0,
+            Surface::Rail => 28.0,
+            Surface::PlayerBar | Surface::Dialog => 26.0,
             Surface::Content => unreachable!("content layer is never glass"),
         },
         // Значение настройки задаёт плотность цветной плёнки; при нуле остаётся
