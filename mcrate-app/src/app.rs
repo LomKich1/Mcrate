@@ -20,6 +20,8 @@ use crate::{fonts, platform};
 const GLASS_BAR_H: f32 = 104.0;
 /// Внешний отступ плавающих панелей от края окна.
 const EDGE: f32 = 12.0;
+/// Боковой отступ плеера от краёв центральной контентной области.
+const GLASS_BAR_SIDE_INSET: f32 = 16.0;
 
 /// Какой экран открыт.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -232,17 +234,25 @@ impl McrateApp {
     /// размещаются стеклянные контролы. Между рейкой и контентом оставлен просвет,
     /// чтобы поверхности не сливались в одну большую плиту.
     fn glass_layout(&mut self, ui: &mut egui::Ui, theme: &Theme, full: Rect, rail_width: f32, compact: bool) {
-        // Геометрия: панель плеера внизу на всю ширину, рейка слева,
-        // контентная панель справа от рейки и под панелью плеера.
+        // Геометрия: навигация слева, плотная контентная панель справа, а плеер
+        // плавает только внутри центральной области — не заходит под сайдбар.
         let pane = full.shrink(EDGE);
-        let bar = Rect::from_min_max(pos2(pane.left(), pane.bottom() - GLASS_BAR_H), pane.max);
         let rail = Rect::from_min_max(
             pos2(pane.left(), pane.top()),
-            pos2(full.left() + rail_width - 4.0, bar.top() - 8.0),
+            // Рейка занимает всю высоту окна с тем же внешним отступом EDGE.
+            // Плеер находится только в центральной колонке, поэтому больше нет причины
+            // обрывать навигацию на его верхней границе.
+            pos2(full.left() + rail_width - 4.0, pane.bottom()),
         );
         // Контентная панель начинается справа от стеклянной рейки. Между ними остаётся
         // небольшой просвет: поверхности не сливаются в одну большую стеклянную плиту.
         let content_pane = Rect::from_min_max(pos2(rail.right() + 8.0, pane.top()), pane.max);
+        // Плеер отступает на одинаковое расстояние от левого и правого краёв
+        // центральной области. Его центр совпадает с центром контента, а не всего окна.
+        let bar = Rect::from_min_max(
+            pos2(content_pane.left() + GLASS_BAR_SIDE_INSET, pane.bottom() - GLASS_BAR_H),
+            pos2(content_pane.right() - GLASS_BAR_SIDE_INSET, pane.bottom()),
+        );
         let inner = Rect::from_min_max(
             pos2(content_pane.left() + 20.0, content_pane.top() + 20.0),
             pos2(content_pane.right() - 20.0, content_pane.bottom()),
@@ -338,7 +348,7 @@ impl eframe::App for McrateApp {
         // Размерный класс окна определяет целевую ширину. Сам переход между ширинами
         // анимируется, чтобы навигация не сдвигала весь контент скачком при resize.
         let bp = Breakpoint::from_width(full.width());
-        let rail_width = ctx.animate_value_with_time(egui::Id::new("navigation_width"), bp.rail_width(), 0.18);
+        let rail_width = ctx.animate_value_with_time(egui::Id::unique("navigation_width"), bp.rail_width(), 0.18);
         // Подписи проявляются ближе к окончанию раскрытия панели, когда для них уже есть место.
         let compact = rail_width < 208.0;
 

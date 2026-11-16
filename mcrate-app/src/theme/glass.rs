@@ -39,17 +39,21 @@ pub fn paint_wallpaper(painter: &Painter, rect: Rect, tex: Option<TextureId>, ba
     }
 }
 
-/// Контентная панель — обычная плотная поверхность, не Liquid Glass.
-/// Стекло предназначено для навигации и постоянных контролов; списки и текст
-/// должны оставаться резкими и не конкурировать с декоративным материалом.
+/// Основная контентная панель — мягкая полупрозрачная поверхность.
+/// В отличие от навигации она не использует сильный блюр или преломление:
+/// так обои слегка просвечивают, но длинные списки и текст остаются резкими.
 pub fn paint_pane(theme: &Theme, painter: &Painter, rect: Rect) {
     let p = &theme.palette;
     let radius = theme.pane_radius() as f32;
-    painter.rect_filled(rect, radius, p.surface_container_low);
+    // Большая рабочая область немного плотнее боковой стеклянной панели.
+    // Это сохраняет визуальную связь с Liquid Glass, не снижая читаемость контента.
+    let fill_alpha = if p.dark { 188 } else { 204 };
+    let outline_alpha = if p.dark { 42 } else { 68 };
+    painter.rect_filled(rect, radius, with_alpha(p.surface_container_low, fill_alpha));
     painter.rect_stroke(
         rect,
         radius,
-        Stroke::new(1.0, with_alpha(p.outline_variant, if p.dark { 58 } else { 92 })),
+        Stroke::new(1.0, with_alpha(p.outline_variant, outline_alpha)),
         StrokeKind::Inside,
     );
 }
@@ -57,16 +61,16 @@ pub fn paint_pane(theme: &Theme, painter: &Painter, rect: Rect) {
 const W: usize = 512;
 const H: usize = 320;
 
-/// Процедурные обои: несколько мягких цветных пятен на тёмной/светлой основе.
-/// Чем контрастнее картинка, тем лучше видно преломление.
+/// Процедурные обои: приглушённые цветовые пятна на нейтральной основе.
+/// Фон поддерживает оптический эффект, но не перетягивает внимание с контента.
 pub fn wallpaper(p: &Palette) -> ColorImage {
     let base = p.surface_container_lowest;
     // (x, y, радиус, цвет, сила), координаты в долях от размера картинки
     let blobs = [
-        (0.18_f32, 0.28_f32, 0.55_f32, p.primary, 0.85_f32),
-        (0.82, 0.22, 0.50, p.tertiary_container, 0.95),
-        (0.55, 0.88, 0.60, p.secondary_container, 0.90),
-        (0.92, 0.80, 0.35, p.primary_container, 0.80),
+        (0.18_f32, 0.28_f32, 0.55_f32, p.primary, 0.38_f32),
+        (0.82, 0.22, 0.50, p.tertiary_container, 0.42),
+        (0.55, 0.88, 0.60, p.secondary_container, 0.36),
+        (0.92, 0.80, 0.35, p.primary_container, 0.30),
     ];
     let mut img = ColorImage::filled([W, H], base);
     for y in 0..H {
