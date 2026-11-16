@@ -191,7 +191,7 @@ impl McrateApp {
     /// а запись идемпотентна (присваивание, а не прибавка), так что двойной вызов безвреден.
     /// Возвращает `true`, если доля изменилась.
     fn np_divider(&mut self, ui: &mut Ui, theme: &Theme, divider: Rect, body: Rect) -> bool {
-        let id = egui::Id::new(SPLIT_ID);
+        let id = egui::Id::unique(SPLIT_ID);
         let resp = ui.interact(divider, id, Sense::click_and_drag());
         let mut changed = false;
 

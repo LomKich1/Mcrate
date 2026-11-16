@@ -195,7 +195,6 @@ fn search_bar_with_max_width(ui: &mut Ui, theme: &Theme, value: &mut String, hin
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ButtonKind {
     Plain,    // только иконка без постоянной подложки
-    Text,     // текстовая кнопка
     Outlined, // контурная кнопка
     Tonal,    // приглушённая заливка
     Filled,   // главный акцент (кнопка «играть»)
@@ -537,7 +536,7 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, diameter: f32, kind: 
     let fg = match kind {
         ButtonKind::Filled => p.on_primary,
         ButtonKind::Tonal => if glass { p.on_surface } else { theme.on_tonal() },
-        ButtonKind::Outlined | ButtonKind::Text => p.primary,
+        ButtonKind::Outlined => p.primary,
         ButtonKind::Plain => if active { p.primary } else { p.on_surface },
     };
     let painter = ui.painter();
@@ -566,11 +565,6 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, diameter: f32, kind: 
                 Some(with_alpha(p.surface_container_high, (36.0 + state_t * 80.0) as u8)),
                 with_alpha(p.on_surface, (54.0 + state_t * 34.0) as u8),
             ),
-            ButtonKind::Text if hovered || pressed || resp.has_focus() => (
-                Some(with_alpha(p.on_surface, (12.0 + state_t * 26.0) as u8)),
-                with_alpha(p.on_surface, 48),
-            ),
-            ButtonKind::Text => (None, Color32::TRANSPARENT),
             ButtonKind::Plain if active => (
                 Some(with_alpha(p.primary, (54.0 + state_t * 30.0) as u8)),
                 with_alpha(p.primary, 86),
@@ -586,7 +580,7 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, diameter: f32, kind: 
         }
         if let Some(fill) = fill {
             painter.circle_filled(visual_rect.center(), r, fill);
-            if !matches!(kind, ButtonKind::Plain | ButtonKind::Text) || active {
+            if !matches!(kind, ButtonKind::Plain) || active {
                 painter.circle_stroke(visual_rect.center(), r - 0.5, Stroke::new(0.9, stroke));
                 // Короткий верхний блик помогает читать кнопку как прозрачный контрол,
                 // но не превращает каждый элемент в яркую стеклянную капсулу.
@@ -608,7 +602,7 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, diameter: f32, kind: 
         let (bg, _) = match kind {
             ButtonKind::Filled => (Some(p.primary), p.on_primary),
             ButtonKind::Tonal => (Some(theme.tonal_fill()), theme.on_tonal()),
-            ButtonKind::Outlined | ButtonKind::Text => (None, p.primary),
+            ButtonKind::Outlined => (None, p.primary),
             ButtonKind::Plain => (if active { Some(with_alpha(p.primary, if p.dark { 42 } else { 34 })) } else { None }, p.on_surface),
         };
         if let Some(bg) = bg {
@@ -643,7 +637,7 @@ pub fn pill_button(ui: &mut Ui, theme: &Theme, label: &str, icon: Option<Icon>, 
         ButtonKind::Filled => p.on_primary,
         ButtonKind::Tonal if glass => p.on_surface,
         ButtonKind::Tonal => theme.on_tonal(),
-        ButtonKind::Outlined | ButtonKind::Text => p.primary,
+        ButtonKind::Outlined => p.primary,
         ButtonKind::Plain => p.on_surface,
     };
     let galley = ui.painter().layout_no_wrap(label.to_owned(), FontId::proportional(theme.text_size(TextRole::LabelLarge)), fg);
@@ -673,13 +667,13 @@ pub fn pill_button(ui: &mut Ui, theme: &Theme, label: &str, icon: Option<Icon>, 
                 with_alpha(p.surface_container_high, (36.0 + state_t * 80.0) as u8),
                 with_alpha(p.on_surface, (54.0 + state_t * 34.0) as u8),
             ),
-            ButtonKind::Text | ButtonKind::Plain => (with_alpha(p.on_surface, (state_t * 28.0) as u8), with_alpha(p.on_surface, 30)),
+            ButtonKind::Plain => (with_alpha(p.on_surface, (state_t * 28.0) as u8), with_alpha(p.on_surface, 30)),
         };
         if kind == ButtonKind::Filled {
             painter.rect_filled(visual_rect.translate(vec2(0.0, 1.0)), 20.0, Color32::from_black_alpha(if p.dark { 42 } else { 24 }));
         }
             painter.rect_filled(visual_rect, pill_radius, fill);
-        if !matches!(kind, ButtonKind::Plain | ButtonKind::Text) || resp.hovered() || resp.has_focus() {
+        if !matches!(kind, ButtonKind::Plain) || resp.hovered() || resp.has_focus() {
             painter.rect_stroke(visual_rect, pill_radius, Stroke::new(0.9, stroke), StrokeKind::Inside);
         }
         if resp.has_focus() {
@@ -694,7 +688,7 @@ pub fn pill_button(ui: &mut Ui, theme: &Theme, label: &str, icon: Option<Icon>, 
         let bg = match kind {
             ButtonKind::Filled => p.primary,
             ButtonKind::Tonal => theme.tonal_fill(),
-            ButtonKind::Outlined | ButtonKind::Text | ButtonKind::Plain => Color32::TRANSPARENT,
+            ButtonKind::Outlined | ButtonKind::Plain => Color32::TRANSPARENT,
         };
         painter.rect_filled(visual_rect, pill_radius, bg);
         let a = state_alpha(&resp);

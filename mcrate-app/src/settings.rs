@@ -143,3 +143,161 @@ impl GraphicsSettings {
 /// Ключ, под которым настройки лежат в хранилище eframe.
 pub const STORAGE_KEY: &str = "mcrate.graphics.v1";
 
+/// Язык интерфейса. Пока это только настройка: переводов строк в приложении нет,
+/// поэтому выбор влияет на подпись в настройках, а не на тексты экранов.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Language {
+    Russian,
+    English,
+}
+
+impl Language {
+    /// Полное название (для строки настроек).
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Russian => "Русский",
+            Self::English => "English",
+        }
+    }
+
+    /// Двухбуквенный код (крупная надпись на плитке «Язык»).
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Russian => "RU",
+            Self::English => "EN",
+        }
+    }
+}
+
+/// Качество потока при воспроизведении. Пока только настройка: движок (`PlaybackEngine`)
+/// выбор не читает, а UI по правилам дорожки B в `mcrate-audio` ничего не меняет.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StreamQuality {
+    Low,
+    Medium,
+    High,
+    Lossless,
+}
+
+impl StreamQuality {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Low => "Низкое",
+            Self::Medium => "Среднее",
+            Self::High => "Высокое",
+            Self::Lossless => "Lossless",
+        }
+    }
+}
+
+/// Размер текста: на самом деле масштаб всего интерфейса (размеры шрифтов зашиты в десятках
+/// мест, поэтому меняем `zoom_factor` окна, а не шрифты по отдельности).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TextSize {
+    Small,
+    Medium,
+    Large,
+}
+
+impl TextSize {
+    pub const ALL: [TextSize; 3] = [Self::Small, Self::Medium, Self::Large];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Small => "Маленький",
+            Self::Medium => "Средний",
+            Self::Large => "Крупный",
+        }
+    }
+
+    /// Множитель масштаба интерфейса.
+    pub fn zoom(self) -> f32 {
+        match self {
+            Self::Small => 0.9,
+            Self::Medium => 1.0,
+            Self::Large => 1.1,
+        }
+    }
+}
+
+/// Качество рисования волны. Пока только настройка: волна (`ui/wave.rs`) её не читает.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WaveQuality {
+    Low,
+    Medium,
+    High,
+}
+
+impl WaveQuality {
+    pub const ALL: [WaveQuality; 3] = [Self::Low, Self::Medium, Self::High];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Low => "Низкое",
+            Self::Medium => "Среднее",
+            Self::High => "Высокое",
+        }
+    }
+}
+
+/// Варианты кроссфейда в секундах (0 = выключен). Порядок совпадает с чипами на экране.
+pub const CROSSFADE_OPTIONS: [u8; 5] = [0, 1, 3, 5, 10];
+
+/// Общие пользовательские настройки (не оформление). Хранятся отдельно от `GraphicsSettings`:
+/// их изменение не должно пересобирать тему и палитру каждый раз.
+/// `#[serde(default)]`: поле, которого нет в старом файле, получает значение по умолчанию.
+/// Настройки воспроизведения и приватности пока только сохраняются: движок их не читает.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(default)]
+pub struct Preferences {
+    pub language: Language,
+    /// Показывать уведомления (пока только переключатель, системных уведомлений нет).
+    pub notifications: bool,
+    /// Скачивать обновления автоматически (пока только переключатель: механизма обновлений нет).
+    pub auto_update: bool,
+    pub stream_quality: StreamQuality,
+    // ---- воспроизведение ----
+    /// Длина кроссфейда в секундах (одно из `CROSSFADE_OPTIONS`).
+    pub crossfade_secs: u8,
+    pub gapless: bool,
+    pub normalize_volume: bool,
+    pub autoplay: bool,
+    pub background_play: bool,
+    // ---- приватность ----
+    pub public_profile: bool,
+    pub show_listening: bool,
+    pub share_stats: bool,
+    pub personal_recs: bool,
+    pub disable_analytics: bool,
+    // ---- персонализация ----
+    pub text_size: TextSize,
+    pub cover_morph: bool,
+    pub wave_quality: WaveQuality,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            language: Language::Russian,
+            notifications: true,
+            auto_update: true,
+            stream_quality: StreamQuality::High,
+            crossfade_secs: 3,
+            gapless: true,
+            normalize_volume: true,
+            autoplay: false,
+            background_play: true,
+            public_profile: true,
+            show_listening: false,
+            share_stats: true,
+            personal_recs: true,
+            disable_analytics: false,
+            text_size: TextSize::Medium,
+            cover_morph: true,
+            wave_quality: WaveQuality::High,
+        }
+    }
+}
+
+/// Ключ, под которым `Preferences` лежат в хранилище eframe.
+pub const PREFS_KEY: &str = "mcrate.prefs.v1";

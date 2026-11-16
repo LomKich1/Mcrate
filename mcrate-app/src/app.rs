@@ -12,8 +12,9 @@ use crate::controller::Controller;
 use crate::icons;
 use crate::ui::layout::{Bleed, Breakpoint};
 use crate::ui::now_playing::NowPlayingState;
+use crate::ui::settings_more::SoonKind;
 use crate::ui::transition::ViewTransition;
-use crate::settings::{Design, GraphicsSettings, STORAGE_KEY, ThemePreset, WindowBackdrop};
+use crate::settings::{Design, GraphicsSettings, PREFS_KEY, Preferences, STORAGE_KEY, ThemePreset, WindowBackdrop};
 use crate::theme::{Surface, Theme, glass, with_alpha};
 use crate::{fonts, platform};
 
@@ -48,12 +49,43 @@ pub enum View {
     SettingsAppearance,
     SettingsWindow,
     SettingsAbout,
+    // Подэкраны настроек Material 3 (шаг 1: пока заглушки, их по очереди заменяют настоящие экраны).
+    SettingsProfile,
+    SettingsLanguage,
+    SettingsPlayback,
+    SettingsPrivacy,
+    SettingsIntegrations,
+    SettingsStorage,
+    SettingsAiMemory,
+    SettingsSessions,
+    SettingsSubscription,
+    SettingsFamily,
+    SettingsSupport,
+    SettingsPerformance,
 }
 
 impl View {
     /// Относится ли экран к настройкам (для подсветки пункта «Настройки» в меню).
     pub fn is_settings(self) -> bool {
-        matches!(self, View::Settings | View::SettingsAppearance | View::SettingsWindow | View::SettingsAbout)
+        matches!(
+            self,
+            View::Settings
+                | View::SettingsAppearance
+                | View::SettingsWindow
+                | View::SettingsAbout
+                | View::SettingsProfile
+                | View::SettingsLanguage
+                | View::SettingsPlayback
+                | View::SettingsPrivacy
+                | View::SettingsIntegrations
+                | View::SettingsStorage
+                | View::SettingsAiMemory
+                | View::SettingsSessions
+                | View::SettingsSubscription
+                | View::SettingsFamily
+                | View::SettingsSupport
+                | View::SettingsPerformance
+        )
     }
 
     /// Относится ли экран к разделу «Библиотека» (для подсветки пункта в меню).
@@ -88,12 +120,26 @@ impl View {
             View::SettingsAppearance => 10,
             View::SettingsWindow => 11,
             View::SettingsAbout => 12,
+            View::SettingsProfile => 13,
+            View::SettingsLanguage => 14,
+            View::SettingsPlayback => 15,
+            View::SettingsPrivacy => 16,
+            View::SettingsIntegrations => 17,
+            View::SettingsStorage => 18,
+            View::SettingsAiMemory => 19,
+            View::SettingsSessions => 20,
+            View::SettingsSubscription => 21,
+            View::SettingsFamily => 22,
+            View::SettingsSupport => 23,
+            View::SettingsPerformance => 24,
         }
     }
 }
 
 pub struct McrateApp {
     pub settings: GraphicsSettings,
+    /// Общие настройки (язык, уведомления, качество звука...). Не влияют на тему.
+    pub prefs: Preferences,
     applied: Option<GraphicsSettings>, // какие настройки уже применены к egui
     pub theme: Theme,
     glass: egui_glass::GlassContext, // стекло: обои + живой фон (преломляет то, что лежит под панелями)
@@ -139,6 +185,11 @@ impl McrateApp {
             .and_then(|s| eframe::get_value(s, STORAGE_KEY))
             .unwrap_or_default();
 
+        let prefs: Preferences = cc
+            .storage
+            .and_then(|s| eframe::get_value(s, PREFS_KEY))
+            .unwrap_or_default();
+
         let render_state = cc
             .wgpu_render_state
             .clone()
@@ -161,6 +212,7 @@ impl McrateApp {
         Self {
             theme: Theme::new(&settings),
             settings,
+            prefs,
             applied: None,
             glass,
             wallpaper_key: None,
@@ -201,6 +253,18 @@ impl McrateApp {
             View::SettingsAppearance => self.settings_appearance_view(ui, theme),
             View::SettingsWindow => self.settings_window_view(ui, theme),
             View::SettingsAbout => self.settings_about_view(ui, theme),
+            View::SettingsProfile => self.settings_soon_view(ui, theme, "Профиль", SoonKind::Profile),
+            View::SettingsLanguage => self.settings_language_view(ui, theme),
+            View::SettingsPlayback => self.settings_playback_view(ui, theme),
+            View::SettingsPrivacy => self.settings_privacy_view(ui, theme),
+            View::SettingsIntegrations => self.settings_integrations_view(ui, theme),
+            View::SettingsStorage => self.settings_storage_view(ui, theme),
+            View::SettingsAiMemory => self.settings_soon_view(ui, theme, "Музыкальная AI-память", SoonKind::AiMemory),
+            View::SettingsSessions => self.settings_soon_view(ui, theme, "Сессии", SoonKind::Sessions),
+            View::SettingsSubscription => self.settings_soon_view(ui, theme, "Подписка", SoonKind::Subscription),
+            View::SettingsFamily => self.settings_soon_view(ui, theme, "Управление семьёй", SoonKind::Family),
+            View::SettingsSupport => self.settings_support_view(ui, theme),
+            View::SettingsPerformance => self.settings_performance_view(ui, theme),
         }
     }
 
@@ -405,6 +469,11 @@ impl eframe::App for McrateApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.sync_theme(&ctx, frame);
+        // «Размер текста» из настроек: масштаб всего интерфейса. Ставим только при изменении.
+        let zoom = self.prefs.text_size.zoom();
+        if (ctx.zoom_factor() - zoom).abs() > f32::EPSILON {
+            ctx.set_zoom_factor(zoom);
+        }
         self.handle_input(&ctx);
         self.ctl.tick();
         self.refresh_filter();
@@ -458,6 +527,7 @@ impl eframe::App for McrateApp {
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, STORAGE_KEY, &self.settings);
+        eframe::set_value(storage, PREFS_KEY, &self.prefs);
     }
 
     /// Фон окна полностью прозрачный: всё закрашиваем сами, а при Mica/Acrylic виден материал ОС.

@@ -13,9 +13,19 @@ use crate::theme::Palette;
 use crate::theme::{ShapeRole, TextRole, Theme, with_alpha};
 
 impl McrateApp {
-    /// Главный экран настроек: список разделов. Каждый раздел это отдельный экран (`View::Settings*`),
-    /// переход между ними анимируется так же, как между вкладками меню (ui/transition.rs).
+    /// Главный экран настроек. Material 3 получил новый вид (`settings_main_m3`, ui/settings_main.rs),
+    /// а Liquid Glass пока остаётся с прежним списком разделов.
     pub fn settings_view(&mut self, ui: &mut Ui, theme: &Theme) {
+        if theme.glass_active() {
+            self.settings_view_glass(ui, theme);
+        } else {
+            self.settings_main_m3(ui, theme);
+        }
+    }
+
+    /// Прежний главный экран настроек (Liquid Glass): список разделов. Каждый раздел это отдельный экран
+    /// (`View::Settings*`), переход между ними анимируется так же, как между вкладками меню (ui/transition.rs).
+    fn settings_view_glass(&mut self, ui: &mut Ui, theme: &Theme) {
         centered_column(ui, 760.0, |ui| {
             ui.heading("Настройки");
             ui.add_space(8.0);
@@ -44,14 +54,16 @@ impl McrateApp {
                 let reset_kind = if theme.glass_active() { ButtonKind::Tonal } else { ButtonKind::Outlined };
                 if pill_button(ui, theme, "Сбросить все настройки", None, reset_kind).clicked() {
                     self.settings = GraphicsSettings::default();
+                    self.prefs = crate::settings::Preferences::default();
                 }
                 scroll_end_padding(ui, self.bottom_inset);
             });
         });
     }
 
-    /// Подэкран «Оформление»: дизайн, параметры стекла, цветовая тема.
-    pub fn settings_appearance_view(&mut self, ui: &mut Ui, theme: &Theme) {
+    /// Подэкран «Оформление» для Liquid Glass (прежний вид): дизайн, параметры стекла, цветовая тема.
+    /// Для Material 3 вместо него работает «Персонализация» (ui/settings_screens.rs).
+    pub(super) fn settings_appearance_glass(&mut self, ui: &mut Ui, theme: &Theme) {
         let p = &theme.palette;
         centered_column(ui, 760.0, |ui| {
             if settings_header(ui, theme, "Оформление") {
@@ -177,7 +189,7 @@ impl McrateApp {
     }
 
     /// Подэкран «О приложении»: версия и сведения об окружении.
-    pub fn settings_about_view(&mut self, ui: &mut Ui, theme: &Theme) {
+    pub(super) fn settings_about_glass(&mut self, ui: &mut Ui, theme: &Theme) {
         let p = &theme.palette;
         centered_column(ui, 760.0, |ui| {
             if settings_header(ui, theme, "О приложении") {
@@ -331,7 +343,7 @@ fn glass_nav_row(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str, width:
 
 /// Раскрывающийся блок «Параметры стекла»: строка-заголовок и под ней настройки.
 /// Раскрытие двигает нижние элементы (высота блока плавно растёт), а не рисуется поверх них.
-fn glass_options(ui: &mut Ui, theme: &Theme, s: &mut GraphicsSettings) {
+pub(super) fn glass_options(ui: &mut Ui, theme: &Theme, s: &mut GraphicsSettings) {
     let p = &theme.palette;
     let id = ui.make_persistent_id("glass_options");
     let mut state = CollapsingState::load_with_default_open(ui.ctx(), id, false);
@@ -432,7 +444,7 @@ const NAV_ROW_H_M3: f32 = 64.0; // высота строки-перехода (�
 /// Отличие от образца: там список это Popup (новый слой поверх экрана), а здесь он раскрывается
 /// прямо в потоке экрана: высота блока плавно растёт, и всё, что ниже, сдвигается вниз.
 /// Пока список открыт, нижние углы кнопки плавно становятся прямыми, а стрелка поворачивается.
-fn theme_menu(ui: &mut Ui, theme: &Theme, s: &mut GraphicsSettings) {
+pub(super) fn theme_menu(ui: &mut Ui, theme: &Theme, s: &mut GraphicsSettings) {
     // Внутри scope убираем вертикальный зазор, чтобы список прилегал к кнопке без щели.
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
@@ -544,7 +556,7 @@ fn theme_menu_row(ui: &mut Ui, theme: &Theme, s: &GraphicsSettings, preset: Them
     resp.on_hover_cursor(CursorIcon::PointingHand).clicked()
 }
 
-fn group_title(ui: &mut Ui, theme: &Theme, text: &str) {
+pub(super) fn group_title(ui: &mut Ui, theme: &Theme, text: &str) {
     ui.add_space(14.0);
     let size = if theme.glass_active() { 18.0 } else { theme.text_size(TextRole::TitleLarge) };
     ui.label(RichText::new(text).size(size).strong());
@@ -552,7 +564,7 @@ fn group_title(ui: &mut Ui, theme: &Theme, text: &str) {
 }
 
 /// Карточка выбора дизайна с мини-превью.
-fn design_card(ui: &mut Ui, theme: &Theme, design: Design, name: &str, selected: bool, width: f32) -> egui::Response {
+pub(super) fn design_card(ui: &mut Ui, theme: &Theme, design: Design, name: &str, selected: bool, width: f32) -> egui::Response {
     let p = &theme.palette;
     let (base_rect, resp) = ui.allocate_exact_size(vec2(width, 150.0), Sense::click());
     let rect = super::widgets::squish(ui, resp.id, &resp, base_rect, 0.025, 0.045);

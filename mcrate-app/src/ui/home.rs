@@ -357,9 +357,9 @@ fn shelf(ui: &mut Ui, theme: &Theme, bleed: Bleed, id: &str, title: &str, subtit
             // (8% цвета контента) кладём ПОВЕРХ карточек: слот резервируем ПОСЛЕ них.
             let under_slot = if glass { Some(glide_begin(ui)) } else { None };
             // Сбрасываем прошлый кадр записью None (remove_temp требует Default, а Rect его не имеет).
-            ui.ctx().data_mut(|d| d.insert_temp(Id::new(SHELF_HOVER_KEY), None::<(u64, Rect)>));
+            ui.ctx().data_mut(|d| d.insert_temp(Id::unique(SHELF_HOVER_KEY), None::<(u64, Rect)>));
             add_cards(ui);
-            let hovered = ui.ctx().data_mut(|d| d.get_temp::<Option<(u64, Rect)>>(Id::new(SHELF_HOVER_KEY))).flatten();
+            let hovered = ui.ctx().data_mut(|d| d.get_temp::<Option<(u64, Rect)>>(Id::unique(SHELF_HOVER_KEY))).flatten();
             let salt = ui.scope_id().with(("glide_shelf", id));
             if let Some(slot) = under_slot {
                 let target = hovered.map(|(key, rect)| (key, rect.expand(SHELF_HALO)));
@@ -483,7 +483,7 @@ fn media_card(ui: &mut Ui, theme: &Theme, card: &MediaCard, is_current: bool, is
     // Подсветку под карточкой рисует полка (скользит между карточками). Карточка лишь сообщает,
     // где сейчас курсор; сжатие при нажатии уходит и в подсветку (берём уже сжатый прямоугольник).
     if resp.hovered() || resp.is_pointer_button_down_on() {
-        ui.ctx().data_mut(|d| d.insert_temp(Id::new(SHELF_HOVER_KEY), Some((resp.id.value(), rect))));
+        ui.ctx().data_mut(|d| d.insert_temp(Id::unique(SHELF_HOVER_KEY), Some((resp.id.value(), rect))));
     }
     let radius = if glass { 14.0 } else { 16.0 };
     let (on_container, on_variant) = if is_current && !glass {
