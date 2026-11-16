@@ -1108,8 +1108,6 @@ dependencies = [
 [[package]]
 name = "egui_glass"
 version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2803a25dd7739bbcfdec6c6c9169ca416007dcbc602b35a4d1eb88e026fe1a0a"
 dependencies = [
  "bytemuck",
  "egui",

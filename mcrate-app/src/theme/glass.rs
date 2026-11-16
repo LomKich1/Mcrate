@@ -129,6 +129,15 @@ pub fn surface<R>(theme: &Theme, ui: &mut Ui, role: Surface, add: impl FnOnce(&m
         Surface::Dialog => (1.0, 1.0),
         Surface::Content => unreachable!("content layer is never glass"),
     };
+    // Физическая модель линзы из liquid-glass-generator (преломление по закону Снеллиуса:
+    // купол + контур края). Параметры: показатель преломления, сила купола (pt),
+    // кривизна, резкость края (1/pt), свечение края.
+    let base = match role {
+        Surface::Rail => base.physical(1.45, 6.0, 1.0, 0.35, 0.22),
+        Surface::PlayerBar => base.physical(1.50, 14.0, 1.2, 0.30, 0.38),
+        Surface::Dialog => base.physical(1.50, 10.0, 1.0, 0.35, 0.30),
+        Surface::Content => unreachable!("content layer is never glass"),
+    };
     let style = GlassStyle {
         blur: s.blur_radius * blur_scale,
         refraction: s.refraction * refraction_scale,

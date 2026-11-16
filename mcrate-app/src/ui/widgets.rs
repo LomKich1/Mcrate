@@ -821,7 +821,7 @@ pub fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track, is_cur
 
     let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
     let accessible_label = format!("{} — {}", track.title, artists_text(track));
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, is_current, accessible_label));
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, is_current, accessible_label.clone()));
     resp
 }
 

@@ -465,7 +465,7 @@ impl Palette {
             // Для «Городского серого» сохраняем исходную палитру проекта:
             // акцент #C9C6C9, фон #1B1B1D и базовую поверхность #262628.
             // M3-дополнительные роли берутся из той же серой основы.
-            ThemePreset::UrbanGray => return material3_urban_gray(),
+            ThemePreset::UrbanGray => return Self::material3_urban_gray(),
             ThemePreset::SilentDawn => ([0x88, 0xD8, 0x9C], true),
             ThemePreset::Sky => ([0x58, 0xC4, 0xDC], true),
             ThemePreset::Custom => (seed, custom_is_dark),

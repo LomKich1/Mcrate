@@ -1,0 +1,30 @@
+[package]
+name = "egui_glass"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.95"
+readme = "../../README.md"
+categories = ["gui", "graphics", "rendering"]
+license = "MIT"
+description = "Apple Liquid Glass style widgets for egui, rendered on the GPU via egui-wgpu"
+repository = "https://github.com/heonny/egui-glass"
+documentation = "https://docs.rs/egui_glass"
+keywords = ["egui", "gui", "glass", "wgpu", "ui"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+## Serialize / deserialize `GlassStyle` with serde.
+serde = ["dep:serde", "egui/serde"]
+
+[dependencies]
+egui = { workspace = true }
+egui-wgpu = { workspace = true }
+wgpu = { workspace = true }
+bytemuck = { workspace = true }
+serde = { workspace = true, optional = true }
+
+[dev-dependencies]
+pollster = "0.4"
+serde_json = { workspace = true }

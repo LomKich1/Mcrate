@@ -1,3 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["mcrate-core", "mcrate-app", "mcrate-audio", "mcrate-providers", "mcrate-net"]
+
+# Liquid Glass: копия egui_glass 0.2.0 (MIT) с моделью линзы из liquid-glass-generator (см. vendor/egui_glass/MCRATE.md)
+[patch.crates-io]
+egui_glass = { path = "vendor/egui_glass" }
