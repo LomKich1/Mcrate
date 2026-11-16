@@ -113,6 +113,16 @@ impl McrateApp {
 
             let rect = Rect::from_min_size(pos2(target.left(), a.y), target.size());
             ui.painter().set(pill_slot, Shape::rect_filled(rect, 24.0, theme.selected_fill()));
+            if theme.glass_active() {
+                // Тонкая внутренняя кромка даёт выбранному пункту лёгкое стеклянное свечение,
+                // не создавая ещё одну стеклянную поверхность поверх рейки.
+                ui.painter().rect_stroke(
+                    rect,
+                    24.0,
+                    egui::Stroke::new(1.0, crate::theme::with_alpha(theme.palette.on_surface, if theme.palette.dark { 24 } else { 56 })),
+                    egui::StrokeKind::Inside,
+                );
+            }
             ui.ctx().data_mut(|d| d.insert_temp(id, a));
         }
     }

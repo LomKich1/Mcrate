@@ -1,8 +1,7 @@
 //! Дизайн Liquid Glass. Стекло рисует крейт egui_glass (шейдер на wgpu: блюр + преломление
-//! краёв + блик). Стекло преломляет «живой фон» (LiveBackdrop): страница (обои + основная
-//! панель с содержимым) рисуется ещё раз за кадром, и всё, что лежит под рейкой и панелью
-//! плеера, видно сквозь них, включая текст. Раскладка собрана в `app.rs` (glass_layout),
-//! здесь только кирпичики: обои, основная панель и сами стеклянные поверхности.
+//! краёв + блик). LiveBackdrop рисует страницу (обои + плотную контентную панель) за кадром.
+//! Рейка плавает над обоями; плеер — над содержимым страницы. Раскладка собрана в
+//! `app.rs` (glass_layout), здесь только материал и кирпичики фоновых поверхностей.
 
 use egui::{Color32, ColorImage, Margin, Painter, Rect, Stroke, StrokeKind, TextureId, Ui, pos2, vec2};
 use egui_glass::{Glass, GlassStyle, LiveBackdropQuality};
@@ -40,14 +39,19 @@ pub fn paint_wallpaper(painter: &Painter, rect: Rect, tex: Option<TextureId>, ba
     }
 }
 
-/// Основная панель с содержимым. Плотная (почти непрозрачная), чтобы списки читались,
-/// но не сплошная: сквозь неё слабо проступают обои. Она лежит и под рейкой, и под панелью
-/// плеера, поэтому именно её стекло и преломляет.
+/// Контентная панель — обычная плотная поверхность, не Liquid Glass.
+/// Стекло предназначено для навигации и постоянных контролов; списки и текст
+/// должны оставаться резкими и не конкурировать с декоративным материалом.
 pub fn paint_pane(theme: &Theme, painter: &Painter, rect: Rect) {
     let p = &theme.palette;
     let radius = theme.pane_radius() as f32;
-    painter.rect_filled(rect, radius, with_alpha(p.surface_container_low, 226));
-    painter.rect_stroke(rect, radius, Stroke::new(1.0, with_alpha(p.outline_variant, 90)), StrokeKind::Inside);
+    painter.rect_filled(rect, radius, p.surface_container_low);
+    painter.rect_stroke(
+        rect,
+        radius,
+        Stroke::new(1.0, with_alpha(p.outline_variant, if p.dark { 58 } else { 92 })),
+        StrokeKind::Inside,
+    );
 }
 
 const W: usize = 512;
@@ -91,9 +95,9 @@ pub fn paint_background(theme: &Theme, ui: &mut Ui, rect: egui::Rect) {
 }
 
 pub fn surface<R>(theme: &Theme, ui: &mut Ui, role: Surface, add: impl FnOnce(&mut Ui) -> R) -> R {
-    // Блюр выключен -> непрозрачные поверхности (то, что README egui_glass называет
-    // «reduced transparency»: это обязанность приложения, и мы её выполняем).
-    if !theme.glass_active() {
+    // Контентный слой никогда не становится стеклянным: это сохраняет читаемость
+    // больших списков и экранов настроек. Остальные поверхности используют материал.
+    if !theme.glass_active() || role == Surface::Content {
         return material3::surface(theme, ui, role, add);
     }
 
@@ -108,12 +112,27 @@ pub fn surface<R>(theme: &Theme, ui: &mut Ui, role: Surface, add: impl FnOnce(&m
     };
     let tint_color = match role {
         Surface::PlayerBar | Surface::Dialog => p.surface_container_high,
-        _ => p.surface_container,
+        Surface::Rail => p.surface_container,
+        Surface::Content => unreachable!("content layer is never glass"),
+    };
+    // Большая рейка использует спокойный panel preset, а плеер — более оптический
+    // regular preset. У обоих остаётся один вариант материала (Regular), без Clear.
+    let (blur_scale, refraction_scale) = match role {
+        Surface::Rail => (1.18, 0.82),
+        Surface::PlayerBar => (0.92, 1.35),
+        Surface::Dialog => (1.0, 1.0),
+        Surface::Content => unreachable!("content layer is never glass"),
     };
     let style = GlassStyle {
-        blur: s.blur_radius,
-        refraction: s.refraction,
-        corner_radius: theme.pane_radius() as f32,
+        blur: s.blur_radius * blur_scale,
+        refraction: s.refraction * refraction_scale,
+        corner_radius: match role {
+            Surface::Rail | Surface::Dialog => 28.0,
+            Surface::PlayerBar => 26.0,
+            Surface::Content => unreachable!("content layer is never glass"),
+        },
+        // Значение настройки задаёт плотность цветной плёнки; при нуле остаётся
+        // чистый блюр, при единице пользователь может сделать поверхность почти глухой.
         tint: with_alpha(tint_color, (s.glass_opacity.clamp(0.0, 1.0) * 255.0) as u8),
         ..base
     };
@@ -125,13 +144,11 @@ pub fn surface<R>(theme: &Theme, ui: &mut Ui, role: Surface, add: impl FnOnce(&m
         Surface::Dialog => Margin::same(24),
     };
 
-    // Glass::show выставляет «плоские» стили дочерним виджетам; возвращаем наш стиль,
-    // чтобы текст и кнопки выглядели одинаково в обоих дизайнах.
-    let app_style = ui.style().clone();
+    // Не даём контейнеру стекла перезаписать палитру дочерних контролов приложения.
     Glass::new(style)
         .inner_margin(margin)
+        .preserve_theme(true)
         .show(ui, |ui| {
-            ui.set_style(app_style);
             match role {
                 Surface::Rail | Surface::Content => ui.set_min_size(ui.available_size()),
                 Surface::PlayerBar => ui.set_min_width(ui.available_width()),

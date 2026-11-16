@@ -114,7 +114,7 @@ impl Default for GraphicsSettings {
             accent: [0x4F, 0x7C, 0xFF],
             blur_radius: 22.0,
             refraction: 5.0,
-            glass_opacity: 0.45,
+            glass_opacity: 0.28,
             glass_quality: GlassQuality::Balanced,
             window_backdrop: WindowBackdrop::Off,
         }

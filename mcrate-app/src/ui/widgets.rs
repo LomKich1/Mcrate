@@ -159,7 +159,7 @@ pub fn glide_end(ui: &Ui, theme: &Theme, slot: ShapeIdx, salt: Id, target: Optio
     if g.alive && g.alpha > 0.0 {
         let shown = Rect::from_min_max(g.min, g.max);
         let alpha = (theme.hover_glide_alpha() as f32 * g.alpha).round() as u8;
-        ui.painter().set(slot, Shape::rect_filled(shown, radius, Color32::from_black_alpha(alpha)));
+        ui.painter().set(slot, Shape::rect_filled(shown, radius, with_alpha(theme.hover_glide_color(), alpha)));
     }
     if moving {
         ui.ctx().request_repaint();
@@ -182,47 +182,68 @@ fn state_alpha(r: &Response) -> u8 {
 pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, diameter: f32, kind: ButtonKind, active: bool, tip: &str) -> Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(diameter), Sense::click());
     let p = &theme.palette;
+    let glass = theme.glass_active();
+    // Небольшое сжатие при нажатии — материал реагирует на действие, но зона клика
+    // остаётся исходного размера.
+    let visual_rect = if glass { squish(ui, resp.id, &resp, rect, 0.055, 0.055) } else { rect };
     let (bg, fg) = match kind {
-        ButtonKind::Filled => (Some(p.primary), p.on_primary),
+        ButtonKind::Filled => (Some(if glass { with_alpha(p.primary, 232) } else { p.primary }), p.on_primary),
         ButtonKind::Tonal => (Some(theme.tonal_fill()), theme.on_tonal()),
-        ButtonKind::Plain => (None, if active { p.primary } else { p.on_surface }),
+        ButtonKind::Plain => (
+            if glass && active { Some(with_alpha(p.primary, if p.dark { 42 } else { 34 })) } else { None },
+            if active { p.primary } else { p.on_surface },
+        ),
     };
     let painter = ui.painter();
-    let r = diameter / 2.0;
+    let r = visual_rect.width() / 2.0;
     if let Some(bg) = bg {
-        painter.circle_filled(rect.center(), r, bg);
+        if glass && kind == ButtonKind::Filled {
+            painter.circle_filled(visual_rect.center() + vec2(0.0, 1.0), r, Color32::from_black_alpha(if p.dark { 42 } else { 24 }));
+        }
+        painter.circle_filled(visual_rect.center(), r, bg);
+        if glass && kind == ButtonKind::Filled {
+            painter.circle_stroke(visual_rect.center(), r - 0.5, egui::Stroke::new(1.0, with_alpha(p.on_primary, 54)));
+        }
     }
     let a = state_alpha(&resp);
     if a > 0 {
-        painter.circle_filled(rect.center(), r, with_alpha(fg, a));
+        painter.circle_filled(visual_rect.center(), r, with_alpha(fg, a));
     }
-    icons::paint(painter, icon, rect.center(), diameter * 0.6, fg);
+    icons::paint(painter, icon, visual_rect.center(), diameter * 0.6, fg);
     resp.on_hover_text(tip).on_hover_cursor(CursorIcon::PointingHand)
 }
 
 /// Кнопка-«таблетка» с текстом и необязательной иконкой.
 pub fn pill_button(ui: &mut Ui, theme: &Theme, label: &str, icon: Option<Icon>, kind: ButtonKind) -> Response {
     let p = &theme.palette;
+    let glass = theme.glass_active();
     let (bg, fg) = match kind {
-        ButtonKind::Filled => (p.primary, p.on_primary),
+        ButtonKind::Filled => (if glass { with_alpha(p.primary, 232) } else { p.primary }, p.on_primary),
         _ => (theme.tonal_fill(), theme.on_tonal()),
     };
     let galley = ui.painter().layout_no_wrap(label.to_owned(), FontId::proportional(14.0), fg);
     let icon_w = if icon.is_some() { 20.0 + 8.0 } else { 0.0 };
     let size = vec2(galley.size().x + icon_w + 36.0, 40.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+    let visual_rect = if glass { squish(ui, resp.id, &resp, rect, 0.035, 0.075) } else { rect };
     let painter = ui.painter();
-    painter.rect_filled(rect, 20.0, bg);
+    if glass && kind == ButtonKind::Filled {
+        painter.rect_filled(visual_rect.translate(vec2(0.0, 1.0)), 20.0, Color32::from_black_alpha(if p.dark { 36 } else { 20 }));
+    }
+    painter.rect_filled(visual_rect, 20.0, bg);
+    if glass && kind == ButtonKind::Filled {
+        painter.rect_stroke(visual_rect, 20.0, egui::Stroke::new(1.0, with_alpha(p.on_primary, 48)), egui::StrokeKind::Inside);
+    }
     let a = state_alpha(&resp);
     if a > 0 {
-        painter.rect_filled(rect, 20.0, with_alpha(fg, a));
+        painter.rect_filled(visual_rect, 20.0, with_alpha(fg, a));
     }
-    let mut x = rect.left() + 18.0;
+    let mut x = visual_rect.left() + 18.0;
     if let Some(icon) = icon {
-        icons::paint(painter, icon, pos2(x + 10.0, rect.center().y), 18.0, fg);
+        icons::paint(painter, icon, pos2(x + 10.0, visual_rect.center().y), 18.0, fg);
         x += icon_w;
     }
-    painter.galley(pos2(x, rect.center().y - galley.size().y / 2.0), galley, fg);
+    painter.galley(pos2(x, visual_rect.center().y - galley.size().y / 2.0), galley, fg);
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
 
@@ -253,7 +274,7 @@ pub fn nav_item(ui: &mut Ui, theme: &Theme, icon: Icon, label: &str, selected: b
     // Фон реагирует только на нажатие; при наведении плавно меняется лишь цвет текста и иконки.
     // Фон уже выбранного пункта рисует rail.rs отдельной пилюлей.
     if enabled && resp.is_pointer_button_down_on() {
-        painter.rect_filled(rect, 24.0, Color32::from_black_alpha(theme.hover_glide_alpha()));
+        painter.rect_filled(rect, 24.0, with_alpha(theme.hover_glide_color(), theme.hover_glide_alpha()));
     }
 
     let fg = if !enabled {

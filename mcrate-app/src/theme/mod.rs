@@ -59,7 +59,7 @@ impl Theme {
     pub fn pane_radius(&self) -> u8 {
         match self.settings.design {
             Design::Material3 => 28, // M3 Expressive: extra-large
-            Design::LiquidGlass => 26,
+            Design::LiquidGlass => 28,
         }
     }
 
@@ -85,7 +85,9 @@ impl Theme {
         let p = &self.palette;
         match self.settings.design {
             Design::Material3 => p.secondary_container,
-            Design::LiquidGlass => with_alpha(p.primary, if p.dark { 90 } else { 70 }),
+            // Выбранный пункт остаётся частью стеклянной поверхности: акцент
+            // полупрозрачный, без второй стеклянной подложки.
+            Design::LiquidGlass => with_alpha(p.primary, if p.dark { 76 } else { 64 }),
         }
     }
 
@@ -94,11 +96,23 @@ impl Theme {
         with_alpha(self.palette.on_surface, 20)
     }
 
-    /// Непрозрачность (0..=255) тёмной подсветки, которая скользит под курсором по пунктам меню и строкам
-    /// треков (см. `widgets::glide_end`). Это чёрный цвет поверх поверхности, поэтому подсветка получается
-    /// темнее фона. В тёмной теме нужна плотнее, иначе почти не видна.
+    /// Цвет и сила подсветки при наведении. В Liquid Glass она «загорается» изнутри:
+    /// светлая на тёмном материале и тёмная на светлом. В Material 3 оставляем прежнее затемнение.
+    pub fn hover_glide_color(&self) -> Color32 {
+        if self.glass_active() {
+            self.palette.on_surface
+        } else {
+            Color32::BLACK
+        }
+    }
+
     pub fn hover_glide_alpha(&self) -> u8 {
-        if self.palette.dark { 70 } else { 30 }
+        match (self.design(), self.palette.dark) {
+            (Design::LiquidGlass, true) => 18,
+            (Design::LiquidGlass, false) => 24,
+            (_, true) => 70,
+            (_, false) => 30,
+        }
     }
 
     /// Применить визуальный стиль к egui (цвета виджетов, шрифты, отступы).

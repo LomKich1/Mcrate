@@ -225,22 +225,28 @@ impl McrateApp {
             });
     }
 
-    /// Раскладка Liquid Glass. Основная панель лежит на всё окно, а рейка и панель плеера
-    /// плавают над ней стеклом и преломляют то, что под ними (живой фон).
+    /// Раскладка Liquid Glass. Слева рейка плавает над обоями; справа лежит плотная
+    /// контентная панель, а нижняя панель плеера преломляет содержимое под собой.
     ///
-    /// Слои снизу вверх: обои -> основная панель с содержимым (это «страница» живого фона,
-    /// её замыкание egui_glass вызывает дважды за кадр: на экран и за кадр) -> рейка и
-    /// панель плеера (стекло, вне замыкания страницы).
+    /// LiveBackdrop рисует страницу (обои + контент) за кадром. Поверх неё отдельно
+    /// размещаются стеклянные контролы. Между рейкой и контентом оставлен просвет,
+    /// чтобы поверхности не сливались в одну большую плиту.
     fn glass_layout(&mut self, ui: &mut egui::Ui, theme: &Theme, full: Rect, bp: Breakpoint) {
-        // Геометрия: панель плеера внизу на всю ширину, рейка слева над ней,
-        // основная панель под обеими (содержимое начинается правее рейки).
+        // Геометрия: панель плеера внизу на всю ширину, рейка слева,
+        // контентная панель справа от рейки и под панелью плеера.
         let pane = full.shrink(EDGE);
         let bar = Rect::from_min_max(pos2(pane.left(), pane.bottom() - GLASS_BAR_H), pane.max);
         let rail = Rect::from_min_max(
             pos2(pane.left(), pane.top()),
             pos2(full.left() + bp.rail_width() - 4.0, bar.top() - 8.0),
         );
-        let inner = Rect::from_min_max(pos2(rail.right() + 8.0 + 20.0, pane.top() + 20.0), pos2(pane.right() - 20.0, pane.bottom()));
+        // Контентная панель начинается справа от стеклянной рейки. Между ними остаётся
+        // небольшой просвет: поверхности не сливаются в одну большую стеклянную плиту.
+        let content_pane = Rect::from_min_max(pos2(rail.right() + 8.0, pane.top()), pane.max);
+        let inner = Rect::from_min_max(
+            pos2(content_pane.left() + 20.0, content_pane.top() + 20.0),
+            pos2(content_pane.right() - 20.0, content_pane.bottom()),
+        );
         self.bottom_inset = full.bottom() - bar.top() + 4.0;
 
         let live = self.glass.live_backdrop().clone(); // дёшево: клоны делят один закадровый контекст
@@ -254,7 +260,7 @@ impl McrateApp {
         live.run_with_quality(ui, theme.palette.surface, quality, |page| {
             page.set_style(style.clone());
             glass::paint_wallpaper(page.painter(), full, tex, theme.palette.surface, translucent);
-            glass::paint_pane(theme, page.painter(), pane);
+            glass::paint_pane(theme, page.painter(), content_pane);
             page.scope_builder(UiBuilder::new().max_rect(inner), |ui| self.screen(ui, theme));
         });
 
