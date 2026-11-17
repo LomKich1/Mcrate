@@ -6,6 +6,9 @@ pub use queue::{PlayQueue, RepeatMode}; // чтобы писать mcrate_audio:
 pub mod engine;
 pub use engine::{PlaybackEngine, PlaybackEvent, PlaybackState};
 mod growing_file; // чтение файла, который ещё докачивается (внутренний)
+mod loudness; // измерение громкости трека по EBU R128 (внутренний)
+mod normalize; // нормализация громкости: настройки, усиление, плавная смена
+pub use normalize::{PlaybackSettings, DEFAULT_TARGET_LUFS};
 mod stream_cache; // кэш скачанных онлайн-треков (внутренний, наружу не торчит)
 mod visualizer; // неблокирующий анализатор аудио для визуализатора
 pub use visualizer::{VisualizerFrame, VISUALIZER_POINTS};

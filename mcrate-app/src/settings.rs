@@ -246,7 +246,8 @@ pub const CROSSFADE_OPTIONS: [u8; 5] = [0, 1, 3, 5, 10];
 /// Общие пользовательские настройки (не оформление). Хранятся отдельно от `GraphicsSettings`:
 /// их изменение не должно пересобирать тему и палитру каждый раз.
 /// `#[serde(default)]`: поле, которого нет в старом файле, получает значение по умолчанию.
-/// Настройки воспроизведения и приватности пока только сохраняются: движок их не читает.
+/// Приватность пока только сохраняется. Из настроек воспроизведения движок читает нормализацию
+/// громкости (см. `playback_settings`); кроссфейд, бесшовность и остальное пока только хранятся.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
 pub struct Preferences {
@@ -299,5 +300,39 @@ impl Default for Preferences {
     }
 }
 
+impl Preferences {
+    /// Что из настроек знает движок воспроизведения. Пока это только нормализация громкости;
+    /// кроссфейд и бесшовность добавим сюда, когда они появятся в `mcrate-audio`.
+    pub fn playback_settings(&self) -> mcrate_audio::PlaybackSettings {
+        mcrate_audio::PlaybackSettings { normalize_volume: self.normalize_volume, ..Default::default() }
+    }
+}
+
 /// Ключ, под которым `Preferences` лежат в хранилище eframe.
 pub const PREFS_KEY: &str = "mcrate.prefs.v1";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn playback_settings_follow_normalize_switch() {
+        let mut prefs = Preferences::default();
+        assert!(prefs.normalize_volume, "по умолчанию нормализация включена");
+        assert!(prefs.playback_settings().normalize_volume);
+
+        prefs.normalize_volume = false;
+        assert!(!prefs.playback_settings().normalize_volume);
+    }
+
+    #[test]
+    fn unrelated_prefs_do_not_change_playback_settings() {
+        // Иначе приложение слало бы движку настройки при каждом клике по несвязанным переключателям
+        let mut prefs = Preferences::default();
+        let before = prefs.playback_settings();
+        prefs.notifications = !prefs.notifications;
+        prefs.crossfade_secs = 10;
+        prefs.cover_morph = !prefs.cover_morph;
+        assert_eq!(prefs.playback_settings(), before);
+    }
+}

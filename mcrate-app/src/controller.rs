@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use mcrate_audio::{PlaybackEngine, PlaybackEvent, RepeatMode, VisualizerFrame};
+use mcrate_audio::{PlaybackEngine, PlaybackEvent, PlaybackSettings, RepeatMode, VisualizerFrame};
 use mcrate_core::{MusicProvider, ProviderKind, Track};
 use mcrate_providers::{LocalProvider, SoundCloudProvider};
 
@@ -451,6 +451,13 @@ impl Controller {
         self.volume = volume.clamp(0.0, 1.0);
         if let Some(engine) = &self.engine {
             engine.set_volume(self.volume);
+        }
+    }
+
+    /// Передать движку настройки воспроизведения (нормализация громкости). Можно звать на ходу.
+    pub fn set_playback_settings(&self, settings: PlaybackSettings) {
+        if let Some(engine) = &self.engine {
+            engine.set_settings(settings);
         }
     }
 

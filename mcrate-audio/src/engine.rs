@@ -8,17 +8,24 @@
 //! Играть начинаем, не дожидаясь конца загрузки: как только скачано `START_BYTES`, фоновая
 //! задача шлёт `StreamReady`, и движок запускает докачиваемый файл (`AudioPlayer::play_stream`),
 //! пока загрузка продолжается. Мелкие файлы и треки из кэша идут по-старому, через `LoadFinished`.
+//!
+//! Нормализация громкости (`PlaybackSettings`): пока трек играет, в фоне измеряется его громкость
+//! (`loudness::measure_file`, по готовому файлу), и усиление плавно подтягивается к целевой громкости.
+//! Замеры запоминаются на сессию, повторное проигрывание стартует уже с нужным усилением.
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex}; // mpsc = канал сообщений между потоками
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mcrate_core::{MusicProvider, ProviderKind, StreamSource, Track};
 use mcrate_net::{DownloadProgress, StreamDownloader};
 
+use crate::loudness::{self, Loudness, Measured};
+use crate::normalize::{Normalizer, PlaybackSettings, TrackKey};
 use crate::stream_cache::{part_path, StreamCache};
 use crate::visualizer::{VisualizerFeed, VisualizerFrame};
 use crate::{AudioError, AudioPlayer, PlayQueue, RepeatMode};
@@ -46,6 +53,7 @@ enum Command {
     Prev,
     Seek(Duration),
     SetVolume(f32),
+    SetSettings(PlaybackSettings),
     SetShuffle(bool),
     CycleRepeat,
     Stop,
@@ -56,6 +64,12 @@ enum Command {
     /// Внутренняя: файл ещё докачивается, но уже скачан запас: можно начинать играть.
     /// `part` = имя растущего файла, `dest` = итоговое имя (после докачки `part` переименуют в `dest`).
     StreamReady { request: u64, part: PathBuf, dest: PathBuf, progress: DownloadProgress },
+    /// Внутренняя: трек, игравший во время докачки, докачан и лежит целиком по пути `path`
+    /// (теперь его можно измерить).
+    StreamComplete { request: u64, path: PathBuf },
+    /// Внутренняя: фоновый замер громкости закончился. `None` = измерить нечего (тишина).
+    /// Привязан к треку, а не к запросу: замер целого файла верен, даже если трек уже сменили.
+    LoudnessReady { key: TrackKey, loudness: Option<Loudness> },
 }
 
 /// События от движка к UI: только дискретные изменения.
@@ -93,6 +107,9 @@ pub struct PlaybackState {
     /// на прогресс-баре). None = докачивать нечего (трек скачан целиком, локальный или ничего не играет)
     /// либо долю не удалось посчитать.
     pub download_progress: Option<f32>,
+    /// Во сколько раз нормализация сейчас меняет громкость трека (1.0 = не меняет).
+    /// Меняется плавно, пока замер подтягивает громкость к целевой.
+    pub normalization_gain: f32,
 }
 
 impl PlaybackState {
@@ -109,6 +126,7 @@ impl PlaybackState {
             queue_index: 0,
             queue_len: 0,
             download_progress: None,
+            normalization_gain: 1.0,
         }
     }
 }
@@ -199,6 +217,10 @@ impl PlaybackEngine {
                 fail_streak: 0,
                 stream_progress: None,
                 stream_error_reported: false,
+                normalizer: Normalizer::new(PlaybackSettings::default()),
+                analysis: None,
+                playing_file: None,
+                last_gain_tick: Instant::now(),
             }
             .run(cmd_rx);
         });
@@ -222,6 +244,8 @@ impl PlaybackEngine {
     pub fn prev(&self) { self.send(Command::Prev); }
     pub fn seek(&self, pos: Duration) { self.send(Command::Seek(pos)); }
     pub fn set_volume(&self, volume: f32) { self.send(Command::SetVolume(volume)); }
+    /// Настройки воспроизведения (сейчас: нормализация громкости). Можно менять на ходу.
+    pub fn set_settings(&self, settings: PlaybackSettings) { self.send(Command::SetSettings(settings)); }
     pub fn set_shuffle(&self, on: bool) { self.send(Command::SetShuffle(on)); }
     pub fn cycle_repeat(&self) { self.send(Command::CycleRepeat); }
     pub fn stop(&self) { self.send(Command::Stop); }
@@ -286,9 +310,11 @@ impl LoadGuard {
         let _ = self.tx.send(Command::StreamReady { request: self.request, part, dest, progress });
     }
 
-    /// Ответ уже дан другим способом (`stream_ready`): сторожу больше нечего слать.
-    fn disarm(mut self) {
+    /// Трек, игравший во время докачки, докачан и переименован в `path`. Это последнее
+    /// сообщение задачи: сторож после него молчит.
+    fn stream_complete(mut self, path: PathBuf) {
         self.sent = true;
+        let _ = self.tx.send(Command::StreamComplete { request: self.request, path });
     }
 }
 
@@ -325,6 +351,10 @@ struct Worker {
     fail_streak: usize,         // сколько треков подряд не запустилось (защита от бесконечного цикла)
     stream_progress: Option<DownloadProgress>, // Some = играет трек, который ещё мог докачиваться
     stream_error_reported: bool, // про обрыв докачки уже сообщили UI (чтобы не повторять каждые 100 мс)
+    normalizer: Normalizer,      // замеры громкости и текущее усиление
+    analysis: Option<Arc<AtomicBool>>, // Some = идёт замер текущего трека; внутри флаг отмены
+    playing_file: Option<PathBuf>, // целый файл текущего трека, когда он известен (иначе замерить нельзя)
+    last_gain_tick: Instant,     // когда в последний раз двигали усиление
 }
 
 impl Worker {
@@ -341,6 +371,7 @@ impl Worker {
             if self.loaded && self.player.is_finished() {
                 self.on_track_finished();
             }
+            self.update_gain();
             self.report_stream_error();
             self.publish_state();
         }
@@ -415,7 +446,15 @@ impl Worker {
             }
             Command::SetVolume(v) => {
                 self.volume = v.clamp(0.0, 1.0); // clamp = «зажать в границы»
-                self.player.set_volume(self.volume); // громкость запомнится и для грузящегося трека
+                self.apply_volume(); // громкость запомнится и для грузящегося трека
+            }
+            Command::SetSettings(settings) => {
+                self.normalizer.set_settings(settings);
+                if self.normalizer.settings().normalize_volume {
+                    self.begin_analysis(); // включили на ходу: если замера ещё нет, начинаем
+                } else {
+                    self.cancel_analysis(); // выключили: считать больше незачем
+                }
             }
             Command::SetShuffle(on) => {
                 self.queue.set_shuffle(on);
@@ -431,6 +470,8 @@ impl Worker {
             Command::StreamReady { request, part, dest, progress } => {
                 self.on_stream_ready(request, part, dest, progress)
             }
+            Command::StreamComplete { request, path } => self.on_stream_complete(request, path),
+            Command::LoudnessReady { key, loudness } => self.on_loudness_ready(key, loudness),
             Command::Shutdown => {} // обрабатывается в run()
         }
     }
@@ -493,13 +534,18 @@ impl Worker {
                 Err(e) => return Begin::Failed(e.to_string()),
             };
             return match source {
-                StreamSource::LocalFile(path) => match self.player.play_file(&path) {
-                    Ok(duration) => {
-                        self.player.set_volume(self.volume);
-                        Begin::Playing(duration)
+                StreamSource::LocalFile(path) => {
+                    // Громкость нового трека ставим ДО старта, чтобы первые такты уже звучали как надо
+                    self.prepare_gain(track);
+                    match self.player.play_file(&path) {
+                        Ok(duration) => {
+                            self.apply_volume();
+                            self.playing_file = Some(path);
+                            Begin::Playing(duration)
+                        }
+                        Err(e) => Begin::Failed(e.to_string()),
                     }
-                    Err(e) => Begin::Failed(e.to_string()),
-                },
+                }
                 other => Begin::Failed(format!("источник {other:?} пока не поддерживается")),
             };
         }
@@ -513,6 +559,7 @@ impl Worker {
         // Прошлый трек больше не играет: пользователь выбрал новый
         self.player.stop();
         self.loaded = false;
+        self.prepare_gain(track); // если трек уже мерили, он зазвучит сразу с нужным усилением
 
         self.loading = true;
         self.loading_track = Some(track.clone());
@@ -526,7 +573,7 @@ impl Worker {
         let handle = self.runtime.spawn(async move {
             match load_online(provider, downloader, cache, task_track, &guard).await {
                 Ok(Loaded::File(path)) => guard.finish(Ok(path)),
-                Ok(Loaded::Streamed) => guard.disarm(), // ответ (StreamReady) уже отправлен
+                Ok(Loaded::Streamed(path)) => guard.stream_complete(path), // StreamReady уже ушёл; теперь файл целый
                 Err(reason) => guard.finish(Err(reason)),
             }
         });
@@ -544,6 +591,7 @@ impl Worker {
         self.duration = duration.or_else(|| Some(Duration::from_secs(u64::from(track.duration_secs))));
         self.emit(PlaybackEvent::TrackChanged(Some(track)));
         self.emit(PlaybackEvent::PauseChanged(self.player.is_paused()));
+        self.begin_analysis(); // замер идёт в фоне, пока трек играет
     }
 
     /// Фоновая загрузка закончилась (успешно или с ошибкой).
@@ -562,7 +610,10 @@ impl Worker {
         // Файл есть: пробуем включить. Ошибка декодера тоже считается неудачей трека.
         let outcome = match result {
             Ok(path) => match self.player.play_file(&path) {
-                Ok(duration) => Ok(duration),
+                Ok(duration) => {
+                    self.playing_file = Some(path.clone());
+                    Ok(duration)
+                }
                 Err(e) => {
                     // Файл из нашего кэша мог скачаться битым: удаляем, чтобы не играть его снова
                     if self.cache.contains(&path) {
@@ -600,7 +651,7 @@ impl Worker {
     fn finish_loaded(&mut self, track: Track, outcome: Result<Option<Duration>, String>) {
         match outcome {
             Ok(duration) => {
-                self.player.set_volume(self.volume);
+                self.apply_volume();
                 if self.start_paused {
                     self.player.pause(); // пользователь нажал паузу, пока трек грузился
                 }
@@ -651,6 +702,78 @@ impl Worker {
         self.loading = false;
         self.loading_track = None;
         self.stream_progress = None;
+        self.playing_file = None;
+        self.cancel_analysis(); // замер относился к прошлому треку
+    }
+
+    /// Выставить громкость плеера: ползунок пользователя, умноженный на усиление нормализации.
+    fn apply_volume(&self) {
+        self.player.set_volume(self.volume * self.normalizer.gain());
+    }
+
+    /// Новый трек вот-вот начнётся: узнать для него усиление (из кэша замеров) и поставить громкость.
+    fn prepare_gain(&mut self, track: &Track) {
+        self.normalizer.begin_track((track.provider, track.id.clone()));
+        self.apply_volume();
+    }
+
+    /// Раз в цикл (≈100 мс): плавно подвинуть усиление к цели.
+    fn update_gain(&mut self) {
+        let now = Instant::now();
+        // Потолок на случай, если поток надолго «заснул»: усиление не должно прыгнуть разом
+        let dt = now.duration_since(self.last_gain_tick).min(Duration::from_millis(500));
+        self.last_gain_tick = now;
+        if self.normalizer.tick(dt).is_some() {
+            self.apply_volume();
+        }
+    }
+
+    /// Запустить фоновый замер громкости текущего трека, если он нужен и возможен: нормализация
+    /// включена, замера ещё нет, целый файл известен и замер не идёт.
+    fn begin_analysis(&mut self) {
+        if self.analysis.is_some() || !self.normalizer.needs_measure() {
+            return;
+        }
+        let (Some(path), Some(key)) = (self.playing_file.clone(), self.normalizer.current().cloned()) else {
+            return;
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.analysis = Some(Arc::clone(&cancel));
+        let tx = self.commands_tx.clone();
+        // spawn_blocking: замер декодирует весь трек, это работа для отдельного потока, а не для async-задачи
+        self.runtime.spawn_blocking(move || {
+            let loudness = match loudness::measure_file(&path, &cancel) {
+                Ok(Measured::Done(loudness)) => Some(loudness),
+                Ok(Measured::Unmeasurable) => None,
+                // Отменили или файл не прочитался: ничего не запоминаем, трек играет без изменений
+                Ok(Measured::Cancelled) | Err(_) => return,
+            };
+            let _ = tx.send(Command::LoudnessReady { key, loudness });
+        });
+    }
+
+    /// Остановить идущий замер (он сам заметит флаг и прекратится).
+    fn cancel_analysis(&mut self) {
+        if let Some(cancel) = self.analysis.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Трек, игравший во время докачки, докачан: теперь есть целый файл для замера.
+    fn on_stream_complete(&mut self, request: u64, path: PathBuf) {
+        if request != self.request {
+            return; // трек уже сменили
+        }
+        self.playing_file = Some(path);
+        self.begin_analysis();
+    }
+
+    /// Пришёл замер. Запоминаем всегда: он верен для своего трека, даже если сейчас играет другой.
+    fn on_loudness_ready(&mut self, key: TrackKey, loudness: Option<Loudness>) {
+        if self.normalizer.current() == Some(&key) {
+            self.analysis = None;
+        }
+        self.normalizer.record(key, loudness);
     }
 
     fn on_track_finished(&mut self) {
@@ -669,6 +792,8 @@ impl Worker {
         self.player.stop();
         self.loaded = false;
         self.duration = None;
+        self.normalizer.end_track();
+        self.apply_volume();
         self.emit(PlaybackEvent::TrackChanged(None));
     }
 
@@ -696,6 +821,7 @@ impl Worker {
                 .as_ref()
                 .filter(|p| !p.is_finished())
                 .and_then(|p| p.fraction()),
+            normalization_gain: self.normalizer.gain(),
         };
         *self.state.lock().unwrap() = snapshot; // lock() = взять замок, чтобы записать безопасно
     }
@@ -705,8 +831,8 @@ impl Worker {
 enum Loaded {
     /// Файл целиком готов (из кэша, локальный или быстро скачался): отвечаем `LoadFinished`.
     File(PathBuf),
-    /// Скачали, пока играл трек: ответ `StreamReady` ушёл раньше.
-    Streamed,
+    /// Скачали, пока играл трек: ответ `StreamReady` ушёл раньше. Внутри: итоговый файл.
+    Streamed(PathBuf),
 }
 
 /// Отменяет загрузку, если задачу прервали (`abort`): иначе вложенная задача скачивания
@@ -803,7 +929,7 @@ async fn load_online(
 
     // 8. Подчищаем старые файлы кэша (только что скачанный не трогаем)
     cache.prune(&dest);
-    Ok(if streaming { Loaded::Streamed } else { Loaded::File(dest) })
+    Ok(if streaming { Loaded::Streamed(dest) } else { Loaded::File(dest) })
 }
 
 #[cfg(test)]
@@ -875,6 +1001,43 @@ mod tests {
         fs::write(path, bytes).unwrap();
     }
 
+    /// Пишет WAV с синусом 440 Гц (8 кГц, моно, 16 бит), чтобы у трека была измеримая громкость.
+    fn write_tone_wav(path: &Path, seconds: u32, amplitude: f32) {
+        let frames = 8000 * seconds;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + frames * 2).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        bytes.extend_from_slice(&1u16.to_le_bytes()); // моно
+        bytes.extend_from_slice(&8000u32.to_le_bytes());
+        bytes.extend_from_slice(&16000u32.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&(frames * 2).to_le_bytes());
+        for n in 0..frames {
+            let v = amplitude * (std::f32::consts::TAU * 440.0 * n as f32 / 8000.0).sin();
+            bytes.extend_from_slice(&((v * 32767.0) as i16).to_le_bytes());
+        }
+        fs::write(path, bytes).unwrap();
+    }
+
+    /// Ждёт, пока усиление нормализации не удовлетворит условию (не дольше `timeout_ms`).
+    fn wait_gain(fx: &mut Fixture, timeout_ms: u64, pred: impl Fn(f32) -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            if pred(fx.engine.state().normalization_gain) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            fx.idle(50);
+        }
+    }
+
     /// Готовая «обстановка» теста: поддельный провайдер, движок и временная папка.
     struct Fixture {
         engine: PlaybackEngine,
@@ -887,11 +1050,36 @@ mod tests {
         /// `tracks`: (id, задержка в мс). Ещё один id без файла можно использовать как «битый».
         /// Возвращает None, если нет звукового устройства (тест пропускаем).
         fn new(name: &str, tracks: &[(&str, u64)]) -> Option<Self> {
+            Self::build(name, tracks, |wav| write_silent_wav(wav, 30))
+        }
+
+        /// То же, но все треки это громкий синус (амплитуда `amplitude`, 20 с): есть что измерять.
+        fn with_tone(name: &str, tracks: &[(&str, u64)], amplitude: f32) -> Option<Self> {
+            Self::build(name, tracks, |wav| write_tone_wav(wav, 20, amplitude))
+        }
+
+        /// Движок с чужим провайдером (например, раздающим файл по HTTP с задержкой).
+        fn with_provider(name: &str, provider: Arc<dyn MusicProvider>) -> Option<Self> {
+            let dir = std::env::temp_dir().join(format!("mcrate-engine-test-{}-{name}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            let fake = Arc::new(FakeProvider { files: HashMap::new(), calls: AtomicUsize::new(0) });
+            match PlaybackEngine::with_stream_cache(vec![provider], dir.join("cache")) {
+                Ok(engine) => Some(Self { engine, fake, dir, log: Vec::new() }),
+                Err(e) => {
+                    eprintln!("тест пропущен: нет звукового устройства ({e})");
+                    let _ = fs::remove_dir_all(&dir);
+                    None
+                }
+            }
+        }
+
+        fn build(name: &str, tracks: &[(&str, u64)], write_wav: impl Fn(&Path)) -> Option<Self> {
             let dir = std::env::temp_dir().join(format!("mcrate-engine-test-{}-{name}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(&dir).unwrap();
             let wav = dir.join("silence.wav");
-            write_silent_wav(&wav, 30);
+            write_wav(&wav);
             let files = tracks.iter().map(|(id, delay)| (id.to_string(), (wav.clone(), *delay))).collect();
             let fake = Arc::new(FakeProvider { files, calls: AtomicUsize::new(0) });
             let provider: Arc<dyn MusicProvider> = fake.clone();
@@ -1049,5 +1237,158 @@ mod tests {
         assert!(!fx.log.iter().any(|e| matches!(e, PlaybackEvent::TrackChanged(Some(_)))), "после стопа звук включаться не должен");
         let st = fx.engine.state();
         assert!(!st.is_loading && !st.is_playing && st.current.is_none());
+    }
+
+    /// Провайдер, отдающий ссылку на локальный HTTP-сервер: трек идёт по пути «играем во время докачки».
+    struct HttpProvider {
+        url: String,
+    }
+
+    #[async_trait]
+    impl MusicProvider for HttpProvider {
+        fn kind(&self) -> ProviderKind {
+            ProviderKind::SoundCloud
+        }
+        async fn search(&self, _query: &str) -> ProviderResult<Vec<Track>> {
+            Ok(vec![])
+        }
+        async fn get_stream(&self, _track: &Track) -> ProviderResult<StreamSource> {
+            Ok(StreamSource::DirectUrl(self.url.clone()))
+        }
+        async fn set_like(&self, _track: &Track, _liked: bool) -> ProviderResult<()> {
+            Ok(())
+        }
+    }
+
+    /// Поднимает на localhost сервер, который отдаёт `body` в два приёма: сразу первые `first` байт,
+    /// остальное через `pause`. Так загрузка трека заведомо ещё идёт, когда он начал играть.
+    /// Возвращает ссылку. Поток сервера живёт до конца тестового процесса.
+    fn serve_slowly(body: Vec<u8>, first: usize, pause: Duration) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let body = body.clone();
+                thread::spawn(move || {
+                    let mut request = [0u8; 2048];
+                    let _ = stream.read(&mut request);
+                    let head = format!("HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                    // Ошибки записи игнорируем: клиент мог отменить загрузку
+                    let _ = stream.write_all(head.as_bytes());
+                    let _ = stream.write_all(&body[..first]);
+                    let _ = stream.flush();
+                    thread::sleep(pause);
+                    let _ = stream.write_all(&body[first..]);
+                });
+            }
+        });
+        format!("http://127.0.0.1:{port}/track.wav")
+    }
+
+    /// Громкий синус 0,8 (моно) даёт примерно -2,5 LUFS; до цели -14 надо ослабить до ≈0,27.
+    fn is_attenuated(gain: f32) -> bool {
+        (0.2..0.35).contains(&gain)
+    }
+
+    /// Запускает трек сразу на паузе (пауза во время загрузки). Нормализации воспроизведение
+    /// не нужно: замер читает файл сам, а усиление меняется по часам. Зато трек не «доиграется»
+    /// раньше проверки (на виртуальном звуковом устройстве звук уходит быстрее реального времени).
+    fn play_paused(fx: &mut Fixture, id: &'static str) {
+        fx.engine.play_queue(vec![track(id)], 0);
+        assert!(fx.wait_for(1000, is_loading(id)), "нет события Loading");
+        fx.engine.toggle_pause();
+        assert!(fx.wait_for(3000, is_started(id)), "трек не стартовал");
+    }
+
+    #[test]
+    fn normalization_attenuates_loud_track_and_remembers_it() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mut fx) = Fixture::with_tone("norm-on", &[("loud", 300)], 0.8) else { return };
+
+        fx.engine.set_settings(PlaybackSettings { normalize_volume: true, ..PlaybackSettings::default() });
+        play_paused(&mut fx, "loud");
+        // Сначала усиление 1.0 (замера ещё нет), потом замер заканчивается и громкость плавно падает
+        assert!(
+            wait_gain(&mut fx, 6000, is_attenuated),
+            "усиление не пришло к ослаблению: {} (события: {:?})",
+            fx.engine.state().normalization_gain,
+            fx.log
+        );
+
+        // Тот же трек ещё раз: замер уже есть, стартуем сразу с нужным усилением, без «подъезда» от 1.0
+        play_paused(&mut fx, "loud");
+        fx.idle(150); // снимок состояния обновляется раз в 100 мс
+        assert!(is_attenuated(fx.engine.state().normalization_gain), "повторный запуск стартовал без запомненного усиления");
+    }
+
+    #[test]
+    fn normalization_disabled_leaves_gain_alone() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mut fx) = Fixture::with_tone("norm-off", &[("loud", 300)], 0.8) else { return };
+
+        play_paused(&mut fx, "loud"); // настройки по умолчанию: нормализация выключена
+        fx.idle(2500); // с запасом больше, чем нужно замеру и плавному изменению
+        assert_eq!(fx.engine.state().normalization_gain, 1.0);
+    }
+
+    #[test]
+    fn turning_normalization_off_restores_gain() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mut fx) = Fixture::with_tone("norm-toggle", &[("loud", 300)], 0.8) else { return };
+
+        fx.engine.set_settings(PlaybackSettings { normalize_volume: true, ..PlaybackSettings::default() });
+        play_paused(&mut fx, "loud");
+        assert!(wait_gain(&mut fx, 6000, is_attenuated));
+
+        fx.engine.set_settings(PlaybackSettings::default()); // выключили на ходу
+        assert!(
+            wait_gain(&mut fx, 6000, |g| g > 0.999),
+            "усиление не вернулось к 1.0: {}",
+            fx.engine.state().normalization_gain
+        );
+    }
+
+    #[test]
+    fn enabling_normalization_mid_track_measures_the_playing_track() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mut fx) = Fixture::with_tone("norm-mid", &[("loud", 300)], 0.8) else { return };
+
+        play_paused(&mut fx, "loud"); // нормализация выключена
+        fx.idle(300);
+        assert_eq!(fx.engine.state().normalization_gain, 1.0);
+
+        fx.engine.set_settings(PlaybackSettings { normalize_volume: true, ..PlaybackSettings::default() });
+        assert!(wait_gain(&mut fx, 6000, is_attenuated), "включение на ходу не запустило замер: {}", fx.engine.state().normalization_gain);
+    }
+
+    #[test]
+    fn normalization_waits_for_streamed_track_to_finish_downloading() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let src = std::env::temp_dir().join(format!("mcrate-engine-test-{}-stream-src.wav", std::process::id()));
+        write_tone_wav(&src, 20, 0.8); // ≈320 КБ
+        let body = fs::read(&src).unwrap();
+        let _ = fs::remove_file(&src);
+        // Первые 160 КБ (больше START_BYTES) сразу, остальное через 2,5 с
+        let url = serve_slowly(body, 160 * 1024, Duration::from_millis(2500));
+        let Some(mut fx) = Fixture::with_provider("norm-stream", Arc::new(HttpProvider { url })) else { return };
+
+        fx.engine.set_settings(PlaybackSettings { normalize_volume: true, ..PlaybackSettings::default() });
+        play_paused(&mut fx, "s");
+
+        // Трек играет, а докачка ещё идёт: целого файла нет, мерить рано, усиление не трогаем
+        fx.idle(800);
+        let st = fx.engine.state();
+        assert!(st.download_progress.is_some(), "трек должен ещё докачиваться (иначе тест проверяет не тот путь)");
+        assert_eq!(st.normalization_gain, 1.0, "замер не должен начинаться до конца докачки");
+
+        // Докачалось: замер целого файла и плавное ослабление
+        assert!(
+            wait_gain(&mut fx, 10_000, is_attenuated),
+            "после докачки замер не сработал: {} (события: {:?})",
+            fx.engine.state().normalization_gain,
+            fx.log
+        );
     }
 }

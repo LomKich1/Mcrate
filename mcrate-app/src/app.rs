@@ -6,6 +6,7 @@
 use std::time::Duration;
 
 use eframe::egui::{self, Frame, Margin, Rect, Sense, UiBuilder, pos2};
+use mcrate_audio::PlaybackSettings;
 use mcrate_core::Track;
 
 use crate::controller::Controller;
@@ -141,6 +142,7 @@ pub struct McrateApp {
     /// Общие настройки (язык, уведомления, качество звука...). Не влияют на тему.
     pub prefs: Preferences,
     applied: Option<GraphicsSettings>, // какие настройки уже применены к egui
+    applied_playback: Option<PlaybackSettings>, // какие настройки воспроизведения уже отправлены движку
     pub theme: Theme,
     glass: egui_glass::GlassContext, // стекло: обои + живой фон (преломляет то, что лежит под панелями)
     wallpaper_key: Option<(ThemePreset, [u8; 3], bool)>, // для какой темы уже загружены обои
@@ -214,6 +216,7 @@ impl McrateApp {
             settings,
             prefs,
             applied: None,
+            applied_playback: None,
             glass,
             wallpaper_key: None,
             wallpaper_tex: None,
@@ -438,6 +441,16 @@ impl McrateApp {
         }
     }
 
+    /// Отправляет движку настройки воспроизведения при первом кадре (старт приложения) и каждый
+    /// раз, когда они изменились на экране настроек. Одинаковые значения повторно не шлём.
+    fn sync_playback_settings(&mut self) {
+        let wanted = self.prefs.playback_settings();
+        if self.applied_playback != Some(wanted) {
+            self.ctl.set_playback_settings(wanted);
+            self.applied_playback = Some(wanted);
+        }
+    }
+
     /// Пересчитываем список по поиску только при изменении запроса или библиотеки.
     fn refresh_filter(&mut self) {
         let key = (self.search.clone(), self.ctl.library.len());
@@ -474,6 +487,7 @@ impl eframe::App for McrateApp {
         if (ctx.zoom_factor() - zoom).abs() > f32::EPSILON {
             ctx.set_zoom_factor(zoom);
         }
+        self.sync_playback_settings();
         self.handle_input(&ctx);
         self.ctl.tick();
         self.refresh_filter();
