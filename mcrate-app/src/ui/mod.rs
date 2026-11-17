@@ -11,6 +11,7 @@ pub mod library;
 pub mod now_playing;
 pub mod player_bar;
 pub mod rail;
+pub mod ripple;
 pub mod settings_main;
 pub mod settings_more;
 pub mod settings_screens;

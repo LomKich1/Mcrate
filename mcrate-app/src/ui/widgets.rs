@@ -373,6 +373,13 @@ pub fn glide_end_flat(ui: &Ui, theme: &Theme, slot: ShapeIdx, salt: Id, target: 
 }
 
 fn glide_end_impl(ui: &Ui, theme: &Theme, slot: ShapeIdx, salt: Id, target: Option<(u64, Rect)>, radius: f32, flat: Option<(Color32, u8)>) {
+    if !theme.glass_active() {
+        // Material 3: подсветка растёт кружком из точки, куда навели курсор, и едет за ним (см. ripple.rs).
+        let (color, hover_a) = flat.unwrap_or((theme.hover_glide_color(), theme.hover_glide_alpha()));
+        let press_a = if flat.is_some() { hover_a as u16 * 3 / 2 } else { hover_a as u16 * 5 / 4 }.min(255) as u8;
+        super::ripple::glide_ripple(ui, theme, slot, salt, target, radius, color, hover_a, press_a);
+        return;
+    }
     let dt = ui.input(|i| i.stable_dt).clamp(0.0, 0.064);
     let mut g: Glide = ui.ctx().data_mut(|d| d.get_temp(salt)).unwrap_or_default();
     let mut moving = false;
@@ -431,27 +438,12 @@ fn glide_end_impl(ui: &Ui, theme: &Theme, slot: ShapeIdx, salt: Id, target: Opti
             style.border *= g.alpha;
             style.shadow *= g.alpha;
             ui.painter().set(slot, egui_glass::glass_shape(ui, shown, &style));
-        } else {
-            let (color, base_alpha) = flat.unwrap_or((theme.hover_glide_color(), theme.hover_glide_alpha()));
-            let alpha = (base_alpha as f32 * g.alpha).round() as u8;
-            ui.painter().set(slot, Shape::rect_filled(shown, radius, with_alpha(color, alpha)));
         }
     }
     if moving {
         ui.ctx().request_repaint();
     }
     ui.ctx().data_mut(|d| d.insert_temp(salt, g));
-}
-
-/// «Слой состояния» из M3: при наведении поверх кладётся 8% цвета контента, при нажатии 12%.
-fn state_alpha(r: &Response) -> u8 {
-    if r.is_pointer_button_down_on() || r.has_focus() {
-        30 // pressed / focused: 12%
-    } else if r.hovered() {
-        20 // hovered: 8%
-    } else {
-        0
-    }
 }
 
 /// Отдельная круглая кнопка в контентном слое: в Liquid Glass используется реальный
@@ -608,10 +600,9 @@ pub fn icon_button(ui: &mut Ui, theme: &Theme, icon: Icon, diameter: f32, kind: 
         if let Some(bg) = bg {
             painter.circle_filled(visual_rect.center(), r, bg);
         }
-        let a = state_alpha(&resp);
-        if a > 0 {
-            painter.circle_filled(visual_rect.center(), r, with_alpha(fg, a));
-        }
+        // Слой состояния: кружок от курсора (ripple.rs). Для круглой кнопки форма обрезки это сам круг.
+        let circle = Rect::from_center_size(visual_rect.center(), Vec2::splat(r * 2.0));
+        super::ripple::state_layer(ui, theme, painter, &resp, circle, r, fg, 20, 31);
         if kind == ButtonKind::Outlined {
             painter.circle_stroke(visual_rect.center(), r - 0.5, Stroke::new(1.0, p.outline));
         }
@@ -691,10 +682,7 @@ pub fn pill_button(ui: &mut Ui, theme: &Theme, label: &str, icon: Option<Icon>, 
             ButtonKind::Outlined | ButtonKind::Plain => Color32::TRANSPARENT,
         };
         painter.rect_filled(visual_rect, pill_radius, bg);
-        let a = state_alpha(&resp);
-        if a > 0 {
-            painter.rect_filled(visual_rect, pill_radius, with_alpha(fg, a));
-        }
+        super::ripple::state_layer(ui, theme, painter, &resp, visual_rect, pill_radius, fg, 20, 31);
         if kind == ButtonKind::Outlined {
             painter.rect_stroke(visual_rect, pill_radius, Stroke::new(1.0, p.outline), StrokeKind::Inside);
         }
@@ -756,9 +744,10 @@ pub fn nav_item(ui: &mut Ui, theme: &Theme, icon: Icon, label: &str, selected: b
         if t > 0.01 {
             painter.rect_filled(rect.shrink(1.0), 22.0, with_alpha(p.on_surface, (t * if resp.is_pointer_button_down_on() { 32.0 } else { 20.0 }) as u8));
         }
-    } else if enabled && !selected && resp.is_pointer_button_down_on() {
-        // У выбранного пункта фон-подложку при нажатии не рисуем: он уже подсвечен пилюлей (rail.rs).
-        painter.rect_filled(rect, 24.0, with_alpha(theme.hover_glide_color(), theme.hover_glide_alpha()));
+    } else if enabled && !selected {
+        // У выбранного пункта слой не рисуем: он уже подсвечен пилюлей (rail.rs).
+        // M3: кружок от курсора при наведении, при нажатии разрастается до краёв пункта.
+        super::ripple::state_layer(ui, theme, painter, &resp, rect, 24.0, p.on_surface, 20, 31);
     }
     if resp.has_focus() {
         painter.rect_stroke(

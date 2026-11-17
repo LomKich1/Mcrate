@@ -329,16 +329,8 @@ fn paint_chip(ui: &Ui, theme: &Theme, rect: Rect, resp: &Response, chip: &Chip<'
     painter.rect_filled(rect, radius, fill);
     let fg = if chip.locked { with_alpha(fg, 130) } else { fg };
     if !chip.locked {
-        let state = if resp.is_pointer_button_down_on() || resp.has_focus() {
-            30
-        } else if resp.hovered() {
-            20
-        } else {
-            0
-        };
-        if state > 0 {
-            painter.rect_filled(rect, radius, with_alpha(if selected { p.on_primary } else { p.on_surface }, state));
-        }
+        // Слой состояния: кружок от курсора (ripple.rs).
+        super::ripple::state_layer(ui, theme, painter, resp, rect, radius, if selected { p.on_primary } else { p.on_surface }, 20, 30);
     }
     let font = FontId::proportional(theme.text_size(TextRole::LabelLarge));
     if chip.locked {
@@ -502,16 +494,7 @@ fn paint_tile(ui: &Ui, theme: &Theme, base: Rect, resp: &Response, tile: &Tile) 
 
     // Контур и слой состояния (наведение 8%, нажатие 12%).
     painter.rect_stroke(rect, radius, Stroke::new(1.0, with_alpha(p.outline_variant, 110)), StrokeKind::Inside);
-    let state = if resp.is_pointer_button_down_on() || resp.has_focus() {
-        30
-    } else if resp.hovered() {
-        20
-    } else {
-        0
-    };
-    if state > 0 {
-        painter.rect_filled(rect, radius, with_alpha(p.on_surface, state));
-    }
+    super::ripple::state_layer(ui, theme, painter, resp, rect, radius, p.on_surface, 20, 30);
 }
 
 /// Горизонтальный градиент внутри скруглённого прямоугольника. `color_at(t)` даёт цвет в точке
@@ -571,10 +554,6 @@ pub fn profile_card(ui: &mut Ui, theme: &Theme, name: &str, subtitle: &str) -> R
     painter.text(pos2(x, rect.center().y + 12.0), Align2::LEFT_CENTER, subtitle, FontId::proportional(theme.text_size(TextRole::BodySmall) + 0.5), p.on_surface_variant);
     paint_symbol(painter, mi::ICON_CHEVRON_RIGHT, pos2(rect.right() - 26.0, rect.center().y), 24.0, p.on_surface_variant);
 
-    if resp.is_pointer_button_down_on() || resp.has_focus() {
-        painter.rect_filled(rect, radius, with_alpha(p.on_surface, 30));
-    } else if resp.hovered() {
-        painter.rect_filled(rect, radius, with_alpha(p.on_surface, 20));
-    }
+    super::ripple::state_layer(ui, theme, painter, &resp, rect, radius, p.on_surface, 20, 30);
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }

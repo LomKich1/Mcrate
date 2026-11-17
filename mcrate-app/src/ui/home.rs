@@ -404,10 +404,9 @@ fn arrow_button(ui: &mut Ui, theme: &Theme, right: bool, enabled: bool) -> Respo
         painter.circle_filled(center, radius, with_alpha(theme.tonal_fill(), fade));
         if enabled {
             // Слой состояния M3: наведение 8%, нажатие 12% цвета контента.
-            let layer = if pressed { 31 } else if resp.hovered() { 20 } else { 0 };
-            if layer > 0 {
-                painter.circle_filled(center, radius, with_alpha(theme.on_tonal(), layer));
-            }
+            // Кружок от курсора (ripple.rs); форма обрезки: круг кнопки.
+            let circle = Rect::from_center_size(center, Vec2::splat(radius * 2.0));
+            super::ripple::state_layer(ui, theme, painter, &resp, circle, radius, theme.on_tonal(), 20, 31);
             // Внутренняя тень: кнопка выглядит продавленной внутрь.
             if depth > 0.01 {
                 painter.circle_stroke(center, radius - 1.0, Stroke::new(2.0, Color32::from_black_alpha((44.0 * depth) as u8)));
