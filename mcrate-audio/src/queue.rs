@@ -156,6 +156,28 @@ impl<T> PlayQueue<T> {
         }
     }
 
+    /// Что сыграет ПОСЛЕ естественного конца текущего трека, не двигая очередь.
+    /// Это ровно то, что вернул бы `track_finished()`: при повторе One тот же трек,
+    /// иначе следующий; в конце очереди при повторе Off `None`.
+    /// Нужен для предзагрузки: движок готовит следующий трек заранее.
+    /// (`&self` = только смотрим, очередь не меняется.)
+    pub fn peek_next(&self) -> Option<&T> {
+        if self.order.is_empty() {
+            return None;
+        }
+        if self.repeat == RepeatMode::One {
+            return self.current();
+        }
+        let next_pos = if self.pos + 1 < self.order.len() {
+            self.pos + 1
+        } else if self.repeat == RepeatMode::All {
+            0
+        } else {
+            return None; // конец очереди
+        };
+        self.order.get(next_pos).and_then(|&i| self.items.get(i))
+    }
+
     pub fn repeat(&self) -> RepeatMode { self.repeat }
     pub fn set_repeat(&mut self, mode: RepeatMode) { self.repeat = mode; }
     pub fn shuffle(&self) -> bool { self.shuffle }
@@ -245,6 +267,47 @@ mod tests {
         q.set_shuffle(false);
         assert_eq!(q.current(), Some(&cur));
         assert_eq!(q.next(), Some(&(cur + 1)).filter(|_| cur < 5)); // следом идёт соседний по номеру
+    }
+
+    #[test]
+    fn peek_next_matches_track_finished_without_moving() {
+        for repeat in [RepeatMode::Off, RepeatMode::All, RepeatMode::One] {
+            for shuffle in [false, true] {
+                let mut q = queue_of(4);
+                q.set_repeat(repeat);
+                q.set_shuffle(shuffle);
+                // Идём по всей очереди (и по кругу): подсказка всегда совпадает с тем,
+                // что реально сыграет следующим, а сам просмотр очередь не двигает.
+                for _ in 0..10 {
+                    let current = q.current().copied();
+                    let index = q.index();
+                    let peeked = q.peek_next().copied();
+                    assert_eq!(q.current().copied(), current);
+                    assert_eq!(q.index(), index);
+                    assert_eq!(q.track_finished().copied(), peeked, "{repeat:?} shuffle={shuffle}");
+                    if peeked.is_none() {
+                        break; // конец очереди при повторе Off
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn peek_next_at_queue_end() {
+        let mut q = queue_of(2);
+        q.next(); // играет последний
+        assert_eq!(q.peek_next(), None); // повтор Off: дальше ничего
+        q.set_repeat(RepeatMode::All);
+        assert_eq!(q.peek_next(), Some(&1)); // по кругу
+        q.set_repeat(RepeatMode::One);
+        assert_eq!(q.peek_next(), Some(&2)); // тот же трек
+    }
+
+    #[test]
+    fn peek_next_on_empty_queue_is_none() {
+        let q: PlayQueue<i32> = PlayQueue::with_seed(1);
+        assert_eq!(q.peek_next(), None);
     }
 
     #[test]
