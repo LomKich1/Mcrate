@@ -12,6 +12,11 @@
 //! Нормализация громкости (`PlaybackSettings`): пока трек играет, в фоне измеряется его громкость
 //! (`loudness::measure_file`, по готовому файлу), и усиление плавно подтягивается к целевой громкости.
 //! Замеры запоминаются на сессию, повторное проигрывание стартует уже с нужным усилением.
+//!
+//! Предзагрузка: когда текущий трек целиком на диске, движок готовит следующий (`queue.peek_next`)
+//! во второй деке плеера и заранее мерит его громкость. Предзагрузка идёт в своём слоте
+//! (свой номер запроса `preload_request`) и не мешает загрузке текущего трека. Когда трек доиграл
+//! сам, движок переключается на готовую деку: без «загрузки» и сразу с нужным усилением.
 
 use std::collections::HashMap;
 use std::fs;
@@ -70,6 +75,9 @@ enum Command {
     /// Внутренняя: фоновый замер громкости закончился. `None` = измерить нечего (тишина).
     /// Привязан к треку, а не к запросу: замер целого файла верен, даже если трек уже сменили.
     LoudnessReady { key: TrackKey, loudness: Option<Loudness> },
+    /// Внутренняя: фоновая предзагрузка следующего трека закончилась (файл целиком готов).
+    /// `request` = номер запроса предзагрузки (свой счётчик, не путать с `request` текущего трека).
+    PreloadFinished { request: u64, result: Result<PathBuf, String> },
 }
 
 /// События от движка к UI: только дискретные изменения.
@@ -221,6 +229,10 @@ impl PlaybackEngine {
                 analysis: None,
                 playing_file: None,
                 last_gain_tick: Instant::now(),
+                preload: None,
+                preload_request: 0,
+                preload_task: None,
+                preload_analysis: None,
             }
             .run(cmd_rx);
         });
@@ -295,38 +307,76 @@ struct LoadGuard {
     tx: mpsc::Sender<Command>,
     request: u64,
     sent: bool,
+    /// true = это загрузка для предзагрузки: играть её по мере скачивания не нужно, ответ один
+    /// (`PreloadFinished`, когда файл целиком готов).
+    preload: bool,
 }
 
 impl LoadGuard {
+    /// Итоговый ответ задачи: для текущего трека `LoadFinished`, для предзагрузки `PreloadFinished`.
+    fn result_command(&self, result: Result<PathBuf, String>) -> Command {
+        if self.preload {
+            Command::PreloadFinished { request: self.request, result }
+        } else {
+            Command::LoadFinished { request: self.request, result }
+        }
+    }
+
     /// Отправить настоящий результат (сторож после этого молчит).
     fn finish(mut self, result: Result<PathBuf, String>) {
         self.sent = true;
-        let _ = self.tx.send(Command::LoadFinished { request: self.request, result });
+        let _ = self.tx.send(self.result_command(result));
     }
 
     /// Сообщить, что можно играть докачиваемый файл. Сторож остаётся «на посту»: если
     /// задача потом упадёт, он пошлёт ошибку (движок её проигнорирует как устаревшую).
+    /// Для предзагрузки ничего не шлём: она ждёт файл целиком.
     fn stream_ready(&self, part: PathBuf, dest: PathBuf, progress: DownloadProgress) {
-        let _ = self.tx.send(Command::StreamReady { request: self.request, part, dest, progress });
+        if !self.preload {
+            let _ = self.tx.send(Command::StreamReady { request: self.request, part, dest, progress });
+        }
     }
 
     /// Трек, игравший во время докачки, докачан и переименован в `path`. Это последнее
-    /// сообщение задачи: сторож после него молчит.
+    /// сообщение задачи: сторож после него молчит. Для предзагрузки это обычный итог.
     fn stream_complete(mut self, path: PathBuf) {
         self.sent = true;
-        let _ = self.tx.send(Command::StreamComplete { request: self.request, path });
+        let command = if self.preload {
+            Command::PreloadFinished { request: self.request, result: Ok(path) }
+        } else {
+            Command::StreamComplete { request: self.request, path }
+        };
+        let _ = self.tx.send(command);
     }
 }
 
 impl Drop for LoadGuard {
     fn drop(&mut self) {
         if !self.sent {
-            let _ = self.tx.send(Command::LoadFinished {
-                request: self.request,
-                result: Err("загрузка прервана".to_string()),
-            });
+            let _ = self.tx.send(self.result_command(Err("загрузка прервана".to_string())));
         }
     }
+}
+
+/// Ключ трека для замеров громкости и сравнения «тот же трек».
+fn key_of(track: &Track) -> TrackKey {
+    (track.provider, track.id.clone())
+}
+
+/// Состояние предзагрузки следующего трека.
+enum PreloadState {
+    /// Файл ещё скачивается в фоне.
+    Loading,
+    /// Файл стоит во второй деке плеера (на паузе). Внутри: путь к файлу и длина, если декодер её знает.
+    Ready { path: PathBuf, duration: Option<Duration> },
+    /// Не получилось (нет файла, битый файл, нет сети). Повторно не пробуем, пока следующий трек тот же.
+    Failed,
+}
+
+/// Следующий трек, который движок готовит заранее.
+struct Preload {
+    key: TrackKey,
+    state: PreloadState,
 }
 
 /// Сторона потока движка: здесь живёт вся логика.
@@ -355,6 +405,10 @@ struct Worker {
     analysis: Option<Arc<AtomicBool>>, // Some = идёт замер текущего трека; внутри флаг отмены
     playing_file: Option<PathBuf>, // целый файл текущего трека, когда он известен (иначе замерить нельзя)
     last_gain_tick: Instant,     // когда в последний раз двигали усиление
+    preload: Option<Preload>,    // Some = следующий трек запрошен (грузится, готов или не удался)
+    preload_request: u64,        // номер запроса предзагрузки; растёт при каждом запуске и сбросе
+    preload_task: Option<tokio::task::JoinHandle<()>>, // ручка фоновой загрузки следующего трека
+    preload_analysis: Option<Arc<AtomicBool>>, // Some = идёт замер следующего трека; внутри флаг отмены
 }
 
 impl Worker {
@@ -371,6 +425,7 @@ impl Worker {
             if self.loaded && self.player.is_finished() {
                 self.on_track_finished();
             }
+            self.sync_preload();
             self.update_gain();
             self.report_stream_error();
             self.publish_state();
@@ -472,6 +527,7 @@ impl Worker {
             }
             Command::StreamComplete { request, path } => self.on_stream_complete(request, path),
             Command::LoudnessReady { key, loudness } => self.on_loudness_ready(key, loudness),
+            Command::PreloadFinished { request, result } => self.on_preload_finished(request, result),
             Command::Shutdown => {} // обрабатывается в run()
         }
     }
@@ -567,16 +623,10 @@ impl Worker {
         let request = self.request; // номер уже увеличен в cancel_loading, он уникален
 
         // Сторож и всё нужное задаче переезжают в неё (`async move`)
-        let guard = LoadGuard { tx: self.commands_tx.clone(), request, sent: false };
+        let guard = LoadGuard { tx: self.commands_tx.clone(), request, sent: false, preload: false };
         let cache = self.cache.clone();
         let task_track = track.clone();
-        let handle = self.runtime.spawn(async move {
-            match load_online(provider, downloader, cache, task_track, &guard).await {
-                Ok(Loaded::File(path)) => guard.finish(Ok(path)),
-                Ok(Loaded::Streamed(path)) => guard.stream_complete(path), // StreamReady уже ушёл; теперь файл целый
-                Err(reason) => guard.finish(Err(reason)),
-            }
-        });
+        let handle = self.runtime.spawn(run_load(provider, downloader, cache, task_track, guard));
         self.load_task = Some(handle);
 
         self.emit(PlaybackEvent::Loading(track.clone()));
@@ -704,11 +754,16 @@ impl Worker {
         self.stream_progress = None;
         self.playing_file = None;
         self.cancel_analysis(); // замер относился к прошлому треку
+        self.drop_preload(); // следующий трек теперь может быть другим; sync_preload подготовит заново
     }
 
     /// Выставить громкость плеера: ползунок пользователя, умноженный на усиление нормализации.
     fn apply_volume(&self) {
         self.player.set_volume(self.volume * self.normalizer.gain());
+        // Следующий трек (если он готов во второй деке) звучит со своим усилением и тем же ползунком
+        if let Some(Preload { key, state: PreloadState::Ready { .. } }) = &self.preload {
+            self.player.set_preload_volume(self.volume * self.normalizer.gain_for_key(key));
+        }
     }
 
     /// Новый трек вот-вот начнётся: узнать для него усиление (из кэша замеров) и поставить громкость.
@@ -773,17 +828,176 @@ impl Worker {
         if self.normalizer.current() == Some(&key) {
             self.analysis = None;
         }
+        if self.preload.as_ref().is_some_and(|p| p.key == key) {
+            self.preload_analysis = None;
+        }
         self.normalizer.record(key, loudness);
+        self.apply_volume(); // если замерили следующий трек, его громкость во второй деке обновится
     }
 
     fn on_track_finished(&mut self) {
         self.loaded = false;
         if self.queue.track_finished().is_some() {
-            self.play_current();
+            // Следующий уже готов во второй деке? Тогда без загрузки, иначе как обычно
+            if !self.start_from_preload() {
+                self.play_current();
+            }
         } else {
             self.set_idle();
             self.emit(PlaybackEvent::QueueEnded);
         }
+    }
+
+    /// Предзагрузка: следить, чтобы во второй деке был именно тот трек, что сыграет следующим.
+    /// Зовётся каждый цикл (≈100 мс). Готовим только когда текущий трек целиком на диске: пока он
+    /// докачивается, сеть не делим.
+    fn sync_preload(&mut self) {
+        let wanted = if self.loaded && !self.loading && self.playing_file.is_some() {
+            self.queue.peek_next().cloned()
+        } else {
+            None
+        };
+        let wanted_key = wanted.as_ref().map(key_of);
+        if self.preload.as_ref().map(|p| &p.key) == wanted_key.as_ref() {
+            return; // уже готовим (или уже готов, или не удался) именно этот трек
+        }
+        self.drop_preload();
+        if let Some(track) = wanted {
+            self.start_preload(track);
+        }
+    }
+
+    /// Выбросить предзагрузку: отменить скачивание и замер, освободить вторую деку.
+    fn drop_preload(&mut self) {
+        if let Some(task) = self.preload_task.take() {
+            task.abort(); // DownloadGuard внутри задачи прервёт скачивание и уберёт `.part`
+        }
+        if let Some(cancel) = self.preload_analysis.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.preload_request += 1; // поздние ответы этой предзагрузки станут устаревшими
+        if let Some(Preload { state: PreloadState::Ready { .. }, .. }) = self.preload.take() {
+            self.player.discard_preloaded();
+        }
+    }
+
+    /// Начать подготовку следующего трека. Локальный ставится во вторую деку сразу,
+    /// онлайн скачивается в фоне целиком (ответ придёт командой `PreloadFinished`).
+    fn start_preload(&mut self, track: Track) {
+        let key = key_of(&track);
+        let failed = Preload { key: key.clone(), state: PreloadState::Failed };
+        let Some(provider) = self.providers.get(&track.provider).cloned() else {
+            self.preload = Some(failed);
+            return;
+        };
+
+        if track.provider == ProviderKind::Local {
+            let state = match self.runtime.block_on(provider.get_stream(&track)) {
+                Ok(StreamSource::LocalFile(path)) => self.install_preload(&path),
+                _ => PreloadState::Failed,
+            };
+            self.preload = Some(Preload { key, state });
+            self.after_preload_ready();
+            return;
+        }
+
+        let downloader = match &self.downloader {
+            Ok(d) => Arc::clone(d),
+            Err(_) => {
+                self.preload = Some(failed);
+                return;
+            }
+        };
+        let guard = LoadGuard { tx: self.commands_tx.clone(), request: self.preload_request, sent: false, preload: true };
+        let handle = self.runtime.spawn(run_load(provider, downloader, self.cache.clone(), track, guard));
+        self.preload_task = Some(handle);
+        self.preload = Some(Preload { key, state: PreloadState::Loading });
+    }
+
+    /// Поставить готовый файл во вторую деку. Битый файл из нашего кэша удаляем (как для текущего трека).
+    fn install_preload(&mut self, path: &std::path::Path) -> PreloadState {
+        match self.player.preload_file(path) {
+            Ok(duration) => PreloadState::Ready { path: path.to_path_buf(), duration },
+            Err(_) => {
+                if self.cache.contains(path) {
+                    let _ = fs::remove_file(path);
+                }
+                PreloadState::Failed
+            }
+        }
+    }
+
+    /// Фоновая предзагрузка закончилась.
+    fn on_preload_finished(&mut self, request: u64, result: Result<PathBuf, String>) {
+        if request != self.preload_request {
+            return; // следующий трек уже другой
+        }
+        self.preload_task = None;
+        if !matches!(self.preload, Some(Preload { state: PreloadState::Loading, .. })) {
+            return;
+        }
+        let state = match result {
+            Ok(path) => self.install_preload(&path),
+            Err(_) => PreloadState::Failed,
+        };
+        if let Some(preload) = self.preload.as_mut() {
+            preload.state = state;
+        }
+        self.after_preload_ready();
+    }
+
+    /// Следующий трек встал во вторую деку: выставить его громкость и при нужде измерить его заранее.
+    fn after_preload_ready(&mut self) {
+        self.apply_volume();
+        let Some(Preload { key, state: PreloadState::Ready { path, .. } }) = &self.preload else { return };
+        // Если это тот же трек, что играет (повтор одного), его уже меряет обычный замер
+        if self.preload_analysis.is_some()
+            || !self.normalizer.wants_measure(key)
+            || self.normalizer.current() == Some(key)
+        {
+            return;
+        }
+        let (path, key) = (path.clone(), key.clone());
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.preload_analysis = Some(Arc::clone(&cancel));
+        let tx = self.commands_tx.clone();
+        self.runtime.spawn_blocking(move || {
+            let loudness = match loudness::measure_file(&path, &cancel) {
+                Ok(Measured::Done(loudness)) => Some(loudness),
+                Ok(Measured::Unmeasurable) => None,
+                Ok(Measured::Cancelled) | Err(_) => return,
+            };
+            let _ = tx.send(Command::LoudnessReady { key, loudness });
+        });
+    }
+
+    /// Трек доиграл сам и следующий (`queue.current()`) готов во второй деке: переключаемся на него.
+    /// Возвращает false, если готового нет (тогда движок запускает трек как обычно).
+    fn start_from_preload(&mut self) -> bool {
+        let Some(track) = self.queue.current().cloned() else { return false };
+        let key = key_of(&track);
+        let ready = matches!(&self.preload, Some(p) if p.key == key && matches!(p.state, PreloadState::Ready { .. }));
+        if !ready {
+            return false;
+        }
+        let Some(Preload { state: PreloadState::Ready { path, duration }, .. }) = self.preload.take() else {
+            return false;
+        };
+        // Замер следующего трека, если он ещё идёт, становится замером текущего
+        let measuring = self.preload_analysis.take();
+        self.preload_request += 1;
+        self.fail_streak = 0;
+        self.cancel_loading(); // номер запроса вперёд, сброс прошлого трека (предзагрузки уже нет)
+        // Усиление ставим ДО переключения, чтобы первые такты звучали как надо
+        self.normalizer.begin_track(key);
+        self.player.set_preload_volume(self.volume * self.normalizer.gain());
+        if !self.player.switch_to_preloaded() {
+            return false;
+        }
+        self.playing_file = Some(path);
+        self.analysis = measuring;
+        self.finish_start(track, duration);
+        true
     }
 
     fn set_idle(&mut self) {
@@ -853,6 +1067,21 @@ impl Drop for DownloadGuard {
             // Ошибку игнорируем: файл мог быть уже удалён или (на других ОС) занят плеером
             let _ = fs::remove_file(&self.part);
         }
+    }
+}
+
+/// Задача фоновой загрузки: запускает `load_online` и отвечает движку (трек или предзагрузка).
+async fn run_load(
+    provider: Arc<dyn MusicProvider>,
+    downloader: Arc<StreamDownloader>,
+    cache: StreamCache,
+    track: Track,
+    guard: LoadGuard,
+) {
+    match load_online(provider, downloader, cache, track, &guard).await {
+        Ok(Loaded::File(path)) => guard.finish(Ok(path)),
+        Ok(Loaded::Streamed(path)) => guard.stream_complete(path), // StreamReady уже ушёл; теперь файл целый
+        Err(reason) => guard.finish(Err(reason)),
     }
 }
 
@@ -1390,5 +1619,138 @@ mod tests {
             fx.engine.state().normalization_gain,
             fx.log
         );
+    }
+
+    // ----- предзагрузка следующего трека -----
+
+    /// Очередь из нескольких треков, первый стартует сразу на паузе (см. `play_paused`).
+    fn play_queue_paused(fx: &mut Fixture, ids: &[&'static str]) {
+        let first = ids[0];
+        fx.engine.play_queue(ids.iter().map(|id| track(id)).collect(), 0);
+        assert!(fx.wait_for(1000, is_loading(first)), "нет события Loading");
+        fx.engine.toggle_pause();
+        assert!(fx.wait_for(3000, is_started(first)), "трек не стартовал");
+    }
+
+    /// Ждёт, пока у провайдера не попросят ссылку `n` раз (первая просьба за текущий трек,
+    /// вторая за предзагрузку следующего).
+    fn wait_calls(fx: &mut Fixture, calls: &AtomicUsize, n: usize, timeout_ms: u64) -> bool {
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        while calls.load(Ordering::SeqCst) < n {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            fx.idle(20);
+        }
+        true
+    }
+
+    #[test]
+    fn next_track_is_preloaded_while_current_plays() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mut fx) = Fixture::new("pre-basic", &[("a", 300), ("b", 300)]) else { return };
+        let fake = Arc::clone(&fx.fake);
+
+        play_queue_paused(&mut fx, &["a", "b"]);
+        assert!(wait_calls(&mut fx, &fake.calls, 2, 3000), "следующий трек не запрошен заранее");
+        // Один раз, а не каждый цикл движка
+        fx.idle(500);
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 2, "предзагрузка повторяется");
+    }
+
+    #[test]
+    fn nothing_is_preloaded_at_end_of_queue_until_a_track_is_added() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mut fx) = Fixture::new("pre-end", &[("a", 300), ("b", 300)]) else { return };
+        let fake = Arc::clone(&fx.fake);
+
+        play_queue_paused(&mut fx, &["a"]);
+        fx.idle(600);
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 1, "после последнего трека готовить нечего");
+
+        fx.engine.add_to_queue(track("b")); // теперь у «a» есть следующий
+        assert!(wait_calls(&mut fx, &fake.calls, 2, 3000), "добавленный в конец трек не предзагрузился");
+    }
+
+    #[test]
+    fn preload_follows_the_queue_mode() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mut fx) = Fixture::new("pre-mode", &[("a", 300), ("b", 300)]) else { return };
+        let fake = Arc::clone(&fx.fake);
+
+        play_queue_paused(&mut fx, &["a", "b"]);
+        assert!(wait_calls(&mut fx, &fake.calls, 2, 3000));
+
+        // Повтор один трек (Off -> All -> One): после «a» снова «a», предзагруженный «b» не подходит
+        fx.engine.cycle_repeat();
+        fx.engine.cycle_repeat();
+        assert!(wait_calls(&mut fx, &fake.calls, 3, 3000), "режим сменился, а предзагрузка осталась старой");
+    }
+
+    #[test]
+    fn failed_preload_is_not_retried_every_tick() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // У «bad» нет файла: провайдер отвечает ошибкой
+        let Some(mut fx) = Fixture::new("pre-fail", &[("a", 300)]) else { return };
+        let fake = Arc::clone(&fx.fake);
+
+        play_queue_paused(&mut fx, &["a", "bad"]);
+        assert!(wait_calls(&mut fx, &fake.calls, 2, 3000));
+        fx.idle(800);
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 2, "неудачную предзагрузку нельзя повторять каждый цикл");
+    }
+
+    #[test]
+    fn natural_end_switches_to_preloaded_track_without_loading() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mut fx) = Fixture::new("pre-switch", &[("a", 300), ("b", 300)]) else { return };
+        let fake = Arc::clone(&fx.fake);
+
+        play_queue_paused(&mut fx, &["a", "b"]);
+        assert!(wait_calls(&mut fx, &fake.calls, 2, 3000));
+        fx.idle(800); // «b» «скачивается» 300 мс и встаёт во вторую деку
+
+        fx.engine.toggle_pause(); // «a» играет и скоро доиграет сам
+        assert!(fx.wait_for(5000, |e| matches!(e, PlaybackEvent::TrackChanged(Some(t)) if t.id == "b")), "«b» не заиграл (события: {:?})", fx.log);
+        assert!(
+            !fx.log.iter().any(|e| matches!(e, PlaybackEvent::Loading(t) if t.id == "b")),
+            "предзагруженный трек прошёл через загрузку (события: {:?})",
+            fx.log
+        );
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 2, "ссылку на «b» запросили второй раз");
+    }
+
+    #[test]
+    fn next_track_loudness_is_measured_before_it_starts() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // «a» громкий, «b» тихий: усиление у них очень разное, значит стартовое значение «b» не спутать с хвостом «a»
+        let pid = std::process::id();
+        let loud = std::env::temp_dir().join(format!("mcrate-engine-test-{pid}-ahead-a.wav"));
+        let quiet = std::env::temp_dir().join(format!("mcrate-engine-test-{pid}-ahead-b.wav"));
+        write_tone_wav(&loud, 20, 0.8);
+        write_tone_wav(&quiet, 20, 0.05);
+        let files = HashMap::from([("a".to_string(), (loud.clone(), 300u64)), ("b".to_string(), (quiet.clone(), 300u64))]);
+        let fake = Arc::new(FakeProvider { files, calls: AtomicUsize::new(0) });
+        let fx = Fixture::with_provider("norm-ahead", fake.clone());
+        let Some(mut fx) = fx else {
+            let _ = (fs::remove_file(&loud), fs::remove_file(&quiet));
+            return;
+        };
+
+        fx.engine.set_settings(PlaybackSettings { normalize_volume: true, ..PlaybackSettings::default() });
+        play_queue_paused(&mut fx, &["a", "b"]);
+        assert!(wait_gain(&mut fx, 6000, is_attenuated), "«a» не измерился");
+        assert!(wait_calls(&mut fx, &fake.calls, 2, 3000));
+        fx.idle(2500); // «b» «скачивается», ставится во вторую деку и меряется, пока «a» на паузе
+
+        fx.engine.toggle_pause(); // «a» доигрывает, начинается «b»
+        assert!(fx.wait_for(5000, |e| matches!(e, PlaybackEvent::TrackChanged(Some(t)) if t.id == "b")));
+        // Без заблаговременного замера усиление стартовало бы с 1.0 и ползло бы к цели секунды (6 дБ/с)
+        assert!(
+            wait_gain(&mut fx, 400, |g| g > 3.0),
+            "«b» стартовал без своего усиления: {}",
+            fx.engine.state().normalization_gain
+        );
+        let _ = (fs::remove_file(&loud), fs::remove_file(&quiet));
     }
 }

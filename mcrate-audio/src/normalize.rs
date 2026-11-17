@@ -159,14 +159,26 @@ impl Normalizer {
         Some(self.gain)
     }
 
-    fn target_for_current(&self) -> f32 {
+    /// Нужно ли мерить трек `key` (например, следующий, пока играет текущий): нормализация
+    /// включена, а замера нет.
+    pub fn wants_measure(&self, key: &TrackKey) -> bool {
+        self.settings.normalize_volume && !self.cache.contains_key(key)
+    }
+
+    /// Усиление для трека `key` по запомненному замеру (1.0, если замера нет, трек не измерить
+    /// или нормализация выключена). Нужно, чтобы заранее выставить громкость следующего трека.
+    pub fn gain_for_key(&self, key: &TrackKey) -> f32 {
         if !self.settings.normalize_volume {
             return 1.0;
         }
-        match self.current.as_ref().and_then(|key| self.cache.get(key)) {
+        match self.cache.get(key) {
             Some(Some(loudness)) => gain_for(*loudness, self.settings.target_lufs),
             _ => 1.0, // замера нет или трек не измерить: не трогаем
         }
+    }
+
+    fn target_for_current(&self) -> f32 {
+        self.current.as_ref().map_or(1.0, |key| self.gain_for_key(key))
     }
 }
 
@@ -188,6 +200,22 @@ mod tests {
 
     fn assert_close(actual: f32, expected: f32) {
         assert!((actual - expected).abs() < 0.01, "ожидали {expected}, получили {actual}");
+    }
+
+    #[test]
+    fn gain_for_other_track_comes_from_cache_without_touching_current() {
+        let mut n = Normalizer::new(on());
+        n.begin_track(key("now"));
+        assert!(n.wants_measure(&key("next")));
+        assert_close(n.gain_for_key(&key("next")), 1.0); // замера ещё нет
+        n.record(key("next"), Some(loud(-8.0, 1.0)));
+        assert!(!n.wants_measure(&key("next")));
+        assert_close(n.gain_for_key(&key("next")), 0.501); // как в тесте ниже: -8 LUFS при цели -14
+        assert_close(n.gain(), 1.0); // текущий трек замер соседа не задел
+        // Нормализацию выключили: мерить не нужно, усиление 1.0
+        n.set_settings(PlaybackSettings::default());
+        assert!(!n.wants_measure(&key("other")));
+        assert_close(n.gain_for_key(&key("next")), 1.0);
     }
 
     #[test]
