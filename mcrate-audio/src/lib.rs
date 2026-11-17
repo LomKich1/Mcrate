@@ -15,7 +15,8 @@ pub use visualizer::{VisualizerFrame, VISUALIZER_POINTS};
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 // Decoder  = превращает файл (mp3/flac/...) в поток звуковых данных
@@ -44,12 +45,40 @@ pub enum AudioError {
     Engine(String),
 }
 
+/// Одна «дека» (отсек): свой `Player` на общем выходе и свой докачиваемый файл.
+/// Деки две: пока одна играет, во вторую можно заранее подготовить следующий трек
+/// (предзагрузка) и потом переключиться на него без паузы или наложить кроссфейдом.
+struct Deck {
+    player: Player,
+    /// Some(...) = в деке играет файл, который ещё докачивается (см. `play_stream`).
+    stream: Mutex<Option<StreamCtx>>,
+}
+
+impl Deck {
+    fn new(sink: &MixerDeviceSink) -> Self {
+        Self { player: Player::connect_new(sink.mixer()), stream: Mutex::new(None) }
+    }
+
+    /// Доступ к данным докачиваемого файла. Если другой поток упал с паникой, держа замок,
+    /// данные всё равно годятся.
+    fn ctx(&self) -> MutexGuard<'_, Option<StreamCtx>> {
+        self.stream.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Убрать из деки всё, что в ней есть (заодно ставит её на паузу).
+    fn clear(&self) {
+        *self.ctx() = None;
+        self.player.clear();
+    }
+}
+
 pub struct AudioPlayer {
     // Порядок полей важен: Rust удаляет поля сверху вниз.
-    // Сначала удаляем player, потом устройство вывода.
-    player: Player,
-    /// Some(...) = сейчас играет файл, который ещё докачивается (см. `play_stream`).
-    stream: Mutex<Option<StreamCtx>>,
+    // Сначала удаляем деки (плееры), потом устройство вывода.
+    decks: [Deck; 2],
+    /// Номер активной деки (0 или 1): та, что сейчас «играет». Вторая (простаивающая)
+    /// держит предзагруженный следующий трек на паузе или пуста.
+    active: AtomicUsize,
     visualizer: VisualizerFeed,
     _sink: MixerDeviceSink, // `_` в начале = «поле нужно, чтобы жить, но мы его не читаем»
 }
@@ -79,27 +108,80 @@ impl AudioPlayer {
     pub(crate) fn with_visualizer(visualizer: VisualizerFeed) -> Result<Self, AudioError> {
         let mut sink = DeviceSinkBuilder::open_default_sink()?;
         sink.log_on_drop(false); // не печатать предупреждение при закрытии
-        let player = Player::connect_new(sink.mixer()); // подключаем очередь к «выходу»
-        Ok(Self { player, stream: Mutex::new(None), visualizer, _sink: sink })
+        let decks = [Deck::new(&sink), Deck::new(&sink)]; // обе деки подключены к «выходу»
+        Ok(Self { decks, active: AtomicUsize::new(0), visualizer, _sink: sink })
     }
 
-    /// Доступ к данным докачиваемого файла. Если другой поток упал с паникой, держа замок,
-    /// данные всё равно годятся.
-    fn stream_ctx(&self) -> std::sync::MutexGuard<'_, Option<StreamCtx>> {
-        self.stream.lock().unwrap_or_else(|e| e.into_inner())
+    fn active_index(&self) -> usize {
+        self.active.load(Ordering::Acquire)
     }
 
-    /// Запускает файл. Возвращает длину трека (Option: у некоторых форматов она неизвестна).
-    pub fn play_file(&self, path: &Path) -> Result<Option<Duration>, AudioError> {
+    /// Дека, которая играет сейчас: все обычные методы (пауза, позиция, перемотка...) работают с ней.
+    fn active_deck(&self) -> &Deck {
+        &self.decks[self.active_index()]
+    }
+
+    /// Вторая дека: сюда готовится следующий трек.
+    fn idle_deck(&self) -> &Deck {
+        &self.decks[1 - self.active_index()]
+    }
+
+    /// Открывает файл и ставит его в `deck` (старое содержимое деки убирается, дека на паузе).
+    /// Если файл не открылся, дека остаётся как была.
+    fn install_file(&self, deck: &Deck, path: &Path) -> Result<Option<Duration>, AudioError> {
         let file = File::open(path)?;
         let decoder = Decoder::try_from(file)?; // сам определяет формат по содержимому
         let total = decoder.total_duration();
 
-        *self.stream_ctx() = None;   // это обычный файл, а не докачиваемый
-        self.player.clear();        // убрать предыдущий трек (заодно ставит на паузу)
+        deck.clear(); // убрать предыдущий трек; это обычный файл, а не докачиваемый
+        deck.player.append(AnalyzedSource::new(decoder, self.visualizer.clone())); // анализировать исходный звук
+        Ok(total)
+    }
+
+    /// То же для файла, который ещё докачивается (подробности и про MP4 см. `play_stream`).
+    fn install_stream(
+        &self,
+        deck: &Deck,
+        part: &Path,
+        dest: &Path,
+        progress: &DownloadProgress,
+    ) -> Result<Option<Duration>, AudioError> {
+        // Подождать первые байты: по ним определяется формат
+        match progress.wait_for_bytes(HEADER_LEN as u64, STREAM_START_TIMEOUT) {
+            Available::Data(_) => {}
+            Available::Eof => return Err(AudioError::Engine("загруженный файл пуст".to_string())),
+            Available::Failed(message) => return Err(AudioError::Engine(format!("загрузка не удалась: {message}"))),
+            Available::Cancelled => return Err(AudioError::Engine("загрузка отменена".to_string())),
+            Available::Timeout => return Err(AudioError::Engine("данные не приходят".to_string())),
+        }
+        let hint = dest.extension().map(|e| e.to_string_lossy().to_ascii_lowercase());
+        let reader = GrowingFile::open(part, dest, progress.clone())?;
+        let mp4 = reader.looks_like_mp4();
+        let decoder = build_stream_decoder(reader, mp4, hint.as_deref())?;
+        let total = decoder.total_duration();
+
+        deck.clear();
+        *deck.ctx() = Some(StreamCtx {
+            part: part.to_path_buf(),
+            dest: dest.to_path_buf(),
+            progress: progress.clone(),
+            hint,
+            rebuild_on_seek: mp4,
+            offset: Duration::ZERO,
+        });
+        deck.player.append(AnalyzedSource::new(decoder, self.visualizer.clone()));
+        Ok(total)
+    }
+
+    /// Запускает файл. Возвращает длину трека (Option: у некоторых форматов она неизвестна).
+    /// Это «играть ЭТО прямо сейчас»: предзагруженный следующий трек выбрасывается
+    /// (он готовился для другого порядка событий).
+    pub fn play_file(&self, path: &Path) -> Result<Option<Duration>, AudioError> {
+        let deck = self.active_deck();
+        let total = self.install_file(deck, path)?;
+        self.discard_preloaded();
         self.visualizer.clear();
-        self.player.append(AnalyzedSource::new(decoder, self.visualizer.clone())); // анализировать исходный звук
-        self.player.play();         // снять паузу
+        deck.player.play(); // снять паузу
         Ok(total)
     }
 
@@ -125,57 +207,104 @@ impl AudioPlayer {
         if progress.is_finished() && dest.exists() {
             return self.play_file(dest);
         }
-        // Подождать первые байты: по ним определяется формат
-        match progress.wait_for_bytes(HEADER_LEN as u64, STREAM_START_TIMEOUT) {
-            Available::Data(_) => {}
-            Available::Eof => return Err(AudioError::Engine("загруженный файл пуст".to_string())),
-            Available::Failed(message) => return Err(AudioError::Engine(format!("загрузка не удалась: {message}"))),
-            Available::Cancelled => return Err(AudioError::Engine("загрузка отменена".to_string())),
-            Available::Timeout => return Err(AudioError::Engine("данные не приходят".to_string())),
-        }
-        let hint = dest.extension().map(|e| e.to_string_lossy().to_ascii_lowercase());
-        let reader = GrowingFile::open(part, dest, progress.clone())?;
-        let mp4 = reader.looks_like_mp4();
-        let decoder = build_stream_decoder(reader, mp4, hint.as_deref())?;
-        let total = decoder.total_duration();
-
-        *self.stream_ctx() = Some(StreamCtx {
-            part: part.to_path_buf(),
-            dest: dest.to_path_buf(),
-            progress: progress.clone(),
-            hint,
-            rebuild_on_seek: mp4,
-            offset: Duration::ZERO,
-        });
-        self.player.clear();
+        let deck = self.active_deck();
+        let total = self.install_stream(deck, part, dest, progress)?;
+        self.discard_preloaded();
         self.visualizer.clear();
-        self.player.append(AnalyzedSource::new(decoder, self.visualizer.clone()));
-        self.player.play();
+        deck.player.play();
         Ok(total)
     }
 
-    pub fn pause(&self) { self.player.pause(); }
-    pub fn resume(&self) { self.player.play(); }
+    // ----- предзагрузка следующего трека во вторую деку -----
+
+    /// Готовит файл во второй деке: он стоит на паузе, не звучит и не двигается
+    /// (на паузе источник не читается), а играющий трек не затрагивается.
+    /// Старая предзагрузка заменяется. Громкость второй деки сначала равна громкости
+    /// активной; `set_preload_volume` меняет её до переключения.
+    pub fn preload_file(&self, path: &Path) -> Result<Option<Duration>, AudioError> {
+        let idle = self.idle_deck();
+        let total = self.install_file(idle, path)?;
+        idle.player.set_volume(self.active_deck().player.volume());
+        Ok(total)
+    }
+
+    /// То же для докачиваемого файла (см. `play_stream`).
+    pub fn preload_stream(
+        &self,
+        part: &Path,
+        dest: &Path,
+        progress: &DownloadProgress,
+    ) -> Result<Option<Duration>, AudioError> {
+        if progress.is_finished() && dest.exists() {
+            return self.preload_file(dest);
+        }
+        let idle = self.idle_deck();
+        let total = self.install_stream(idle, part, dest, progress)?;
+        idle.player.set_volume(self.active_deck().player.volume());
+        Ok(total)
+    }
+
+    /// Есть ли подготовленный трек во второй деке?
+    pub fn has_preloaded(&self) -> bool {
+        !self.idle_deck().player.empty()
+    }
+
+    /// Громкость предзагруженного трека (например, с его усилением нормализации).
+    pub fn set_preload_volume(&self, volume: f32) {
+        self.idle_deck().player.set_volume(volume);
+    }
+
+    /// Выбросить предзагруженный трек.
+    pub fn discard_preloaded(&self) {
+        let idle = self.idle_deck();
+        if !idle.player.empty() || idle.ctx().is_some() {
+            idle.clear();
+        }
+    }
+
+    /// Переключиться на предзагруженный трек: текущий убирается, подготовленный становится
+    /// активным. Пауза сохраняется (стояли на паузе, останемся на паузе, играли, играем).
+    /// Без предзагрузки ничего не делает и возвращает `false`.
+    pub fn switch_to_preloaded(&self) -> bool {
+        if !self.has_preloaded() {
+            return false;
+        }
+        let old = self.active_index();
+        let was_paused = self.decks[old].player.is_paused();
+        self.decks[old].clear(); // старый трек замолкает
+        self.active.store(1 - old, Ordering::Release);
+        self.visualizer.clear();
+        if !was_paused {
+            self.decks[1 - old].player.play();
+        }
+        true
+    }
+
+    pub fn pause(&self) { self.active_deck().player.pause(); }
+    pub fn resume(&self) { self.active_deck().player.play(); }
     pub fn stop(&self) {
-        *self.stream_ctx() = None;
-        self.player.clear();
+        // Стоп убирает всё: и играющий трек, и предзагруженный
+        for deck in &self.decks {
+            deck.clear();
+        }
         self.visualizer.clear();
     }
-    pub fn is_paused(&self) -> bool { self.player.is_paused() }
+    pub fn is_paused(&self) -> bool { self.active_deck().player.is_paused() }
 
     /// Трек доиграл (или ничего не загружено)?
-    pub fn is_finished(&self) -> bool { self.player.empty() }
+    pub fn is_finished(&self) -> bool { self.active_deck().player.empty() }
 
     /// Громкость: 1.0 = как в файле, 0.5 = вдвое тише.
     pub fn set_volume(&self, volume: f32) {
         // Визуализатор от громкости не зависит: он анализирует звук ДО ползунка громкости.
-        self.player.set_volume(volume);
+        self.active_deck().player.set_volume(volume);
     }
 
     /// Текущая позиция воспроизведения.
     pub fn position(&self) -> Duration {
-        let offset = self.stream_ctx().as_ref().map_or(Duration::ZERO, |c| c.offset);
-        self.player.get_pos() + offset
+        let deck = self.active_deck();
+        let offset = deck.ctx().as_ref().map_or(Duration::ZERO, |c| c.offset);
+        deck.player.get_pos() + offset
     }
 
     /// Перемотка на указанную позицию.
@@ -186,25 +315,26 @@ impl AudioPlayer {
     /// а на более далёкую перемотку отвечает «успехом», после которого звук просто кончается.
     /// Перематывать дальше скачанного нельзя: вызов будет ждать данные (см. `play_stream`).
     pub fn seek(&self, pos: Duration) -> Result<(), AudioError> {
-        let rebuild = self.stream_ctx().as_ref().and_then(|c| {
+        let deck = self.active_deck();
+        let rebuild = deck.ctx().as_ref().and_then(|c| {
             c.rebuild_on_seek.then(|| (c.part.clone(), c.dest.clone(), c.progress.clone(), c.hint.clone()))
         });
         let Some((part, dest, progress, hint)) = rebuild else {
-            self.player.try_seek(pos)?;
+            deck.player.try_seek(pos)?;
             return Ok(());
         };
 
         let reader = GrowingFile::open(&part, &dest, progress)?;
         let mut decoder = build_stream_decoder(reader, true, hint.as_deref())?;
         decoder.try_seek(pos)?; // читает данные вперёд до нужного места
-        let was_paused = self.player.is_paused();
-        self.player.clear(); // заодно ставит на паузу
+        let was_paused = deck.player.is_paused();
+        deck.player.clear(); // заодно ставит на паузу
         self.visualizer.clear();
-        self.player.append(AnalyzedSource::new(decoder, self.visualizer.clone()));
+        deck.player.append(AnalyzedSource::new(decoder, self.visualizer.clone()));
         if !was_paused {
-            self.player.play();
+            deck.player.play();
         }
-        if let Some(ctx) = self.stream_ctx().as_mut() {
+        if let Some(ctx) = deck.ctx().as_mut() {
             ctx.offset = pos;
         }
         Ok(())
@@ -372,6 +502,146 @@ mod stream_tests {
             // допуск: кадры AAC по 1024 сэмпла, перемотка попадает на границу кадра
             assert!((left - expected).abs() <= 2100.0, "после перемотки на {secs} с осталось {left}, ждали около {expected}");
         }
+    }
+
+    // ----- две деки: предзагрузка и переключение -----
+
+    fn device() -> Option<AudioPlayer> {
+        match AudioPlayer::new() {
+            Ok(player) => Some(player),
+            Err(_) => {
+                eprintln!("тест пропущен: нет звукового устройства");
+                None
+            }
+        }
+    }
+
+    fn wav_file(dir: &TempDir, name: &str, seconds: u32) -> PathBuf {
+        let path = dir.0.join(name);
+        fs::write(&path, sine_wav(seconds)).unwrap();
+        path
+    }
+
+    #[test]
+    fn preload_leaves_active_track_alone_and_does_not_advance() {
+        let Some(player) = device() else { return };
+        let dir = TempDir::new("preload");
+        let (a, b) = (wav_file(&dir, "a.wav", 30), wav_file(&dir, "b.wav", 5));
+        player.play_file(&a).unwrap();
+        player.pause();
+        assert!(!player.has_preloaded());
+
+        let total = player.preload_file(&b).unwrap().expect("длина WAV известна");
+        assert!(total >= Duration::from_millis(4900) && total <= Duration::from_millis(5100), "{total:?}");
+        assert!(player.has_preloaded());
+        assert!(player.is_paused(), "активный трек должен остаться на паузе");
+        assert!(!player.is_finished(), "активный трек не тронут");
+
+        // Предзагруженная дека на паузе не читает источник: за это время она не уходит вперёд.
+        thread::sleep(Duration::from_millis(300));
+        assert!(player.idle_deck().player.is_paused());
+        assert_eq!(player.idle_deck().player.get_pos(), Duration::ZERO);
+        assert!(!player.idle_deck().player.empty());
+    }
+
+    #[test]
+    fn switch_makes_preloaded_active_and_keeps_pause() {
+        let Some(player) = device() else { return };
+        let dir = TempDir::new("switch");
+        let (a, b) = (wav_file(&dir, "a.wav", 30), wav_file(&dir, "b.wav", 5));
+        player.play_file(&a).unwrap();
+        player.pause();
+        player.preload_file(&b).unwrap();
+        let old = player.active_index();
+
+        assert!(player.switch_to_preloaded());
+        assert_eq!(player.active_index(), 1 - old);
+        assert!(!player.has_preloaded(), "после переключения предзагрузки нет");
+        assert!(player.decks[old].player.empty(), "старый трек убран");
+        assert!(player.is_paused(), "пауза сохраняется");
+        assert!(!player.is_finished(), "новый трек загружен в активную деку");
+        assert_eq!(player.position(), Duration::ZERO);
+    }
+
+    #[test]
+    fn switch_keeps_playing_state() {
+        let Some(player) = device() else { return };
+        let dir = TempDir::new("switch-play");
+        let (a, b) = (wav_file(&dir, "a.wav", 30), wav_file(&dir, "b.wav", 30));
+        player.play_file(&a).unwrap();
+        player.preload_file(&b).unwrap();
+        assert!(player.switch_to_preloaded());
+        assert!(!player.is_paused(), "играли, значит играем");
+    }
+
+    #[test]
+    fn switch_without_preload_does_nothing() {
+        let Some(player) = device() else { return };
+        let dir = TempDir::new("switch-none");
+        player.play_file(&wav_file(&dir, "a.wav", 30)).unwrap();
+        player.pause();
+        let old = player.active_index();
+        assert!(!player.switch_to_preloaded());
+        assert_eq!(player.active_index(), old);
+        assert!(!player.is_finished());
+    }
+
+    #[test]
+    fn play_file_and_stop_discard_preloaded() {
+        let Some(player) = device() else { return };
+        let dir = TempDir::new("discard");
+        let (a, b, c) = (wav_file(&dir, "a.wav", 30), wav_file(&dir, "b.wav", 30), wav_file(&dir, "c.wav", 30));
+        player.play_file(&a).unwrap();
+        player.preload_file(&b).unwrap();
+        player.play_file(&c).unwrap(); // явный запуск другого трека: предзагрузка устарела
+        assert!(!player.has_preloaded());
+
+        player.preload_file(&b).unwrap();
+        player.stop();
+        assert!(!player.has_preloaded());
+        assert!(player.is_finished());
+    }
+
+    #[test]
+    fn failed_preload_changes_nothing() {
+        let Some(player) = device() else { return };
+        let dir = TempDir::new("bad");
+        let (a, b) = (wav_file(&dir, "a.wav", 30), wav_file(&dir, "b.wav", 30));
+        player.play_file(&a).unwrap();
+        player.pause();
+        player.preload_file(&b).unwrap();
+        assert!(player.preload_file(&dir.0.join("нет-такого.wav")).is_err());
+        assert!(player.has_preloaded(), "прежняя предзагрузка осталась");
+        assert!(!player.is_finished(), "активный трек не тронут");
+    }
+
+    #[test]
+    fn preloaded_stream_keeps_seeking_after_switch() {
+        let Some(player) = device() else { return };
+        let dir = TempDir::new("preload-stream");
+        let a = wav_file(&dir, "a.wav", 30);
+        let part = dir.0.join("p.m4a.part");
+        let dest = dir.0.join("p.m4a");
+        File::create(&part).unwrap();
+        let progress = DownloadProgress::new();
+        let writer = spawn_writer(part.clone(), FMP4.to_vec(), progress.clone(), 2000, 1);
+        assert!(matches!(progress.wait_for_bytes(4000, Duration::from_secs(5)), Available::Data(_)));
+
+        player.play_file(&a).unwrap();
+        player.pause();
+        player.preload_stream(&part, &dest, &progress).unwrap();
+        assert!(player.has_preloaded());
+        assert!(player.idle_deck().ctx().is_some(), "данные докачки лежат в предзагруженной деке");
+        assert!(player.switch_to_preloaded());
+        assert!(player.active_deck().ctx().is_some(), "и переехали вместе с ней");
+
+        // перемотка работает через пересборку по данным уже новой активной деки
+        writer.join().unwrap();
+        player.seek(Duration::from_secs(2)).unwrap();
+        let pos = player.position();
+        assert!(pos >= Duration::from_secs(2) && pos < Duration::from_secs(3), "{pos:?}");
+        assert!(player.is_paused());
+        player.stop();
     }
 
     #[test]
