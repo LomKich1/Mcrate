@@ -5,6 +5,7 @@ pub mod queue;
 pub use queue::{PlayQueue, RepeatMode}; // чтобы писать mcrate_audio::PlayQueue
 pub mod engine;
 pub use engine::{PlaybackEngine, PlaybackEvent, PlaybackState};
+mod gain; // усиление нормализации на уровне источника: у каждого трека своё (внутренний)
 mod growing_file; // чтение файла, который ещё докачивается (внутренний)
 mod loudness; // измерение громкости трека по EBU R128 (внутренний)
 mod normalize; // нормализация громкости: настройки, усиление, плавная смена
@@ -27,6 +28,7 @@ use mcrate_net::{Available, DownloadProgress};
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use thiserror::Error;
 
+use crate::gain::{GainSource, TrackGain};
 use crate::growing_file::{GrowingFile, HEADER_LEN};
 use crate::visualizer::{AnalyzedSource, VisualizerFeed};
 
@@ -50,19 +52,33 @@ pub enum AudioError {
 /// (предзагрузка) и потом переключиться на него без паузы или наложить кроссфейдом.
 struct Deck {
     player: Player,
+    /// Усиление нормализации для трека в этой деке. Ручка вшита в источник (`GainSource`):
+    /// громкость `Player` это ползунок пользователя, а усиление трека живёт здесь. Не сбрасывается
+    /// при очистке деки: движок выставляет его ДО запуска нового трека, чтобы первые такты
+    /// звучали как надо.
+    gain: TrackGain,
     /// Some(...) = в деке играет файл, который ещё докачивается (см. `play_stream`).
     stream: Mutex<Option<StreamCtx>>,
 }
 
 impl Deck {
     fn new(sink: &MixerDeviceSink) -> Self {
-        Self { player: Player::connect_new(sink.mixer()), stream: Mutex::new(None) }
+        Self { player: Player::connect_new(sink.mixer()), gain: TrackGain::new(1.0), stream: Mutex::new(None) }
     }
 
     /// Доступ к данным докачиваемого файла. Если другой поток упал с паникой, держа замок,
     /// данные всё равно годятся.
     fn ctx(&self) -> MutexGuard<'_, Option<StreamCtx>> {
         self.stream.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Поставить источник в очередь деки: сначала анализатор спектра (он видит исходный звук),
+    /// затем усиление нормализации, затем громкость `Player` (ползунок).
+    fn append<S>(&self, source: S, visualizer: &VisualizerFeed)
+    where
+        S: Source<Item = f32> + Send + 'static,
+    {
+        self.player.append(GainSource::new(AnalyzedSource::new(source, visualizer.clone()), self.gain.clone()));
     }
 
     /// Убрать из деки всё, что в ней есть (заодно ставит её на паузу).
@@ -134,7 +150,7 @@ impl AudioPlayer {
         let total = decoder.total_duration();
 
         deck.clear(); // убрать предыдущий трек; это обычный файл, а не докачиваемый
-        deck.player.append(AnalyzedSource::new(decoder, self.visualizer.clone())); // анализировать исходный звук
+        deck.append(decoder, &self.visualizer); // анализатор видит исходный звук
         Ok(total)
     }
 
@@ -169,7 +185,7 @@ impl AudioPlayer {
             rebuild_on_seek: mp4,
             offset: Duration::ZERO,
         });
-        deck.player.append(AnalyzedSource::new(decoder, self.visualizer.clone()));
+        deck.append(decoder, &self.visualizer);
         Ok(total)
     }
 
@@ -249,9 +265,14 @@ impl AudioPlayer {
         !self.idle_deck().player.empty()
     }
 
-    /// Громкость предзагруженного трека (например, с его усилением нормализации).
+    /// Громкость ползунка для предзагруженного трека (после переключения он должен звучать так же).
     pub fn set_preload_volume(&self, volume: f32) {
         self.idle_deck().player.set_volume(volume);
+    }
+
+    /// Усиление нормализации предзагруженного трека (см. `set_gain`).
+    pub fn set_preload_gain(&self, gain: f32) {
+        self.idle_deck().gain.set(gain);
     }
 
     /// Выбросить предзагруженный трек.
@@ -294,10 +315,21 @@ impl AudioPlayer {
     /// Трек доиграл (или ничего не загружено)?
     pub fn is_finished(&self) -> bool { self.active_deck().player.empty() }
 
-    /// Громкость: 1.0 = как в файле, 0.5 = вдвое тише.
+    /// Громкость ползунка пользователя: 1.0 = как в файле, 0.5 = вдвое тише.
     pub fn set_volume(&self, volume: f32) {
         // Визуализатор от громкости не зависит: он анализирует звук ДО ползунка громкости.
         self.active_deck().player.set_volume(volume);
+    }
+
+    /// Усиление нормализации играющего трека (1.0 = без изменений). Отдельно от ползунка:
+    /// итоговая громкость = ползунок × усиление. Действует с ближайшего сэмпла.
+    pub fn set_gain(&self, gain: f32) {
+        self.active_deck().gain.set(gain);
+    }
+
+    /// Усиление, которое сейчас применено к играющему треку.
+    pub fn gain(&self) -> f32 {
+        self.active_deck().gain.get()
     }
 
     /// Текущая позиция воспроизведения.
@@ -330,7 +362,7 @@ impl AudioPlayer {
         let was_paused = deck.player.is_paused();
         deck.player.clear(); // заодно ставит на паузу
         self.visualizer.clear();
-        deck.player.append(AnalyzedSource::new(decoder, self.visualizer.clone()));
+        deck.append(decoder, &self.visualizer);
         if !was_paused {
             deck.player.play();
         }

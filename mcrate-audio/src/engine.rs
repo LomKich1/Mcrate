@@ -757,12 +757,17 @@ impl Worker {
         self.drop_preload(); // следующий трек теперь может быть другим; sync_preload подготовит заново
     }
 
-    /// Выставить громкость плеера: ползунок пользователя, умноженный на усиление нормализации.
+    /// Выставить громкость: ползунок пользователя на плеере и усиление нормализации в источнике
+    /// (итоговая громкость = ползунок × усиление). Заодно то же для готового следующего трека.
     fn apply_volume(&self) {
-        self.player.set_volume(self.volume * self.normalizer.gain());
+        // Ползунок на плеере, усиление нормализации в источнике (см. `gain.rs`): итог тот же,
+        // но у каждого трека своё усиление
+        self.player.set_volume(self.volume);
+        self.player.set_gain(self.normalizer.gain());
         // Следующий трек (если он готов во второй деке) звучит со своим усилением и тем же ползунком
         if let Some(Preload { key, state: PreloadState::Ready { .. } }) = &self.preload {
-            self.player.set_preload_volume(self.volume * self.normalizer.gain_for_key(key));
+            self.player.set_preload_volume(self.volume);
+            self.player.set_preload_gain(self.normalizer.gain_for_key(key));
         }
     }
 
@@ -990,7 +995,8 @@ impl Worker {
         self.cancel_loading(); // номер запроса вперёд, сброс прошлого трека (предзагрузки уже нет)
         // Усиление ставим ДО переключения, чтобы первые такты звучали как надо
         self.normalizer.begin_track(key);
-        self.player.set_preload_volume(self.volume * self.normalizer.gain());
+        self.player.set_preload_volume(self.volume);
+        self.player.set_preload_gain(self.normalizer.gain());
         if !self.player.switch_to_preloaded() {
             return false;
         }
@@ -1035,7 +1041,7 @@ impl Worker {
                 .as_ref()
                 .filter(|p| !p.is_finished())
                 .and_then(|p| p.fraction()),
-            normalization_gain: self.normalizer.gain(),
+            normalization_gain: self.player.gain(), // то, что реально применено к звуку
         };
         *self.state.lock().unwrap() = snapshot; // lock() = взять замок, чтобы записать безопасно
     }
