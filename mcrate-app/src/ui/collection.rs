@@ -7,7 +7,7 @@
 //! хранит только последние 20 треков и списком не отдаётся). История живёт в `Controller::history`
 //! только в рамках сеанса (на диск не пишется: `Track` не умеет сохраняться).
 
-use egui::{RichText, ScrollArea, Sense, Ui, Vec2};
+use egui::{Align, Layout, RichText, ScrollArea, Sense, Ui, Vec2, vec2};
 use mcrate_core::Track;
 
 use super::layout::{bleed_clip, centered_column, pane_scroll, scroll_end_padding, TRACK_LIST_MAX_WIDTH};
@@ -143,26 +143,85 @@ impl McrateApp {
         );
     }
 
-    /// Подэкран-заглушка: заголовок с кнопкой «назад» и пустое состояние по центру.
+    /// Пустой экран коллекции в той же двухколоночной компоновке, что и страницы плейлистов.
     fn collection_stub(&mut self, ui: &mut Ui, theme: &Theme, title: &str, icon: Icon, headline: &str, text: &str) {
         let p = &theme.palette;
         centered_column(ui, f32::INFINITY, |ui| {
-            if settings_header(ui, theme, title) {
+            if settings_header(ui, theme, "Библиотека") {
                 self.view = View::Collection;
             }
-            ui.vertical_centered(|ui| {
-                ui.add_space(((ui.available_height() - self.bottom_inset).max(1.0) * 0.22).max(16.0));
-                let (rect, _) = ui.allocate_exact_size(Vec2::splat(88.0), Sense::hover());
-                if theme.glass_active() {
+            ui.add_space(14.0);
+
+            // Liquid Glass сохраняет прежнюю компактную заглушку. Material 3 использует
+            // тот же левый блок коллекции и правую область, что и «Ваши загрузки».
+            if theme.glass_active() {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(((ui.available_height() - self.bottom_inset).max(1.0) * 0.22).max(16.0));
+                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(88.0), Sense::hover());
                     ui.painter().circle_stroke(rect.center(), 42.0, egui::Stroke::new(0.9, with_alpha(p.on_surface, 46)));
                     icons::paint(theme, ui.painter(), icon, rect.center(), 40.0, p.on_surface);
+                    ui.add_space(14.0);
+                    ui.label(RichText::new(headline).size(20.0).strong());
+                    ui.label(RichText::new(text).size(14.0).color(p.on_surface_variant));
+                });
+                return;
+            }
+
+            centered_column(ui, 1360.0, |ui| {
+                let split = ui.available_width() >= 920.0;
+                if split {
+                    let available_h = ui.available_height();
+                    ui.horizontal_top(|ui| {
+                        ui.allocate_ui_with_layout(
+                            vec2(292.0, available_h),
+                            Layout::top_down(Align::Center),
+                            |ui| {
+                                ui.add_space(12.0);
+                                let (rect, _) = ui.allocate_exact_size(Vec2::splat(252.0), Sense::hover());
+                                ui.painter().rect_filled(rect, theme.shape_radius(crate::theme::ShapeRole::Large), p.surface_container_high);
+                                icons::paint(theme, ui.painter(), icon, rect.center(), 104.0, p.on_surface_variant);
+                                ui.add_space(18.0);
+                                ui.label(RichText::new(title).size(theme.text_size(crate::theme::TextRole::HeadlineSmall)).strong());
+                                ui.add_space(6.0);
+                                ui.label(RichText::new("Коллекция Mcrate").size(13.0).color(p.on_surface_variant));
+                                ui.add_space(8.0);
+                                ui.label(RichText::new("Пока нет сохранённых элементов").size(13.0).color(p.on_surface_variant));
+                            },
+                        );
+                        ui.add_space(28.0);
+                        ui.allocate_ui_with_layout(
+                            vec2(ui.available_width(), available_h),
+                            Layout::top_down(Align::Center),
+                            |ui| {
+                                ui.add_space((ui.available_height() * 0.24).max(20.0));
+                                let (rect, _) = ui.allocate_exact_size(Vec2::splat(64.0), Sense::hover());
+                                icons::paint(theme, ui.painter(), icon, rect.center(), 42.0, p.on_surface_variant);
+                                ui.add_space(12.0);
+                                ui.label(RichText::new(headline).size(20.0).strong());
+                                ui.add_space(5.0);
+                                ui.add(egui::Label::new(
+                                    RichText::new(text).size(14.0).color(p.on_surface_variant),
+                                ).wrap());
+                            },
+                        );
+                    });
                 } else {
-                    ui.painter().circle_filled(rect.center(), 44.0, theme.tonal_fill());
-                    icons::paint(theme, ui.painter(), icon, rect.center(), 40.0, theme.on_tonal());
+                    ui.horizontal(|ui| {
+                        let (rect, _) = ui.allocate_exact_size(Vec2::splat(88.0), Sense::hover());
+                        ui.painter().rect_filled(rect, theme.shape_radius(crate::theme::ShapeRole::Medium), p.surface_container_high);
+                        icons::paint(theme, ui.painter(), icon, rect.center(), 42.0, p.on_surface_variant);
+                        ui.add_space(14.0);
+                        ui.vertical(|ui| {
+                            ui.label(RichText::new(title).size(theme.text_size(crate::theme::TextRole::TitleLarge)).strong());
+                            ui.label(RichText::new("Коллекция Mcrate").size(13.0).color(p.on_surface_variant));
+                        });
+                    });
+                    ui.add_space(24.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(RichText::new(headline).size(20.0).strong());
+                        ui.add(egui::Label::new(RichText::new(text).size(14.0).color(p.on_surface_variant)).wrap());
+                    });
                 }
-                ui.add_space(14.0);
-                ui.label(RichText::new(headline).size(20.0).strong());
-                ui.label(RichText::new(text).size(14.0).color(p.on_surface_variant));
             });
         });
     }

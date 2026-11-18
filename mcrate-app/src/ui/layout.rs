@@ -78,6 +78,10 @@ pub const SETTINGS_CONTENT_MAX_WIDTH: f32 = 960.0;
 /// Максимальная ширина списков треков. Это сохраняет плотную читаемую колонку на широких окнах.
 pub const TRACK_LIST_MAX_WIDTH: f32 = 920.0;
 
+/// Множитель прокрутки обычного колеса мыши для основных страниц.
+/// 1.0 — стандарт egui, 1.5 — в полтора раза быстрее, 2.0 — вдвое быстрее.
+pub const WHEEL_SCROLL_MULTIPLIER: f32 = 1.5;
+
 /// Колонка элементов настроек. Ограничивается только содержимое: родительская панель
 /// и её ScrollArea остаются полноширинными. На узком окне centered_column автоматически
 /// использует всю доступную ширину, а на широком центрирует контент с заданным максимумом.
@@ -153,7 +157,12 @@ pub fn pane_scroll<R>(
 ) -> R {
     let (scroll_rect, margin) = pane_scroll_geometry(ui.available_rect_before_wrap(), bleed);
     ui.scope_builder(UiBuilder::new().max_rect(scroll_rect).layout(Layout::top_down(Align::Min)), |ui| {
-        show(area.content_margin(margin), ui)
+        show(
+            area
+                .wheel_scroll_multiplier(vec2(WHEEL_SCROLL_MULTIPLIER, WHEEL_SCROLL_MULTIPLIER))
+                .content_margin(margin),
+            ui,
+        )
     })
     .inner
 }

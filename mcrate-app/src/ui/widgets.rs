@@ -18,15 +18,15 @@ const SEARCH_TEXT_SHIFT: i8 = 0;
 /// (Шрифт сажает буквы ниже центра строки; `margin` здесь не работает: при `Frame::NONE` он игнорируется.)
 const M3_SEARCH_TEXT_LIFT: f32 = 5.0;
 
-/// Максимальная ширина поиска Material 3 на главной и в библиотеке (поле по центру колонки).
+/// Максимальная ширина поиска Material 3 в зависимости от размера окна.
 const M3_SEARCH_MAX_WIDTH: f32 = 760.0;
 
 fn search_text_margin() -> Margin {
     Margin { left: 0, right: 0, top: SEARCH_TEXT_SHIFT * 2, bottom: 0 }
 }
 
-/// Общая поисковая строка для главной и библиотеки. Геометрия одинакова,
-/// а экран может задавать собственную подсказку и обработку Enter.
+/// Общая поисковая строка для всех экранов. Геометрия одинакова,
+/// а экран задаёт собственную подсказку и обработку Enter.
 pub fn search_bar(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str) -> Response {
     let max_width = match Breakpoint::from_width(ui.ctx().viewport_rect().width()) {
         Breakpoint::Compact => 560.0,
@@ -34,12 +34,6 @@ pub fn search_bar(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str) ->
         Breakpoint::Expanded => 1120.0,
     };
     search_bar_with_max_width(ui, theme, value, hint, max_width)
-}
-
-/// Поиск на всю ширину колонки: левый край совпадает с заголовком экрана, правый с краем списка.
-/// В Liquid Glass поле и так занимает всю ширину, отличие только в Material 3.
-pub fn search_bar_full(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str) -> Response {
-    search_bar_with_max_width(ui, theme, value, hint, f32::INFINITY)
 }
 
 fn search_bar_with_max_width(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str, max_width: f32) -> Response {
@@ -167,9 +161,7 @@ fn search_bar_with_max_width(ui: &mut Ui, theme: &Theme, value: &mut String, hin
         let clear_resp = ui.interact(clear_rect, ui.make_persistent_id(("mcrate_search_clear", hint)), Sense::click());
         let clear_rect = squish(ui, clear_resp.id, &clear_resp, clear_rect, 0.06, 0.06);
         let color = if clear_resp.hovered() { p.on_surface } else { p.on_surface_variant };
-        if clear_resp.hovered() {
-            ui.painter().circle_filled(clear_rect.center(), 12.0, with_alpha(p.on_surface, 20));
-        }
+        super::ripple::state_layer(ui, theme, ui.painter(), &clear_resp, clear_rect, 14.0, p.on_surface, 20, 31);
         let c = clear_rect.center();
         let d = 4.0;
         ui.painter().line_segment([pos2(c.x - d, c.y - d), pos2(c.x + d, c.y + d)], Stroke::new(1.6, color));
@@ -219,9 +211,10 @@ pub fn status_snackbar(ui: &mut Ui, theme: &Theme, message: &str) -> bool {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let (base_rect, response) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click());
                     let rect = squish(ui, response.id, &response, base_rect, 0.06, 0.06);
-                    if response.hovered() {
-                        ui.painter().circle_filled(rect.center(), 15.0, with_alpha(p.inverse_on_surface, 20));
-                    }
+                    super::ripple::state_layer_colored(
+                        ui, theme, ui.painter(), &response, rect, 15.0,
+                        p.inverse_on_surface, 20, 31,
+                    );
                     icons::paint(theme, ui.painter(), Icon::Close, rect.center(), 18.0, p.inverse_primary);
                     ui.add(
                         egui::Label::new(
@@ -1073,17 +1066,24 @@ pub fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track, is_cur
     let show_index = theme.glass_active() || row_width >= 460.0;
     let cover_size = if theme.glass_active() || compact { 40.0 } else { 48.0 };
     let (rect, resp) = ui.allocate_exact_size(vec2(row_width, row_height), Sense::click());
-    // Подсветку под курсором рисует список (`glide_end`: она скользит между строками); здесь только сжатие при нажатии.
+    // Подсветку и pressed-state в Material 3 уже рисует общий glide/ripple списка.
+    // Дополнительное сжатие здесь уменьшало только фон текущего трека, тогда как
+    // общий слой оставался исходного размера — получались две вложенные карточки.
+    // В Liquid Glass собственного M3 ripple нет, поэтому там сохраняем squish.
     if !ui.is_rect_visible(rect) {
         return resp; // не в кадре: ничего не считаем и не рисуем
     }
     let id = ui.scope_id().with(("track_row", &track.id));
-    let rect = squish(ui, id, &resp, rect, 0.015, 0.07);
+    let rect = if theme.glass_active() {
+        squish(ui, id, &resp, rect, 0.015, 0.07)
+    } else {
+        rect
+    };
     let painter = ui.painter();
 
-    if resp.is_pointer_button_down_on() && !is_current {
+    if theme.glass_active() && resp.is_pointer_button_down_on() && !is_current {
         let radius = theme.shape_radius(ShapeRole::Large) as f32;
-        painter.rect_filled(rect, radius, with_alpha(p.on_surface, if theme.glass_active() { 20 } else { 28 }));
+        painter.rect_filled(rect, radius, with_alpha(p.on_surface, 20));
     }
     if is_current {
         if theme.glass_active() {

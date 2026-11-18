@@ -405,9 +405,7 @@ fn expander_header(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str, open
         painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(0.7, with_alpha(p.on_surface, 22)));
     } else {
         painter.rect_filled(rect, 16.0, p.surface_container_high);
-        if resp.hovered() {
-            painter.rect_filled(rect, 16.0, theme.row_hover_fill());
-        }
+        super::ripple::state_layer(ui, theme, painter, &resp, rect, 16.0, p.on_surface, 20, 31);
     }
     painter.text(
         pos2(rect.left() + 16.0, rect.center().y - 9.0),
@@ -509,9 +507,7 @@ fn theme_menu_button(ui: &mut Ui, theme: &Theme, label: &str, openness: f32, wid
         painter.rect_stroke(rect, radius, Stroke::new(0.8, with_alpha(theme.palette.on_surface, if openness > 0.01 { 66 } else { 38 })), egui::StrokeKind::Inside);
     } else {
         painter.rect_filled(rect, radius, theme.tonal_fill());
-        if resp.hovered() {
-            painter.rect_filled(rect, radius, theme.row_hover_fill());
-        }
+        super::ripple::state_layer(ui, theme, painter, &resp, rect, MENU_CORNER as f32, theme.palette.on_surface, 20, 31);
     }
     painter.text(pos2(rect.left() + 20.0, rect.center().y), egui::Align2::LEFT_CENTER, label, FontId::proportional(15.0), fg);
 
@@ -539,8 +535,9 @@ fn theme_menu_row(ui: &mut Ui, theme: &Theme, s: &GraphicsSettings, preset: Them
         }
     } else if selected {
         painter.rect_filled(rect, row_radius, with_alpha(fg, 26));
-    } else if resp.hovered() {
-        painter.rect_filled(rect, row_radius, theme.row_hover_fill());
+    }
+    if !theme.glass_active() {
+        super::ripple::state_layer(ui, theme, painter, &resp, rect, row_radius, theme.palette.on_surface, 20, 31);
     }
     // Точка показывает главный цвет самой темы (а не текущей), так темы легко различать.
     let swatch_settings = GraphicsSettings { theme: preset, ..s.clone() };
@@ -584,9 +581,8 @@ pub(super) fn design_card(ui: &mut Ui, theme: &Theme, design: Design, name: &str
         painter.rect_filled(rect, shape, p.surface_container_high);
         if selected {
             painter.rect_stroke(rect, shape, egui::Stroke::new(2.5, p.primary), egui::StrokeKind::Inside);
-        } else if resp.hovered() {
-            painter.rect_filled(rect, shape, theme.row_hover_fill());
         }
+        super::ripple::state_layer(ui, theme, painter, &resp, rect, shape, p.on_surface, 20, 31);
     }
 
     let pv = Rect::from_min_max(rect.min + vec2(12.0, 12.0), pos2(rect.right() - 12.0, rect.bottom() - 42.0));

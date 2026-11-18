@@ -13,13 +13,12 @@
 //! (`loudness::measure_file`, по готовому файлу), и усиление плавно подтягивается к целевой громкости.
 //! Замеры запоминаются на сессию, повторное проигрывание стартует уже с нужным усилением.
 //!
-//! Предзагрузка: когда текущий трек целиком на диске, движок готовит следующий (`queue.peek_next`):
-//! дописывает его в очередь той же деки плеера (`AudioPlayer::queue_next_file`) и заранее мерит его
-//! громкость. Предзагрузка идёт в своём слоте (свой номер запроса `preload_request`) и не мешает
-//! загрузке текущего трека. Когда трек доиграл сам, очередь плеера переходит к следующему в тот же
-//! сэмпл (бесшовно), а движок по `take_transition` узнаёт о стыке и обновляет своё состояние: без
-//! «загрузки» и сразу с нужным усилением. Вторая дека плеера для этого не нужна (она останется для
-//! кроссфейда).
+//! Предзагрузка: когда текущий трек целиком на диске, движок готовит следующий (`queue.peek_next`)
+//! и заранее мерит его громкость. При `crossfade_secs > 0` файл ставится во вторую деку и запускается
+//! с кривой равной мощности перед концом текущего трека; при `crossfade_secs == 0 && gapless` он
+//! дописывается в очередь активной деки для точного стыка. При выключенных обоих режимах следующая
+//! композиция загружается обычным путём только после конца текущей. Онлайн-предзагрузка идёт в
+//! отдельном слоте (`preload_request`) и не мешает загрузке текущего трека.
 
 use std::collections::HashMap;
 use std::fs;
@@ -32,6 +31,7 @@ use std::time::{Duration, Instant};
 use mcrate_core::{MusicProvider, ProviderKind, StreamSource, Track};
 use mcrate_net::{DownloadProgress, StreamDownloader};
 
+use crate::crossfade::fit as fit_crossfade;
 use crate::loudness::{self, Loudness, Measured};
 use crate::normalize::{Normalizer, PlaybackSettings, TrackKey};
 use crate::stream_cache::{part_path, StreamCache};
@@ -377,9 +377,18 @@ enum PreloadState {
     Failed,
 }
 
+/// Где находится предзагруженный трек: в очереди активной деки (gapless) или во второй деке
+/// (кроссфейд). Сохраняем режим в самой предзагрузке: настройки могут измениться до её отмены.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreloadKind {
+    Gapless,
+    Crossfade,
+}
+
 /// Следующий трек, который движок готовит заранее.
 struct Preload {
     key: TrackKey,
+    kind: PreloadKind,
     state: PreloadState,
 }
 
@@ -430,11 +439,16 @@ impl Worker {
             if self.loaded && self.player.take_transition() {
                 self.on_stitched_transition();
             }
+            let dt = self.update_gain();
+            // Плеер сам поставил на паузу обе деки; пока пауза активна, фейд не двигаем.
+            if self.loaded && self.player.is_crossfading() && !self.player.is_paused() {
+                self.player.advance_crossfade(dt);
+            }
             if self.loaded && self.player.is_finished() {
                 self.on_track_finished();
             }
             self.sync_preload();
-            self.update_gain();
+            self.maybe_start_crossfade();
             self.report_stream_error();
             self.publish_state();
         }
@@ -772,9 +786,17 @@ impl Worker {
         // но у каждого трека своё усиление
         self.player.set_volume(self.volume);
         self.player.set_gain(self.normalizer.gain());
-        // Следующий трек (если он уже дописан в очередь) начнёт звучать со своим усилением
-        if let Some(Preload { key, state: PreloadState::Ready { .. } }) = &self.preload {
-            self.player.set_queued_gain(self.normalizer.gain_for_key(key));
+        // Следующий трек начнёт звучать со своим усилением независимо от режима перехода.
+        if let Some(Preload { key, kind, state: PreloadState::Ready { .. } }) = &self.preload {
+            let gain = self.normalizer.gain_for_key(key);
+            match kind {
+                PreloadKind::Gapless => self.player.set_queued_gain(gain),
+                PreloadKind::Crossfade => {
+                    // Обе деки должны получить актуальный ползунок до старта фейда.
+                    self.player.set_preload_volume(self.volume);
+                    self.player.set_preload_gain(gain);
+                }
+            }
         }
     }
 
@@ -785,14 +807,16 @@ impl Worker {
     }
 
     /// Раз в цикл (≈100 мс): плавно подвинуть усиление к цели.
-    fn update_gain(&mut self) {
+    fn update_gain(&mut self) -> Duration {
         let now = Instant::now();
-        // Потолок на случай, если поток надолго «заснул»: усиление не должно прыгнуть разом
+        // Потолок на случай, если поток надолго «заснул»: усиление не должно прыгнуть разом.
+        // Этот же реальный интервал двигает кроссфейд (но только когда он не на паузе).
         let dt = now.duration_since(self.last_gain_tick).min(Duration::from_millis(500));
         self.last_gain_tick = now;
         if self.normalizer.tick(dt).is_some() {
             self.apply_volume();
         }
+        dt
     }
 
     /// Запустить фоновый замер громкости текущего трека, если он нужен и возможен: нормализация
@@ -848,6 +872,20 @@ impl Worker {
     }
 
     fn on_track_finished(&mut self) {
+        // Фейд мог не успеть начаться (очень короткий трек или поздно готовая предзагрузка).
+        // Если следующая дека уже готова, переключаемся на неё без повторного запроса файла.
+        let can_promote = self.queue.peek_next().is_some_and(|next| {
+            self.preload.as_ref().is_some_and(|preload| {
+                preload.key == key_of(next)
+                    && preload.kind == PreloadKind::Crossfade
+                    && matches!(&preload.state, PreloadState::Ready { .. })
+            })
+        });
+        if can_promote && self.player.switch_to_preloaded() {
+            self.on_preloaded_transition(PreloadKind::Crossfade);
+            return;
+        }
+
         self.loaded = false;
         if self.queue.track_finished().is_some() {
             self.play_current();
@@ -857,30 +895,62 @@ impl Worker {
         }
     }
 
-    /// Предзагрузка: следить, чтобы в очереди плеера стоял именно тот трек, что сыграет следующим.
-    /// Зовётся каждый цикл (≈100 мс). Готовим только когда текущий трек целиком на диске: пока он
-    /// докачивается, сеть не делим.
+    /// Какую стратегию предзагрузки требует текущая настройка.
+    fn preload_kind(&self) -> Option<PreloadKind> {
+        let settings = self.normalizer.settings();
+        if !settings.crossfade().is_zero() {
+            Some(PreloadKind::Crossfade)
+        } else if settings.gapless {
+            Some(PreloadKind::Gapless)
+        } else {
+            None
+        }
+    }
+
+    /// Предзагрузка следующего трека. Для кроссфейда готовим вторую деку, для gapless —
+    /// дописываем источник в очередь активной деки. Пока текущий онлайн-трек докачивается,
+    /// сеть не делим. Во время самого фейда вторая дека занята уходящим треком.
     fn sync_preload(&mut self) {
-        // Плеер мог потерять дописанный трек (перемотка пересобрала очередь): считаем предзагрузку сброшенной
-        if matches!(&self.preload, Some(Preload { state: PreloadState::Ready { .. }, .. })) && !self.player.has_queued() {
+        if self.player.is_crossfading() {
+            return;
+        }
+
+        // Перемотка MP4 может пересобрать очередь активной деки и убрать gapless-трек.
+        // Во второй деке наличие предзагрузки проверяется отдельно.
+        let preload_lost = match &self.preload {
+            Some(Preload { kind: PreloadKind::Gapless, state: PreloadState::Ready { .. }, .. }) => {
+                !self.player.has_queued()
+            }
+            Some(Preload { kind: PreloadKind::Crossfade, state: PreloadState::Ready { .. }, .. }) => {
+                !self.player.has_preloaded()
+            }
+            _ => false,
+        };
+        if preload_lost {
             self.drop_preload();
         }
-        let wanted = if self.loaded && !self.loading && self.playing_file.is_some() {
+
+        let kind = self.preload_kind();
+        let wanted = if self.loaded && !self.loading && self.playing_file.is_some() && kind.is_some() {
             self.queue.peek_next().cloned()
         } else {
             None
         };
         let wanted_key = wanted.as_ref().map(key_of);
-        if self.preload.as_ref().map(|p| &p.key) == wanted_key.as_ref() {
-            return; // уже готовим (или уже готов, или не удался) именно этот трек
+        let preload_matches = self.preload.as_ref().is_some_and(|p| {
+            Some(&p.key) == wanted_key.as_ref() && Some(p.kind) == kind
+        });
+        if preload_matches || (self.preload.is_none() && wanted_key.is_none()) {
+            return; // уже готовим нужный трек или сейчас предзагрузка не требуется
         }
+
         self.drop_preload();
-        if let Some(track) = wanted {
-            self.start_preload(track);
+        if let (Some(track), Some(kind)) = (wanted, kind) {
+            self.start_preload(track, kind);
         }
     }
 
-    /// Выбросить предзагрузку: отменить скачивание и замер, отменить дописанный в очередь трек.
+    /// Выбросить предзагрузку: отменить скачивание и замер; удалить её из нужного места.
     fn drop_preload(&mut self) {
         if let Some(task) = self.preload_task.take() {
             task.abort(); // DownloadGuard внутри задачи прервёт скачивание и уберёт `.part`
@@ -889,16 +959,21 @@ impl Worker {
             cancel.store(true, Ordering::Relaxed);
         }
         self.preload_request += 1; // поздние ответы этой предзагрузки станут устаревшими
-        if let Some(Preload { state: PreloadState::Ready { .. }, .. }) = self.preload.take() {
-            self.player.cancel_queued();
+        if let Some(preload) = self.preload.take() {
+            if matches!(&preload.state, PreloadState::Ready { .. }) {
+                match preload.kind {
+                    PreloadKind::Gapless => self.player.cancel_queued(),
+                    PreloadKind::Crossfade => self.player.discard_preloaded(),
+                }
+            }
         }
     }
 
-    /// Начать подготовку следующего трека. Локальный дописывается в очередь сразу,
-    /// онлайн скачивается в фоне целиком (ответ придёт командой `PreloadFinished`).
-    fn start_preload(&mut self, track: Track) {
+    /// Начать подготовку следующего трека. Локальный трек готовится сразу, онлайн скачивается
+    /// в фоне целиком (ответ придёт командой `PreloadFinished`).
+    fn start_preload(&mut self, track: Track, kind: PreloadKind) {
         let key = key_of(&track);
-        let failed = Preload { key: key.clone(), state: PreloadState::Failed };
+        let failed = Preload { key: key.clone(), kind, state: PreloadState::Failed };
         let Some(provider) = self.providers.get(&track.provider).cloned() else {
             self.preload = Some(failed);
             return;
@@ -906,10 +981,10 @@ impl Worker {
 
         if track.provider == ProviderKind::Local {
             let state = match self.runtime.block_on(provider.get_stream(&track)) {
-                Ok(StreamSource::LocalFile(path)) => self.install_preload(&path),
+                Ok(StreamSource::LocalFile(path)) => self.install_preload(&path, kind),
                 _ => PreloadState::Failed,
             };
-            self.preload = Some(Preload { key, state });
+            self.preload = Some(Preload { key, kind, state });
             self.after_preload_ready();
             return;
         }
@@ -924,12 +999,16 @@ impl Worker {
         let guard = LoadGuard { tx: self.commands_tx.clone(), request: self.preload_request, sent: false, preload: true };
         let handle = self.runtime.spawn(run_load(provider, downloader, self.cache.clone(), track, guard));
         self.preload_task = Some(handle);
-        self.preload = Some(Preload { key, state: PreloadState::Loading });
+        self.preload = Some(Preload { key, kind, state: PreloadState::Loading });
     }
 
-    /// Дописать готовый файл в очередь плеера. Битый файл из нашего кэша удаляем (как для текущего трека).
-    fn install_preload(&mut self, path: &std::path::Path) -> PreloadState {
-        match self.player.queue_next_file(path) {
+    /// Установить готовый файл в нужный режим предзагрузки. Битый файл из кэша удаляем.
+    fn install_preload(&mut self, path: &std::path::Path, kind: PreloadKind) -> PreloadState {
+        let result = match kind {
+            PreloadKind::Gapless => self.player.queue_next_file(path),
+            PreloadKind::Crossfade => self.player.preload_file(path),
+        };
+        match result {
             Ok(duration) => PreloadState::Ready { path: path.to_path_buf(), duration },
             Err(_) => {
                 if self.cache.contains(path) {
@@ -946,11 +1025,13 @@ impl Worker {
             return; // следующий трек уже другой
         }
         self.preload_task = None;
-        if !matches!(self.preload, Some(Preload { state: PreloadState::Loading, .. })) {
+        let Some(kind) = self.preload.as_ref().and_then(|p| {
+            matches!(&p.state, PreloadState::Loading).then_some(p.kind)
+        }) else {
             return;
-        }
+        };
         let state = match result {
-            Ok(path) => self.install_preload(&path),
+            Ok(path) => self.install_preload(&path, kind),
             Err(_) => PreloadState::Failed,
         };
         if let Some(preload) = self.preload.as_mut() {
@@ -959,11 +1040,11 @@ impl Worker {
         self.after_preload_ready();
     }
 
-    /// Следующий трек дописан в очередь: выставить его усиление и при нужде измерить его заранее.
+    /// Следующий трек готов: выставить его индивидуальное усиление и при нужде измерить заранее.
     fn after_preload_ready(&mut self) {
         self.apply_volume();
-        let Some(Preload { key, state: PreloadState::Ready { path, .. } }) = &self.preload else { return };
-        // Если это тот же трек, что играет (повтор одного), его уже меряет обычный замер
+        let Some(Preload { key, state: PreloadState::Ready { path, .. }, .. }) = &self.preload else { return };
+        // Если это тот же трек, что играет (повтор одного), его уже меряет обычный замер.
         if self.preload_analysis.is_some()
             || !self.normalizer.wants_measure(key)
             || self.normalizer.current() == Some(key)
@@ -984,37 +1065,75 @@ impl Worker {
         });
     }
 
-    /// Плеер сам перешёл на дописанный трек (бесшовно): звук идёт без перерыва, движку остаётся
-    /// сдвинуть очередь и обновить состояние: усиление, длину, замер громкости, события для UI.
-    fn on_stitched_transition(&mut self) {
-        // Предыдущий трек доиграл: очередь идёт вперёд, как при обычном конце трека
+    /// Движок обнаружил переход на уже подготовленный трек (gapless или смена деки).
+    /// Забираем его замер, двигаем очередь и публикуем новое состояние.
+    fn on_preloaded_transition(&mut self, expected_kind: PreloadKind) {
         let Some(track) = self.queue.track_finished().cloned() else {
-            // Дописанный трек играет, а очередь уже кончилась (режим сменили в тот же момент): начинаем заново
+            // Следующий звук уже стартовал, но режим очереди изменился в этот момент.
             self.play_current();
             return;
         };
         let key = key_of(&track);
         let ready = match self.preload.take() {
-            Some(Preload { key: preload_key, state: PreloadState::Ready { path, duration } }) if preload_key == key => {
-                Some((path, duration))
-            }
+            Some(Preload { key: preload_key, kind, state: PreloadState::Ready { path, duration } })
+                if preload_key == key && kind == expected_kind => Some((path, duration)),
             _ => None,
         };
         let Some((path, duration)) = ready else {
-            // Играет не тот трек, который теперь следующий в очереди (режим сменили в тот же момент):
-            // перезапускаем по очереди, пусть и не бесшовно, но верно
+            // Не тот трек был подготовлен: перезапускаем правильный по актуальной очереди.
             self.play_current();
             return;
         };
-        // Замер следующего трека, если он ещё идёт, становится замером текущего
+
         let measuring = self.preload_analysis.take();
         self.fail_streak = 0;
-        self.cancel_loading(); // номер запроса вперёд, сброс прошлого трека (предзагрузки уже нет)
-        self.normalizer.begin_track(key); // усиление у плеера уже стоит (`set_queued_gain`), движок сверяется
+        self.cancel_loading(); // preload уже забран: отменяется только состояние прошлого трека
+        self.normalizer.begin_track(key); // индивидуальный gain уже стоит в источнике / второй деке
         self.playing_file = Some(path);
         self.analysis = measuring;
         self.apply_volume();
         self.finish_start(track, duration);
+    }
+
+    /// Плеер сам перешёл на дописанный трек (бесшовно).
+    fn on_stitched_transition(&mut self) {
+        self.on_preloaded_transition(PreloadKind::Gapless);
+    }
+
+    /// Начать наложение, когда до конца текущего трека осталось не больше заказанного времени.
+    /// Если декодер не знает длину, используем длительность из метаданных (как и в PlaybackState).
+    fn maybe_start_crossfade(&mut self) {
+        if !self.loaded || self.loading || self.player.is_paused() || self.player.is_crossfading() {
+            return;
+        }
+        let requested = self.normalizer.settings().crossfade();
+        if requested.is_zero() {
+            return;
+        }
+        let Some(total) = self.duration else { return };
+        let remaining = total.saturating_sub(self.player.position());
+        if remaining > requested {
+            return;
+        }
+        let Some(length) = fit_crossfade(requested, remaining) else { return };
+
+        let Some(next) = self.queue.peek_next().cloned() else { return };
+        let next_key = key_of(&next);
+        let ready = self.preload.as_ref().is_some_and(|preload| {
+            preload.key == next_key
+                && preload.kind == PreloadKind::Crossfade
+                && matches!(&preload.state, PreloadState::Ready { .. })
+        });
+        if !ready {
+            return;
+        }
+        if !self.player.has_preloaded() {
+            self.drop_preload();
+            return;
+        }
+        if self.player.start_crossfade(length) {
+            self.on_preloaded_transition(PreloadKind::Crossfade);
+        }
     }
 
     fn set_idle(&mut self) {
@@ -1673,6 +1792,36 @@ mod tests {
         // Один раз, а не каждый цикл движка
         fx.idle(500);
         assert_eq!(fake.calls.load(Ordering::SeqCst), 2, "предзагрузка повторяется");
+    }
+
+    #[test]
+    fn crossfade_mode_preloads_the_next_track_even_when_gapless_is_off() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mut fx) = Fixture::new("pre-crossfade", &[("a", 300), ("b", 300)]) else { return };
+        let fake = Arc::clone(&fx.fake);
+
+        fx.engine.set_settings(PlaybackSettings {
+            crossfade_secs: 3,
+            gapless: false,
+            ..PlaybackSettings::default()
+        });
+        play_queue_paused(&mut fx, &["a", "b"]);
+        assert!(wait_calls(&mut fx, &fake.calls, 2, 3000), "следующий трек не подготовлен для кроссфейда");
+        fx.idle(800); // загрузка завершилась, вторая дека должна оставаться готовой и на паузе
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 2, "следующий трек повторно запрашивается");
+        assert!(!fx.log.iter().any(|e| matches!(e, PlaybackEvent::TrackChanged(Some(t)) if t.id == "b")));
+    }
+
+    #[test]
+    fn disabling_gapless_and_crossfade_skips_preloading() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mut fx) = Fixture::new("pre-disabled", &[("a", 300), ("b", 300)]) else { return };
+        let fake = Arc::clone(&fx.fake);
+
+        fx.engine.set_settings(PlaybackSettings { gapless: false, ..PlaybackSettings::default() });
+        play_queue_paused(&mut fx, &["a", "b"]);
+        fx.idle(800);
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 1, "при отключённых переходах следующий трек не надо загружать заранее");
     }
 
     #[test]

@@ -1,10 +1,11 @@
 //! Экран «Ваши загрузки» (раньше «Моя музыка»): свои файлы (LocalProvider). Подэкран раздела «Библиотека».
 
-use egui::{Align, Layout, RichText, Sense, Ui, Vec2};
+use egui::{Align, Layout, RichText, Sense, Ui, Vec2, vec2};
 
-use super::layout::{bleed_clip, centered_column, pane_scroll, TRACK_LIST_MAX_WIDTH};
+use super::home::tracks_word;
+use super::layout::{centered_column, TRACK_LIST_MAX_WIDTH};
 use super::settings_view::settings_header;
-use super::widgets::{ButtonKind, error_banner, glide_begin, glide_end, pill_button, search_bar, status_snackbar, track_row};
+use super::widgets::{ButtonKind, cover_tile, error_banner, glide_begin, glide_end, pill_button, search_bar, status_snackbar, track_row};
 use crate::app::{McrateApp, View};
 use crate::icons::{self, Icon};
 use crate::theme::{Theme, with_alpha};
@@ -17,11 +18,14 @@ impl McrateApp {
         centered_column(ui, f32::INFINITY, |ui| {
             let p = &theme.palette;
 
+            // Поиск остаётся над шапкой и не прокручивается вместе со списком.
+            search_bar(ui, theme, &mut self.search, "Поиск по названию и исполнителю");
+            ui.add_space(10.0);
+
             ui.horizontal(|ui| {
-                if settings_header(ui, theme, "Ваши загрузки") {
+                if settings_header(ui, theme, "Библиотека") {
                     self.view = View::Collection;
                 }
-                // right_to_left: первый добавленный элемент окажется правее остальных.
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if pill_button(ui, theme, "Папка", Some(Icon::Folder), ButtonKind::Tonal).clicked() {
                         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
@@ -37,79 +41,165 @@ impl McrateApp {
             });
             ui.add_space(10.0);
 
-            search_bar(ui, theme, &mut self.search, "Поиск по названию и исполнителю");
-
             if let Some(status) = self.ctl.status.clone() {
-                ui.add_space(6.0);
                 if theme.glass_active() {
                     ui.label(RichText::new(status).size(13.0).color(p.on_surface_variant));
                 } else if status_snackbar(ui, theme, &status) {
                     self.ctl.status = None;
                 }
+                ui.add_space(8.0);
             }
-            ui.add_space(10.0);
 
             if self.ctl.library.is_empty() {
                 self.empty_library(ui, theme);
                 return;
             }
-            if self.filtered.is_empty() {
-                ui.label(RichText::new("Ничего не найдено").color(p.on_surface_variant));
-                return;
-            }
 
             let count = self.filtered.len();
+            let total = self.ctl.library.len();
             let current_id = self.ctl.now.as_ref().map(|t| t.id.clone());
             let playing = self.ctl.is_playing();
             let time = ui.input(|i| i.time);
-            let bleed = self.bleed.below_header();
-            let mut clicked: Option<usize> = None;
-            // show_rows использует фиксированную высоту строки. Резервируем безопасную зону
-            // целыми невидимыми строками, чтобы список можно было прокрутить над Glass-плеером.
-            let row_height = theme.list_item_height(2);
-            let spacer_rows = if self.bottom_inset > 0.0 {
-                ((self.bottom_inset + 16.0) / row_height).ceil() as usize
-            } else {
-                0
-            };
-            pane_scroll(
-                ui,
-                bleed,
-                egui::ScrollArea::vertical().auto_shrink([false, false]),
-                |area, ui| {
-                    ui.spacing_mut().item_spacing.y = 4.0;
-                    area.show_rows(ui, row_height, count + spacer_rows, |ui, range| {
-                        bleed_clip(ui, bleed);
-                        centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
-                            let glide_slot = glide_begin(ui);
-                            let mut hovered = None;
-                            for i in range {
-                                if i >= count {
-                                    ui.allocate_exact_size(Vec2::new(1.0, row_height), Sense::hover());
-                                    continue;
-                                }
-                                let track = &self.filtered[i];
-                                let is_current = current_id.as_deref() == Some(track.id.as_str());
-                                let resp = track_row(ui, theme, i, track, is_current, is_current && playing, time);
-                                if resp.hovered() {
-                                    hovered = Some((egui::Id::unique(&track.id).value(), resp.rect));
-                                }
-                                if resp.clicked() {
-                                    clicked = Some(i);
-                                }
-                            }
-                            glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_library"), hovered, 18.0);
-                        });
-                    })
-                },
-            );
 
-            if let Some(i) = clicked {
-                // Очередь = текущий отфильтрованный список, старт с выбранного трека.
-                let items = self.filtered.clone();
-                self.ctl.play_list(items, i);
-            }
+            // Компоновка как у страницы плейлиста: фиксированная карточка коллекции слева,
+            // самостоятельный прокручиваемый список справа. На узком окне блок схлопывается.
+            centered_column(ui, 1360.0, |ui| {
+                let split = ui.available_width() >= 920.0;
+                if split {
+                    let available_h = ui.available_height();
+                    let left_w = 292.0;
+                    ui.horizontal_top(|ui| {
+                        ui.allocate_ui_with_layout(
+                            vec2(left_w, available_h),
+                            Layout::top_down(Align::Center),
+                            |ui| self.uploads_playlist_panel(ui, theme, total, count, 252.0, true),
+                        );
+                        ui.add_space(28.0);
+                        ui.allocate_ui_with_layout(
+                            vec2(ui.available_width(), available_h),
+                            Layout::top_down(Align::Min),
+                            |ui| self.uploads_track_list(ui, theme, count, &current_id, playing, time),
+                        );
+                    });
+                } else {
+                    self.uploads_playlist_panel(ui, theme, total, count, 96.0, false);
+                    ui.add_space(18.0);
+                    self.uploads_track_list(ui, theme, count, &current_id, playing, time);
+                }
+            });
         });
+    }
+
+    /// Левая информация о локальной коллекции (обложка, описание и действия).
+    fn uploads_playlist_panel(
+        &mut self,
+        ui: &mut Ui,
+        theme: &Theme,
+        total: usize,
+        filtered: usize,
+        cover_size: f32,
+        vertical: bool,
+    ) {
+        let p = &theme.palette;
+        if vertical {
+            ui.add_space(12.0);
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(cover_size), Sense::hover());
+            cover_tile(ui, theme, rect, "mcrate-local-uploads", theme.shape_radius(crate::theme::ShapeRole::Large) as f32);
+            ui.add_space(18.0);
+            ui.label(RichText::new("Ваши загрузки").size(theme.text_size(crate::theme::TextRole::HeadlineSmall)).strong());
+            ui.add_space(5.0);
+            ui.label(RichText::new("Локальная коллекция").size(13.0).color(p.on_surface_variant));
+            ui.add_space(8.0);
+            let meta = format!("{total} {} · файлы с устройства", tracks_word(total));
+            ui.label(RichText::new(meta).size(13.0).color(p.on_surface_variant));
+            ui.add_space(12.0);
+            ui.add(egui::Label::new(
+                RichText::new("Музыка, добавленная из файлов и папок на этом устройстве.")
+                    .size(13.0)
+                    .color(p.on_surface_variant),
+            ).wrap());
+            ui.add_space(18.0);
+        } else {
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(cover_size), Sense::hover());
+                cover_tile(ui, theme, rect, "mcrate-local-uploads", theme.shape_radius(crate::theme::ShapeRole::Medium) as f32);
+                ui.add_space(14.0);
+                ui.vertical(|ui| {
+                    ui.label(RichText::new("Ваши загрузки").size(theme.text_size(crate::theme::TextRole::TitleLarge)).strong());
+                    ui.add_space(3.0);
+                    ui.label(RichText::new("Локальная коллекция").size(13.0).color(p.on_surface_variant));
+                    let meta = format!("{total} {} · файлы с устройства", tracks_word(total));
+                    ui.label(RichText::new(meta).size(13.0).color(p.on_surface_variant));
+                });
+            });
+            ui.add_space(10.0);
+        }
+
+        if filtered > 0 {
+            let items = self.filtered.clone();
+            ui.horizontal(|ui| {
+                if pill_button(ui, theme, "Перемешать", Some(Icon::Shuffle), ButtonKind::Tonal).clicked() {
+                    self.ctl.toggle_shuffle();
+                    self.ctl.play_list(items.clone(), 0);
+                }
+                if pill_button(ui, theme, "Слушать", Some(Icon::Play), ButtonKind::Filled).clicked() {
+                    self.ctl.play_list(items, 0);
+                }
+            });
+        }
+    }
+
+    /// Самостоятельный список с собственной прокруткой; ширина строк ограничена колонкой.
+    fn uploads_track_list(
+        &mut self,
+        ui: &mut Ui,
+        theme: &Theme,
+        count: usize,
+        current_id: &Option<String>,
+        playing: bool,
+        time: f64,
+    ) {
+        let p = &theme.palette;
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Треки").size(theme.text_size(crate::theme::TextRole::TitleLarge)).strong());
+            ui.add_space(8.0);
+            ui.label(RichText::new(count.to_string()).size(13.0).color(p.on_surface_variant));
+        });
+        ui.add_space(8.0);
+
+        if count == 0 {
+            ui.label(RichText::new("Ничего не найдено").color(p.on_surface_variant));
+            return;
+        }
+
+        let mut clicked: Option<usize> = None;
+        let row_height = theme.list_item_height(2);
+        egui::ScrollArea::vertical()
+            .id_salt("uploads_playlist_tracks")
+            .auto_shrink([false, false])
+            .show_rows(ui, row_height, count, |ui, range| {
+                centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
+                    let glide_slot = glide_begin(ui);
+                    let mut hovered = None;
+                    for i in range {
+                        let track = &self.filtered[i];
+                        let is_current = current_id.as_deref() == Some(track.id.as_str());
+                        let resp = track_row(ui, theme, i, track, is_current, is_current && playing, time);
+                        if resp.hovered() {
+                            hovered = Some((egui::Id::unique(&track.id).value(), resp.rect));
+                        }
+                        if resp.clicked() {
+                            clicked = Some(i);
+                        }
+                    }
+                    glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_uploads_playlist"), hovered, 18.0);
+                });
+            });
+
+        if let Some(i) = clicked {
+            let items = self.filtered.clone();
+            self.ctl.play_list(items, i);
+        }
     }
 
     fn empty_library(&mut self, ui: &mut Ui, theme: &Theme) {

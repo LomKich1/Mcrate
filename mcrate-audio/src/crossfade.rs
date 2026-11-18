@@ -54,7 +54,6 @@ impl Fade {
 /// Длина фейда для трека: заказанная, но не длиннее оставшегося до конца трека (трек короче
 /// фейда укорачивает фейд, а не ломается) и не короче `MIN_FADE`. `None`, если фейду нет места
 /// (до конца трека меньше `MIN_FADE`).
-#[allow(dead_code)] // движок начнёт звать в шаге 5б
 pub(crate) fn fit(requested: Duration, remaining: Duration) -> Option<Duration> {
     let len = requested.min(remaining);
     (len >= MIN_FADE).then_some(len)

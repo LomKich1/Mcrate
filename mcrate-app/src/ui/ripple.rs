@@ -1,7 +1,6 @@
 //! Material 3: слой состояния (наведение / нажатие / фокус) в виде «кружка» от курсора.
 //!
-//! Раньше подсветка в M3 либо появлялась сразу на весь элемент (`state_layer`), либо скользила
-//! между элементами (`glide_end`). Теперь она растёт кругом из точки, куда навели курсор, остаётся
+//! Подсветка M3 растёт кругом из точки, куда навели курсор, остаётся
 //! кружком вокруг курсора и едет за ним. При нажатии круг разрастается до краёв элемента (как ripple
 //! (волна-«рябь») в Material 3). Круг обрезается по форме элемента (скруглённый прямоугольник или круг).
 //!
@@ -244,8 +243,9 @@ impl Layer {
         moving
     }
 
-    /// Фигура слоя. `hover_alpha`/`press_alpha`: непрозрачность 0..255 при наведении и при нажатии.
-    fn shape(&self, corner: f32, color: Color32, hover_alpha: u8, press_alpha: u8) -> Option<Shape> {
+    /// Фигура слоя. `rect_on_hover` включает общую подложку для списка, которая скользит между строками;
+    /// отдельные кнопки и карточки используют только слой, начинающийся от курсора.
+    fn shape(&self, corner: f32, color: Color32, hover_alpha: u8, press_alpha: u8, rect_on_hover: bool) -> Option<Shape> {
         if !self.live || self.fade <= 0.0 {
             return None;
         }
@@ -259,9 +259,9 @@ impl Layer {
         // Радиальный градиент: яркое ядро в точке курсора рассеивается до нуля
         // на границе радиуса. Это настоящая vertex-color сетка, без наложения слоёв.
         let circle = radial_disc_in_rect(self.rect, corner, self.center, r, color, a.round() as u8);
-        // Весь элемент получает тот же 8% state-layer, что и строка настроек.
-        // Радиальный градиент поверх него усиливает центр, рассеиваясь к нулю по краю.
-        let base_alpha = a.round() as u8;
+        // Для списков оставляем тонкую общую подложку: она пружинно перемещается между строками.
+        // Для отдельных кнопок и карточек заливка остаётся радиальной, от точки курсора.
+        let base_alpha = if rect_on_hover { a.round() as u8 } else { (a * self.press).round() as u8 };
         let mut shapes = Vec::with_capacity(2);
         if base_alpha > 0 {
             shapes.push(Shape::rect_filled(self.rect, corner, with_alpha(color, base_alpha)));
@@ -293,10 +293,26 @@ fn pointer_pos(ui: &Ui) -> Option<Pos2> {
 ///   (для круглой кнопки половина стороны).
 /// * `hover_alpha`/`press_alpha`: 0..255 (M3: 8% ≈ 20 и 12% ≈ 31).
 pub fn state_layer(ui: &Ui, theme: &Theme, painter: &Painter, resp: &Response, rect: Rect, corner: f32, _color: Color32, _hover_alpha: u8, _press_alpha: u8) {
-    // Единый цвет для обычного выделения — как в settings_group(): on_surface с alpha=20 (8%).
-    let color = theme.palette.on_surface;
-    let hover_alpha = STATE_LAYER_HOVER_ALPHA;
-    let press_alpha = STATE_LAYER_PRESS_ALPHA;
+    // Обычный слой M3 использует единый цвет on_surface с alpha=20 (8%).
+    state_layer_colored(
+        ui, theme, painter, resp, rect, corner,
+        theme.palette.on_surface, STATE_LAYER_HOVER_ALPHA, STATE_LAYER_PRESS_ALPHA,
+    );
+}
+
+/// Вариант слоя состояния с заданным цветом. Нужен для элементов на инверсных поверхностях
+/// (например, кнопка закрытия M3 snackbar), где on_surface не обеспечивает нужный контраст.
+pub fn state_layer_colored(
+    ui: &Ui,
+    theme: &Theme,
+    painter: &Painter,
+    resp: &Response,
+    rect: Rect,
+    corner: f32,
+    color: Color32,
+    hover_alpha: u8,
+    press_alpha: u8,
+) {
     let id: Id = resp.id.with("m3_ripple");
     let pressed = resp.is_pointer_button_down_on();
     let hovered = resp.hovered() || pressed;
@@ -316,7 +332,7 @@ pub fn state_layer(ui: &Ui, theme: &Theme, painter: &Painter, resp: &Response, r
     let dense = pressed || focus_only;
     let moving = l.step(dt, active, dense, pointer, rect, reduce);
     if l.live {
-        if let Some(shape) = l.shape(corner, color, hover_alpha, press_alpha) {
+        if let Some(shape) = l.shape(corner, color, hover_alpha, press_alpha, false) {
             painter.add(shape);
         }
     }
@@ -476,7 +492,7 @@ pub fn glide_ripple(
     let mut shapes = Vec::with_capacity(MAX_FADING + 1);
     // Гаснущие кружки рисуем первыми, текущий поверх.
     for l in st.fading.iter().chain(st.cur.iter()) {
-        if let Some(s) = l.shape(corner, color, hover_alpha, press_alpha) {
+        if let Some(s) = l.shape(corner, color, hover_alpha, press_alpha, true) {
             shapes.push(s);
         }
     }

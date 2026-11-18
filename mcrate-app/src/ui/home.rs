@@ -1,12 +1,6 @@
-//! Главная. Раскладка по образцу скриншотов, которые прислал пользователь: сверху «Моя волна» с анимированной
-//! волной из точек, ниже горизонтальные полки со стрелками, в конце список «чарта».
-//!
-//! Блоки сверху вниз:
-//!   1. поиск (по Enter открывает «Мою музыку» с этим запросом);
-//!   2. «Моя волна»: заголовок, кнопки «запустить» и «перемешать», волна из точек (бежит, пока играет музыка);
-//!   3. полка «Быстрый выбор»: недавно добавленные треки;
-//!   4. полка «Ваши исполнители»: исполнители из локальной библиотеки, клик включает все их треки;
-//!   5. «Мои треки»: пронумерованный список с обложками и длительностью.
+//! Главная. Сверху поиск и «Моя волна» с анимированной волной из точек.
+//! Material 3: сверху горизонтальная полка исполнителей, ниже «Быстрый выбор» слева и «Мои треки» справа.
+//! Liquid Glass сохраняет прежние горизонтальные полки со стрелками и список ниже.
 //!
 //! Блоков «Для вас», «Новые релизы», «Популярные артисты» и настоящего чарта здесь нет: у ядра пока нет ни подборок,
 //! ни обложек, ни истории (см. AUDIT_UI_vs_core.md). Когда они появятся, это ещё одна полка через `shelf`.
@@ -41,7 +35,8 @@ const QUICK_W: f32 = 160.0; // карточка «Быстрого выбора�
 const QUICK_H: f32 = 214.0;
 const ARTIST_W: f32 = 144.0; // исполнитель: круглый аватар 128 + подпись по центру
 const ARTIST_H: f32 = 190.0;
-const QUICK_COUNT: usize = 12; // сколько треков на полке «Быстрый выбор»
+const QUICK_COUNT: usize = 10; // сколько треков в карточке Material 3 «Быстрый выбор»
+const GLASS_QUICK_COUNT: usize = 12; // прежнее количество карточек Liquid Glass
 const ARTISTS_COUNT: usize = 12; // сколько исполнителей на полке
 const CHART_COUNT: usize = 10; // строк в списке «Мои треки»
 
@@ -74,14 +69,109 @@ impl McrateApp {
                 self.home_empty(ui, theme);
             } else {
                 ui.add_space(28.0);
-                self.home_quick(ui, theme);
-                ui.add_space(28.0);
-                self.home_artists(ui, theme);
-                ui.add_space(28.0);
-                self.home_chart(ui, theme);
+                if theme.glass_active() {
+                    // Liquid Glass сохраняет прежние горизонтальные полки и количество карточек.
+                    self.home_quick(ui, theme);
+                    ui.add_space(28.0);
+                    self.home_artists(ui, theme);
+                    ui.add_space(28.0);
+                    self.home_chart(ui, theme);
+                } else {
+                    // Material 3: полка исполнителей стоит над двухколоночным блоком.
+                    self.home_artists(ui, theme);
+                    ui.add_space(28.0);
+                    // Полноширинные карточки «Быстрый выбор» и «Мои треки».
+                    self.home_m3_dashboard(ui, theme);
+                }
             }
             scroll_end_padding(ui, self.bottom_inset);
         }));
+    }
+
+    /// Главная Material 3: на широком окне «Быстрый выбор» слева, «Мои треки» справа.
+    /// Когда места для двух читаемых колонок не хватает, блоки складываются вертикально
+    /// и получают ширину видимой поверхности мини-плеера. Внутренней прокрутки нет.
+    fn home_m3_dashboard(&mut self, ui: &mut Ui, theme: &Theme) {
+        const TWO_COLUMN_MIN_WIDTH: f32 = 920.0;
+        const SINGLE_COLUMN_PLAYER_OVERHANG: i8 = 4;
+
+        if ui.available_width() >= TWO_COLUMN_MIN_WIDTH {
+            let previous_item_spacing = ui.spacing().item_spacing;
+            ui.spacing_mut().item_spacing.x = 20.0;
+            let mut quick_clicked = None;
+            ui.columns(2, |columns| {
+                quick_clicked = self.home_quick_m3_card(&mut columns[0], theme);
+                self.home_chart(&mut columns[1], theme);
+            });
+            ui.spacing_mut().item_spacing = previous_item_spacing;
+            if let Some(index) = quick_clicked {
+                let items = self.ctl.library.clone();
+                self.ctl.play_list(items, index);
+            }
+        } else {
+            // Surface::Content имеет inset 20 px, а плавающий мини-плеер — 16 px.
+            // Добавляем по 4 px с каждой стороны, чтобы внешние края совпадали точно.
+            let mut quick_clicked = None;
+            egui::Frame::new()
+                .outer_margin(egui::Margin::symmetric(-SINGLE_COLUMN_PLAYER_OVERHANG, 0))
+                .show(ui, |ui| {
+                    quick_clicked = self.home_quick_m3_card(ui, theme);
+                });
+            if let Some(index) = quick_clicked {
+                let items = self.ctl.library.clone();
+                self.ctl.play_list(items, index);
+            }
+            ui.add_space(20.0);
+            egui::Frame::new()
+                .outer_margin(egui::Margin::symmetric(-SINGLE_COLUMN_PLAYER_OVERHANG, 0))
+                .show(ui, |ui| self.home_chart(ui, theme));
+        }
+    }
+
+    /// Карточка последних 13 треков для Material 3. Все строки видны сразу;
+    /// прокруткой управляет только основная страница.
+    fn home_quick_m3_card(&mut self, ui: &mut Ui, theme: &Theme) -> Option<usize> {
+        let items: Vec<(usize, Track)> = self.ctl.library.iter().cloned()
+            .enumerate().rev().take(QUICK_COUNT).collect();
+        let current_id = self.ctl.now.as_ref().map(|track| track.id.clone());
+        let playing = self.ctl.is_playing();
+        let time = ui.input(|input| input.time);
+        let p = &theme.palette;
+        let mut clicked = None;
+
+        egui::Frame::new()
+            .fill(p.surface_container_high)
+            .corner_radius(theme.shape_radius(crate::theme::ShapeRole::ExtraLarge))
+            .inner_margin(egui::Margin::same(14))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Быстрый выбор")
+                        .size(theme.text_size(TextRole::TitleLarge)).strong());
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(RichText::new(items.len().to_string())
+                            .size(theme.text_size(TextRole::LabelSmall)).color(p.on_surface_variant));
+                    });
+                });
+                ui.add_space(10.0);
+                ui.spacing_mut().item_spacing.y = 4.0;
+
+                // Тот же track_row + glide, что и в «Мои треки»: единый размер,
+                // цвет текущего трека и подсветка, раскрывающаяся от курсора.
+                let glide_slot = glide_begin(ui);
+                let mut hovered = None;
+                for (display_index, (library_index, track)) in items.iter().enumerate() {
+                    let is_current = current_id.as_deref() == Some(track.id.as_str());
+                    let resp = track_row(ui, theme, display_index, track, is_current, is_current && playing, time);
+                    if resp.hovered() {
+                        hovered = Some((egui::Id::unique(&track.id).value(), resp.rect));
+                    }
+                    if resp.clicked() {
+                        clicked = Some(*library_index);
+                    }
+                }
+                glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_home_quick"), hovered, 18.0);
+            });
+        clicked
     }
 
     /// «Моя волна»: заголовок, две кнопки и анимированная волна из точек.
@@ -155,14 +245,14 @@ impl McrateApp {
 
     /// Полка «Быстрый выбор»: последние добавленные треки (LocalProvider хранит их в порядке добавления).
     fn home_quick(&mut self, ui: &mut Ui, theme: &Theme) {
-        // Только нужные 12 штук вместе с номерами в библиотеке (номер нужен, чтобы начать с этого трека).
-        let recents: Vec<(usize, Track)> = self.ctl.library.iter().cloned().enumerate().rev().take(QUICK_COUNT).collect();
+        // Liquid Glass сохраняет исходные 12 карточек.
+        let recents: Vec<(usize, Track)> = self.ctl.library.iter().cloned().enumerate().rev().take(GLASS_QUICK_COUNT).collect();
         let current_id = self.ctl.now.as_ref().map(|t| t.id.clone());
         let playing = self.ctl.is_playing();
         let time = ui.input(|i| i.time);
         let mut play_index: Option<usize> = None;
 
-        shelf(ui, theme, self.bleed, "quick", "Быстрый выбор", "Недавно добавленные: запустите музыку с любого трека", |ui| {
+        shelf(ui, theme, self.bleed, "quick", "Быстрый выбор", "Недавно добавленные: запустите музыку с любого трека", false, |ui| {
             for (idx, track) in &recents {
                 let is_current = current_id.as_deref() == Some(track.id.as_str());
                 let artists = artists_text(track);
@@ -187,7 +277,7 @@ impl McrateApp {
         let time = ui.input(|i| i.time);
         let mut play_artist: Option<String> = None;
 
-        shelf(ui, theme, self.bleed, "artists", "Ваши исполнители", "Из вашей библиотеки, больше всего треков сверху", |ui| {
+        shelf(ui, theme, self.bleed, "artists", "Ваши исполнители", "Из вашей библиотеки, больше всего треков сверху", false, |ui| {
             for (name, count) in &artists {
                 let sub = format!("{count} {}", tracks_word(*count));
                 let card = MediaCard { seed: name, title: name, subtitle: &sub, round: true, w: ARTIST_W, h: ARTIST_H };
@@ -226,47 +316,56 @@ impl McrateApp {
         items
     }
 
-    /// Список «Мои треки»: первые 10 треков библиотеки, как список чарта.
+    /// Список «Мои треки»: первые 10 треков библиотеки.
+    /// В Material 3 оформлен той же полной карточкой и теми же строками, что «Быстрый выбор».
     fn home_chart(&mut self, ui: &mut Ui, theme: &Theme) {
-        centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
-            let rows: Vec<(usize, Track)> = self.ctl.library.iter().cloned().enumerate().take(CHART_COUNT).collect();
-            let current_id = self.ctl.now.as_ref().map(|t| t.id.clone());
-            let playing = self.ctl.is_playing();
-            let time = ui.input(|i| i.time);
+        if theme.glass_active() {
+            centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| self.home_chart_contents(ui, theme));
+        } else {
+            egui::Frame::new()
+                .fill(theme.palette.surface_container_high)
+                .corner_radius(theme.shape_radius(crate::theme::ShapeRole::ExtraLarge))
+                .inner_margin(egui::Margin::same(14))
+                .show(ui, |ui| self.home_chart_contents(ui, theme));
+        }
+    }
 
-            // Заголовок и кнопка «Показать всё» в одной строке: кнопка стоит рядом с названием
-            // (раньше здесь была ссылка «вся музыка →», а кнопка лежала под списком).
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Мои треки").size(theme.text_size(TextRole::TitleLarge)).strong());
-                ui.add_space(8.0);
-                // Tonal в обеих темах: у кнопки есть собственный фон (в M3 это secondary container).
-                if pill_button(ui, theme, "Показать всё", None, ButtonKind::Tonal).clicked() {
-                    self.view = View::Library;
-                }
-            });
-            ui.add_space(10.0);
+    fn home_chart_contents(&mut self, ui: &mut Ui, theme: &Theme) {
+        let rows: Vec<(usize, Track)> = self.ctl.library.iter().cloned().enumerate().take(CHART_COUNT).collect();
+        let current_id = self.ctl.now.as_ref().map(|t| t.id.clone());
+        let playing = self.ctl.is_playing();
+        let time = ui.input(|i| i.time);
 
-            let mut play_index: Option<usize> = None;
-            // Тёмная подсветка под курсором скользит между строками (см. widgets::glide_end).
-            let glide_slot = glide_begin(ui);
-            let mut hovered = None;
-            for (idx, track) in &rows {
-                let is_current = current_id.as_deref() == Some(track.id.as_str());
-                let resp = track_row(ui, theme, *idx, track, is_current, is_current && playing, time);
-                if resp.hovered() {
-                    hovered = Some((egui::Id::unique(&track.id).value(), resp.rect));
-                }
-                if resp.clicked() {
-                    play_index = Some(*idx);
-                }
-            }
-            glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_home_tracks"), hovered, 18.0);
-            if let Some(i) = play_index {
-                let items = self.ctl.library.clone();
-                self.ctl.play_list(items, i);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Мои треки").size(theme.text_size(TextRole::TitleLarge)).strong());
+            ui.add_space(8.0);
+            if pill_button(ui, theme, "Показать всё", None, ButtonKind::Tonal).clicked() {
+                self.view = View::Library;
             }
         });
+        ui.add_space(10.0);
+        ui.spacing_mut().item_spacing.y = 4.0;
+
+        let mut play_index: Option<usize> = None;
+        let glide_slot = glide_begin(ui);
+        let mut hovered = None;
+        for (idx, track) in &rows {
+            let is_current = current_id.as_deref() == Some(track.id.as_str());
+            let resp = track_row(ui, theme, *idx, track, is_current, is_current && playing, time);
+            if resp.hovered() {
+                hovered = Some((egui::Id::unique(&track.id).value(), resp.rect));
+            }
+            if resp.clicked() {
+                play_index = Some(*idx);
+            }
+        }
+        glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_home_tracks"), hovered, 18.0);
+        if let Some(i) = play_index {
+            let items = self.ctl.library.clone();
+            self.ctl.play_list(items, i);
+        }
     }
+
 }
 
 /// «трек», «трека», «треков» по правилам русского языка.
@@ -294,7 +393,7 @@ struct ShelfState {
 
 /// Полка: заголовок с подписью, справа две круглые стрелки, под ними ряд карточек, который
 /// прокручивается стрелками (плавно), колесом при зажатом Shift или перетаскиванием.
-fn shelf(ui: &mut Ui, theme: &Theme, bleed: Bleed, id: &str, title: &str, subtitle: &str, add_cards: impl FnOnce(&mut Ui)) {
+fn shelf(ui: &mut Ui, theme: &Theme, bleed: Bleed, id: &str, title: &str, subtitle: &str, m3_hover_glide: bool, add_cards: impl FnOnce(&mut Ui)) {
     let p = &theme.palette;
     let sid = ui.scope_id().with(("shelf", id));
     let mut st: ShelfState = ui.ctx().data_mut(|d| d.get_temp(sid)).unwrap_or_default();
@@ -361,7 +460,7 @@ fn shelf(ui: &mut Ui, theme: &Theme, bleed: Bleed, id: &str, title: &str, subtit
             if let Some(slot) = under_slot {
                 let target = hovered.map(|(key, rect)| (key, rect.expand(SHELF_HALO)));
                 glide_end(ui, theme, slot, salt, target, 22.0);
-            } else {
+            } else if m3_hover_glide {
                 // Радиус как у карточки (`media_card`: 16 px в M3), без ореола.
                 let over_slot = glide_begin(ui);
                 glide_end_flat(ui, theme, over_slot, salt, hovered, 16.0, (theme.palette.on_surface, 20));

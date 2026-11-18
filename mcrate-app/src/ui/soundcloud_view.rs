@@ -11,7 +11,7 @@ use egui::{Align, Key, Layout, RichText, ScrollArea, Sense, Spinner, Ui, Vec2};
 
 use super::home::tracks_word;
 use super::layout::{bleed_clip, centered_column, pane_scroll, scroll_end_padding, TRACK_LIST_MAX_WIDTH};
-use super::widgets::{error_banner, glide_begin, glide_end, search_bar_full, track_row};
+use super::widgets::{error_banner, glide_begin, glide_end, search_bar, track_row};
 use crate::app::McrateApp;
 use crate::icons::{self, Icon};
 use crate::theme::{Theme, with_alpha};
@@ -20,7 +20,19 @@ impl McrateApp {
     pub fn soundcloud_view(&mut self, ui: &mut Ui, theme: &Theme) {
         centered_column(ui, f32::INFINITY, |ui| {
             let p = &theme.palette;
-            ui.heading("SoundCloud");
+
+            // Название экрана слева от поиска — одна строка, как на главной странице.
+            centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
+                let search = ui.horizontal(|ui| {
+                    ui.heading("SoundCloud");
+                    ui.add_space(16.0);
+                    search_bar(ui, theme, &mut self.sc_input, "Поиск по SoundCloud")
+                }).inner;
+                if search.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !self.sc_input.trim().is_empty() {
+                    let query = self.sc_input.clone();
+                    self.ctl.sc_search(&query);
+                }
+            });
             ui.add_space(8.0);
             // Высоту видимой области берём ДО ScrollArea: внутри неё доступная высота не ограничена,
             // а она нужна, чтобы поставить пустое состояние примерно по центру.
@@ -32,15 +44,6 @@ impl McrateApp {
                 |area, ui| area.show(ui, |ui| {
                     bleed_clip(ui, self.bleed.below_header());
                     centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
-                        // ---------- поиск ----------
-                        // Подсказка входит в id поля (см. `search_bar`), поэтому она отличается от подсказок других экранов.
-                        let search = search_bar_full(ui, theme, &mut self.sc_input, "Поиск по SoundCloud");
-                        if search.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !self.sc_input.trim().is_empty() {
-                            let query = self.sc_input.clone();
-                            self.ctl.sc_search(&query);
-                        }
-                        ui.add_space(10.0);
-
                         // ---------- состояние: поиск, загрузка, ошибки ----------
                         if self.ctl.sc.searching {
                             let hint = format!("Ищем «{}»…", self.ctl.sc.query);

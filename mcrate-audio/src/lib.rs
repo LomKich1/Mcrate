@@ -388,7 +388,9 @@ impl AudioPlayer {
             fade.advance(dt);
             *fade
         };
-        if fade.is_done() {
+        // Если длительность из метаданных оказалась неточной, уходящий источник может
+        // закончиться раньше таймера. Не держим новый трек приглушённым в тишине.
+        if fade.is_done() || self.idle_deck().player.empty() {
             self.end_crossfade();
             return true;
         }
@@ -776,6 +778,20 @@ mod stream_tests {
     }
 
     #[test]
+    fn preload_volume_can_be_updated_before_switch() {
+        let Some(player) = device() else { return };
+        let dir = TempDir::new("preload-volume");
+        player.play_file(&wav_file(&dir, "a.wav", 30)).unwrap();
+        player.set_volume(0.8);
+        player.preload_file(&wav_file(&dir, "b.wav", 30)).unwrap();
+
+        player.set_preload_volume(0.35);
+        assert!(near(player.idle_deck().player.volume(), 0.35));
+        assert!(player.switch_to_preloaded());
+        assert!(near(player.active_deck().player.volume(), 0.35));
+    }
+
+    #[test]
     fn switch_makes_preloaded_active_and_keeps_pause() {
         let Some(player) = device() else { return };
         let dir = TempDir::new("switch");
@@ -836,6 +852,19 @@ mod stream_tests {
 
     fn near(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-3
+    }
+
+    #[test]
+    fn crossfade_finishes_when_outgoing_source_ends_early() {
+        let Some((player, _dir)) = playing_with_preload("cf-early-end") else { return };
+        player.set_volume(0.6);
+        assert!(player.start_crossfade(Duration::from_secs(5)));
+        let incoming = player.active_index();
+        player.decks[1 - incoming].clear(); // имитируем конец уходящего источника раньше таймера
+
+        assert!(player.advance_crossfade(Duration::ZERO));
+        assert!(!player.is_crossfading());
+        assert!(near(vol(&player, incoming), 0.6), "новый трек должен вернуться к громкости ползунка");
     }
 
     #[test]

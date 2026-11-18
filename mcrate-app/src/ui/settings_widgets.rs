@@ -9,7 +9,7 @@
 //! Всё рисуется самим кодом по ролям палитры, поэтому подстраивается под любую из 12 тем.
 
 use egui::epaint::Mesh;
-use egui::{Align2, Color32, CursorIcon, FontFamily, FontId, Frame, Id, Margin, Painter, Pos2, Rect, Response, RichText, Sense, Shape, Stroke, StrokeKind, Ui, pos2, vec2};
+use egui::{Align2, Color32, CursorIcon, FontFamily, FontId, Frame, Id, Margin, Painter, Pos2, Rect, Response, RichText, Sense, Shape, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
 use egui_material_icons::MaterialIcon;
 use egui_material_icons::icons as mi;
 
@@ -368,6 +368,8 @@ pub fn accent_picker(ui: &mut Ui, theme: &Theme, id: &str, swatches: &[Color32],
         let painter = ui.painter();
         let grow = if resp.hovered() { 1.0 } else { 0.0 };
         painter.circle_filled(center, D * 0.5 - 2.0 * t + grow, color);
+        let ripple_rect = Rect::from_center_size(center, Vec2::splat(D));
+        super::ripple::state_layer(ui, theme, painter, &resp, ripple_rect, D * 0.5, p.on_surface, 20, 30);
         if t > 0.01 {
             painter.circle_stroke(center, D * 0.5 + 3.0, Stroke::new(3.0 * t, with_alpha(p.on_surface, (t * 255.0) as u8)));
             // Галочка тёмная на светлом кружке и светлая на тёмном.

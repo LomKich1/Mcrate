@@ -328,6 +328,10 @@ impl McrateApp {
             pos2(content_pane.left() + GLASS_BAR_SIDE_INSET, full.bottom() - GLASS_BAR_BOTTOM_GAP - GLASS_BAR_H),
             pos2(content_pane.right() - GLASS_BAR_SIDE_INSET, full.bottom() - GLASS_BAR_BOTTOM_GAP),
         );
+        // Мини-плеер лежит поверх контентной поверхности, а не обрезает её.
+        // Поэтому viewport продолжается до нижнего края Surface::Content (где меняется фон),
+        // а прокручиваемые экраны получают нижний отступ на высоту перекрытия плеером.
+        // Так последний элемент можно прокрутить выше плеера, не обрывая область экрана на его верхней границе.
         self.bottom_inset = content_pane.bottom() - bar.top() + 4.0;
 
         // Порядок важен: сначала боковая навигация, затем контентная поверхность.
