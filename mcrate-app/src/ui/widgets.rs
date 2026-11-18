@@ -6,6 +6,7 @@ use mcrate_core::Track;
 
 use crate::icons::{self, Icon};
 use crate::settings::Design;
+use super::layout::Breakpoint;
 use crate::theme::{ShapeRole, TextRole, Theme, with_alpha};
 
 
@@ -27,7 +28,12 @@ fn search_text_margin() -> Margin {
 /// Общая поисковая строка для главной и библиотеки. Геометрия одинакова,
 /// а экран может задавать собственную подсказку и обработку Enter.
 pub fn search_bar(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str) -> Response {
-    search_bar_with_max_width(ui, theme, value, hint, M3_SEARCH_MAX_WIDTH)
+    let max_width = match Breakpoint::from_width(ui.ctx().viewport_rect().width()) {
+        Breakpoint::Compact => 560.0,
+        Breakpoint::Medium => M3_SEARCH_MAX_WIDTH,
+        Breakpoint::Expanded => 1120.0,
+    };
+    search_bar_with_max_width(ui, theme, value, hint, max_width)
 }
 
 /// Поиск на всю ширину колонки: левый край совпадает с заголовком экрана, правый с краем списка.
@@ -1060,8 +1066,13 @@ pub fn artists_text(track: &Track) -> String {
 pub fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track, is_current: bool, is_playing: bool, time: f64) -> Response {
     let p = &theme.palette;
     let row_height = theme.list_item_height(2);
-    let cover_size = if theme.glass_active() { 40.0 } else { 48.0 };
-    let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), row_height), Sense::click());
+    let row_width = ui.available_width();
+    // На узкой панели убираем номер и уменьшаем обложку, чтобы название и длительность
+    // не конкурировали за оставшееся место. На обычной ширине сохраняется исходная геометрия.
+    let compact = !theme.glass_active() && row_width < 520.0;
+    let show_index = theme.glass_active() || row_width >= 460.0;
+    let cover_size = if theme.glass_active() || compact { 40.0 } else { 48.0 };
+    let (rect, resp) = ui.allocate_exact_size(vec2(row_width, row_height), Sense::click());
     // Подсветку под курсором рисует список (`glide_end`: она скользит между строками); здесь только сжатие при нажатии.
     if !ui.is_rect_visible(rect) {
         return resp; // не в кадре: ничего не считаем и не рисуем
@@ -1086,15 +1097,17 @@ pub fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track, is_cur
         }
     }
 
-    let number = format!("{}", index + 1);
-    painter.text(
-        pos2(rect.left() + 26.0, rect.center().y),
-        Align2::RIGHT_CENTER,
-        number,
-        FontId::proportional(12.5),
-        p.on_surface_variant,
-    );
-    let cover = Rect::from_min_size(pos2(rect.left() + 34.0, rect.center().y - cover_size * 0.5), Vec2::splat(cover_size));
+    let cover_left = if show_index { 34.0 } else { 16.0 };
+    if show_index {
+        painter.text(
+            pos2(rect.left() + 26.0, rect.center().y),
+            Align2::RIGHT_CENTER,
+            format!("{}", index + 1),
+            FontId::proportional(12.5),
+            p.on_surface_variant,
+        );
+    }
+    let cover = Rect::from_min_size(pos2(rect.left() + cover_left, rect.center().y - cover_size * 0.5), Vec2::splat(cover_size));
     let cover_radius = if theme.glass_active() { 12.0 } else { theme.shape_radius(ShapeRole::Medium) as f32 };
     cover_tile(ui, theme, cover, &track.id, cover_radius);
     let painter = ui.painter();
@@ -1103,9 +1116,10 @@ pub fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track, is_cur
         icons::paint_equalizer(painter, cover.center(), 18.0, egui::Color32::WHITE, time, is_playing);
     }
 
-    let text_left = cover.right() + 14.0;
-    let dur_x = rect.right() - 16.0;
-    let clip = Rect::from_min_max(pos2(text_left, rect.top()), pos2(dur_x - 56.0, rect.bottom()));
+    let text_left = cover.right() + if compact { 10.0 } else { 14.0 };
+    let dur_x = rect.right() - if compact { 12.0 } else { 16.0 };
+    let duration_gap = if compact { 44.0 } else { 56.0 };
+    let clip = Rect::from_min_max(pos2(text_left, rect.top()), pos2((dur_x - duration_gap).max(text_left), rect.bottom()));
     let clipped = painter.with_clip_rect(clip);
     let title_color = if is_current {
         if theme.glass_active() { p.primary } else { p.on_secondary_container }

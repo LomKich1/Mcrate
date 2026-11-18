@@ -25,11 +25,10 @@ use egui::{
 use mcrate_core::Track;
 
 use super::wave::{self, COL_STEP_PX, WaveInput, WaveSim};
-use super::layout::{Bleed, bleed_clip, pane_scroll, scroll_end_padding};
+use super::layout::{Bleed, bleed_clip, centered_column, pane_scroll, scroll_end_padding, TRACK_LIST_MAX_WIDTH};
 use super::widgets::{ButtonKind, artists_text, cover_tile, glide_begin, glide_end, glide_end_flat, pill_button, search_bar, squish, track_row};
 use crate::app::{McrateApp, View};
 use crate::icons::{self, Icon};
-use crate::settings::Design;
 use crate::theme::{TextRole, Theme, with_alpha};
 
 const WAVE_H: f32 = 200.0; // высота волны
@@ -51,11 +50,7 @@ impl McrateApp {
         let bleed = self.bleed;
         // Прокрутка растянута до краёв панели: полоса прокрутки лежит на самом краю, а карточки
         // и заголовки уходят под край, а не режутся в отступе от него (см. `pane_scroll`).
-        // Скругление панели: бегунок отступает от углов на этот радиус, а в углах (только Material 3
-        // без Mica/Acrylic, где за панелью сплошной цвет `surface`) закрашиваются квадратные «пустоты».
-        let corner = theme.pane_radius() as f32;
-        let mask = (theme.settings.design == Design::Material3 && !theme.window_backdrop_active()).then_some(theme.palette.surface);
-        pane_scroll(ui, bleed, corner, mask, ScrollArea::vertical().auto_shrink([false, false]), |area, ui| area.show(ui, |ui| {
+        pane_scroll(ui, bleed, ScrollArea::vertical().auto_shrink([false, false]), |area, ui| area.show(ui, |ui| {
             // ---------- заголовок «Моя волна» и поиск в одной строке ----------
             let title_w = (ui.available_width() * 0.45).min(360.0);
             let search = ui.horizontal(|ui| {
@@ -233,42 +228,44 @@ impl McrateApp {
 
     /// Список «Мои треки»: первые 10 треков библиотеки, как список чарта.
     fn home_chart(&mut self, ui: &mut Ui, theme: &Theme) {
-        let rows: Vec<(usize, Track)> = self.ctl.library.iter().cloned().enumerate().take(CHART_COUNT).collect();
-        let current_id = self.ctl.now.as_ref().map(|t| t.id.clone());
-        let playing = self.ctl.is_playing();
-        let time = ui.input(|i| i.time);
+        centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
+            let rows: Vec<(usize, Track)> = self.ctl.library.iter().cloned().enumerate().take(CHART_COUNT).collect();
+            let current_id = self.ctl.now.as_ref().map(|t| t.id.clone());
+            let playing = self.ctl.is_playing();
+            let time = ui.input(|i| i.time);
 
-        // Заголовок и кнопка «Показать всё» в одной строке: кнопка стоит рядом с названием
-        // (раньше здесь была ссылка «вся музыка →», а кнопка лежала под списком).
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Мои треки").size(theme.text_size(TextRole::TitleLarge)).strong());
-            ui.add_space(8.0);
-            // Tonal в обеих темах: у кнопки есть собственный фон (в M3 это secondary container).
-            if pill_button(ui, theme, "Показать всё", None, ButtonKind::Tonal).clicked() {
-                self.view = View::Library;
+            // Заголовок и кнопка «Показать всё» в одной строке: кнопка стоит рядом с названием
+            // (раньше здесь была ссылка «вся музыка →», а кнопка лежала под списком).
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Мои треки").size(theme.text_size(TextRole::TitleLarge)).strong());
+                ui.add_space(8.0);
+                // Tonal в обеих темах: у кнопки есть собственный фон (в M3 это secondary container).
+                if pill_button(ui, theme, "Показать всё", None, ButtonKind::Tonal).clicked() {
+                    self.view = View::Library;
+                }
+            });
+            ui.add_space(10.0);
+
+            let mut play_index: Option<usize> = None;
+            // Тёмная подсветка под курсором скользит между строками (см. widgets::glide_end).
+            let glide_slot = glide_begin(ui);
+            let mut hovered = None;
+            for (idx, track) in &rows {
+                let is_current = current_id.as_deref() == Some(track.id.as_str());
+                let resp = track_row(ui, theme, *idx, track, is_current, is_current && playing, time);
+                if resp.hovered() {
+                    hovered = Some((egui::Id::unique(&track.id).value(), resp.rect));
+                }
+                if resp.clicked() {
+                    play_index = Some(*idx);
+                }
+            }
+            glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_home_tracks"), hovered, 18.0);
+            if let Some(i) = play_index {
+                let items = self.ctl.library.clone();
+                self.ctl.play_list(items, i);
             }
         });
-        ui.add_space(10.0);
-
-        let mut play_index: Option<usize> = None;
-        // Тёмная подсветка под курсором скользит между строками (см. widgets::glide_end).
-        let glide_slot = glide_begin(ui);
-        let mut hovered = None;
-        for (idx, track) in &rows {
-            let is_current = current_id.as_deref() == Some(track.id.as_str());
-            let resp = track_row(ui, theme, *idx, track, is_current, is_current && playing, time);
-            if resp.hovered() {
-                hovered = Some((egui::Id::unique(&track.id).value(), resp.rect));
-            }
-            if resp.clicked() {
-                play_index = Some(*idx);
-            }
-        }
-        glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_home_tracks"), hovered, 18.0);
-        if let Some(i) = play_index {
-            let items = self.ctl.library.clone();
-            self.ctl.play_list(items, i);
-        }
     }
 }
 

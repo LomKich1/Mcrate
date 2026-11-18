@@ -2,7 +2,7 @@
 
 use egui::{Align, Layout, RichText, Sense, Ui, Vec2};
 
-use super::layout::{bleed_clip, centered_column};
+use super::layout::{bleed_clip, centered_column, pane_scroll, TRACK_LIST_MAX_WIDTH};
 use super::settings_view::settings_header;
 use super::widgets::{ButtonKind, error_banner, glide_begin, glide_end, pill_button, search_bar, status_snackbar, track_row};
 use crate::app::{McrateApp, View};
@@ -14,7 +14,7 @@ const AUDIO_EXT: [&str; 6] = ["mp3", "flac", "ogg", "wav", "m4a", "aac"];
 
 impl McrateApp {
     pub fn library_view(&mut self, ui: &mut Ui, theme: &Theme) {
-        centered_column(ui, 1160.0, |ui| {
+        centered_column(ui, f32::INFINITY, |ui| {
             let p = &theme.palette;
 
             ui.horizontal(|ui| {
@@ -72,31 +72,37 @@ impl McrateApp {
             } else {
                 0
             };
-
-            ui.scope(|ui| {
-                ui.spacing_mut().item_spacing.y = 4.0;
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, row_height, count + spacer_rows, |ui, range| {
-                    bleed_clip(ui, bleed);
-                    let glide_slot = glide_begin(ui);
-                    let mut hovered = None;
-                    for i in range {
-                        if i >= count {
-                            ui.allocate_exact_size(Vec2::new(1.0, row_height), Sense::hover());
-                            continue;
-                        }
-                        let track = &self.filtered[i];
-                        let is_current = current_id.as_deref() == Some(track.id.as_str());
-                        let resp = track_row(ui, theme, i, track, is_current, is_current && playing, time);
-                        if resp.hovered() {
-                            hovered = Some((egui::Id::unique(&track.id).value(), resp.rect));
-                        }
-                        if resp.clicked() {
-                            clicked = Some(i);
-                        }
-                    }
-                    glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_library"), hovered, 18.0);
-                });
-            });
+            pane_scroll(
+                ui,
+                bleed,
+                egui::ScrollArea::vertical().auto_shrink([false, false]),
+                |area, ui| {
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    area.show_rows(ui, row_height, count + spacer_rows, |ui, range| {
+                        bleed_clip(ui, bleed);
+                        centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
+                            let glide_slot = glide_begin(ui);
+                            let mut hovered = None;
+                            for i in range {
+                                if i >= count {
+                                    ui.allocate_exact_size(Vec2::new(1.0, row_height), Sense::hover());
+                                    continue;
+                                }
+                                let track = &self.filtered[i];
+                                let is_current = current_id.as_deref() == Some(track.id.as_str());
+                                let resp = track_row(ui, theme, i, track, is_current, is_current && playing, time);
+                                if resp.hovered() {
+                                    hovered = Some((egui::Id::unique(&track.id).value(), resp.rect));
+                                }
+                                if resp.clicked() {
+                                    clicked = Some(i);
+                                }
+                            }
+                            glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_library"), hovered, 18.0);
+                        });
+                    })
+                },
+            );
 
             if let Some(i) = clicked {
                 // Очередь = текущий отфильтрованный список, старт с выбранного трека.

@@ -10,7 +10,7 @@
 use egui::{Align, Key, Layout, RichText, ScrollArea, Sense, Spinner, Ui, Vec2};
 
 use super::home::tracks_word;
-use super::layout::{bleed_clip, centered_column, scroll_end_padding};
+use super::layout::{bleed_clip, centered_column, pane_scroll, scroll_end_padding, TRACK_LIST_MAX_WIDTH};
 use super::widgets::{error_banner, glide_begin, glide_end, search_bar_full, track_row};
 use crate::app::McrateApp;
 use crate::icons::{self, Icon};
@@ -18,108 +18,113 @@ use crate::theme::{Theme, with_alpha};
 
 impl McrateApp {
     pub fn soundcloud_view(&mut self, ui: &mut Ui, theme: &Theme) {
-        centered_column(ui, 900.0, |ui| {
+        centered_column(ui, f32::INFINITY, |ui| {
             let p = &theme.palette;
             ui.heading("SoundCloud");
             ui.add_space(8.0);
             // Высоту видимой области берём ДО ScrollArea: внутри неё доступная высота не ограничена,
             // а она нужна, чтобы поставить пустое состояние примерно по центру.
             let view_height = ui.available_height();
+            pane_scroll(
+                ui,
+                self.bleed.below_header(),
+                ScrollArea::vertical().auto_shrink([false, false]),
+                |area, ui| area.show(ui, |ui| {
+                    bleed_clip(ui, self.bleed.below_header());
+                    centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
+                        // ---------- поиск ----------
+                        // Подсказка входит в id поля (см. `search_bar`), поэтому она отличается от подсказок других экранов.
+                        let search = search_bar_full(ui, theme, &mut self.sc_input, "Поиск по SoundCloud");
+                        if search.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !self.sc_input.trim().is_empty() {
+                            let query = self.sc_input.clone();
+                            self.ctl.sc_search(&query);
+                        }
+                        ui.add_space(10.0);
 
-            ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                bleed_clip(ui, self.bleed.below_header());
+                        // ---------- состояние: поиск, загрузка, ошибки ----------
+                        if self.ctl.sc.searching {
+                            let hint = format!("Ищем «{}»…", self.ctl.sc.query);
+                            status_line(ui, theme, &hint, Some("Первый поиск после установки может занять до 30 секунд"), true);
+                        }
+                        if let Some(err) = self.ctl.sc.error.clone() {
+                            error_banner(ui, theme, &err);
+                            ui.add_space(8.0);
+                        }
+                        if let Some(err) = self.ctl.play_error.clone() {
+                            error_banner(ui, theme, &err);
+                            ui.add_space(8.0);
+                        }
+                        // Загрузка трека показывается контуром вокруг обложки в мини-плеере (player_bar.rs), здесь текста нет.
 
-                // ---------- поиск ----------
-                // Подсказка входит в id поля (см. `search_bar`), поэтому она отличается от подсказок других экранов.
-                let search = search_bar_full(ui, theme, &mut self.sc_input, "Поиск по SoundCloud");
-                if search.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !self.sc_input.trim().is_empty() {
-                    let query = self.sc_input.clone();
-                    self.ctl.sc_search(&query);
-                }
-                ui.add_space(10.0);
+                        let count = self.ctl.sc.results.len();
 
-                // ---------- состояние: поиск, загрузка, ошибки ----------
-                if self.ctl.sc.searching {
-                    let hint = format!("Ищем «{}»…", self.ctl.sc.query);
-                    status_line(ui, theme, &hint, Some("Первый поиск после установки может занять до 30 секунд"), true);
-                }
-                if let Some(err) = self.ctl.sc.error.clone() {
-                    error_banner(ui, theme, &err);
-                    ui.add_space(8.0);
-                }
-                if let Some(err) = self.ctl.play_error.clone() {
-                    error_banner(ui, theme, &err);
-                    ui.add_space(8.0);
-                }
-                // Загрузка трека показывается контуром вокруг обложки в мини-плеере (player_bar.rs), здесь текста нет.
-
-                let count = self.ctl.sc.results.len();
-
-                // ---------- пока ничего не искали ----------
-                if !self.ctl.sc.searched && !self.ctl.sc.searching {
-                    empty_state(
-                        ui,
-                        theme,
-                        ((view_height - self.bottom_inset - 220.0) * 0.3).max(16.0),
-                        Icon::Cloud,
-                        "Найдите музыку на SoundCloud",
-                        "Введите название трека или исполнителя и нажмите Enter",
-                    );
-                }
-
-                // ---------- ничего не нашлось ----------
-                if self.ctl.sc.searched && count == 0 && !self.ctl.sc.searching && self.ctl.sc.error.is_none() {
-                    let text = format!("По запросу «{}» нет полных треков", self.ctl.sc.query);
-                    empty_state(
-                        ui,
-                        theme,
-                        ((view_height - self.bottom_inset - 220.0) * 0.3).max(16.0),
-                        Icon::Search,
-                        "Ничего не найдено",
-                        &text,
-                    );
-                }
-
-                // ---------- результаты ----------
-                if count > 0 {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(format!("Результаты по «{}»", self.ctl.sc.query)).size(18.0).strong());
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.label(
-                                RichText::new(format!("{count} {}", tracks_word(count)))
-                                    .size(13.0)
-                                    .color(p.on_surface_variant),
+                        // ---------- пока ничего не искали ----------
+                        if !self.ctl.sc.searched && !self.ctl.sc.searching {
+                            empty_state(
+                                ui,
+                                theme,
+                                ((view_height - self.bottom_inset - 220.0) * 0.3).max(16.0),
+                                Icon::Cloud,
+                                "Найдите музыку на SoundCloud",
+                                "Введите название трека или исполнителя и нажмите Enter",
                             );
-                        });
+                        }
+
+                        // ---------- ничего не нашлось ----------
+                        if self.ctl.sc.searched && count == 0 && !self.ctl.sc.searching && self.ctl.sc.error.is_none() {
+                            let text = format!("По запросу «{}» нет полных треков", self.ctl.sc.query);
+                            empty_state(
+                                ui,
+                                theme,
+                                ((view_height - self.bottom_inset - 220.0) * 0.3).max(16.0),
+                                Icon::Search,
+                                "Ничего не найдено",
+                                &text,
+                            );
+                        }
+
+                        // ---------- результаты ----------
+                        if count > 0 {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(format!("Результаты по «{}»", self.ctl.sc.query)).size(18.0).strong());
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    ui.label(
+                                        RichText::new(format!("{count} {}", tracks_word(count)))
+                                            .size(13.0)
+                                            .color(p.on_surface_variant),
+                                    );
+                                });
+                            });
+                            ui.add_space(6.0);
+
+                            let current = self.ctl.now.as_ref().map(|t| (t.id.clone(), t.provider));
+                            let playing = self.ctl.is_playing();
+                            let time = ui.input(|i| i.time);
+                            let glide_slot = glide_begin(ui);
+                            let mut hovered = None;
+                            let mut clicked: Option<usize> = None;
+                            for (i, track) in self.ctl.sc.results.iter().enumerate() {
+                                let is_current = current.as_ref().is_some_and(|(id, kind)| *id == track.id && *kind == track.provider);
+                                let resp = track_row(ui, theme, i, track, is_current, is_current && playing, time);
+                                if resp.hovered() {
+                                    hovered = Some((egui::Id::unique(&track.id).value(), resp.rect));
+                                }
+                                if resp.clicked() {
+                                    clicked = Some(i);
+                                }
+                            }
+                            glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_soundcloud"), hovered, 18.0);
+
+                            if let Some(i) = clicked {
+                                // Очередь = все найденные треки, старт с выбранного (как в «Ваших загрузках»).
+                                let items = self.ctl.sc.results.clone();
+                                self.ctl.play_list(items, i);
+                            }
+                        }
+                        scroll_end_padding(ui, self.bottom_inset);
                     });
-                    ui.add_space(6.0);
-
-                    let current = self.ctl.now.as_ref().map(|t| (t.id.clone(), t.provider));
-                    let playing = self.ctl.is_playing();
-                    let time = ui.input(|i| i.time);
-                    let glide_slot = glide_begin(ui);
-                    let mut hovered = None;
-                    let mut clicked: Option<usize> = None;
-                    for (i, track) in self.ctl.sc.results.iter().enumerate() {
-                        let is_current = current.as_ref().is_some_and(|(id, kind)| *id == track.id && *kind == track.provider);
-                        let resp = track_row(ui, theme, i, track, is_current, is_current && playing, time);
-                        if resp.hovered() {
-                            hovered = Some((egui::Id::unique(&track.id).value(), resp.rect));
-                        }
-                        if resp.clicked() {
-                            clicked = Some(i);
-                        }
-                    }
-                    glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_soundcloud"), hovered, 18.0);
-
-                    if let Some(i) = clicked {
-                        // Очередь = все найденные треки, старт с выбранного (как в «Ваших загрузках»).
-                        let items = self.ctl.sc.results.clone();
-                        self.ctl.play_list(items, i);
-                    }
-                }
-                scroll_end_padding(ui, self.bottom_inset);
-            });
+                }),
+            );
         });
     }
 }

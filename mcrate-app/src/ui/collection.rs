@@ -10,7 +10,7 @@
 use egui::{RichText, ScrollArea, Sense, Ui, Vec2};
 use mcrate_core::Track;
 
-use super::layout::{bleed_clip, centered_column, scroll_end_padding};
+use super::layout::{bleed_clip, centered_column, pane_scroll, scroll_end_padding, TRACK_LIST_MAX_WIDTH};
 use super::settings_view::{nav_list, settings_header};
 use super::widgets::{ButtonKind, glide_begin, glide_end, pill_button, track_row};
 use crate::app::{McrateApp, View};
@@ -23,76 +23,86 @@ const RECENT_COUNT: usize = 3;
 impl McrateApp {
     /// Главный экран раздела «Библиотека».
     pub fn collection_view(&mut self, ui: &mut Ui, theme: &Theme) {
-        centered_column(ui, 760.0, |ui| {
+        centered_column(ui, f32::INFINITY, |ui| {
             let p = &theme.palette;
             ui.heading("Библиотека");
             ui.add_space(8.0);
+            pane_scroll(
+                ui,
+                self.bleed.below_header(),
+                ScrollArea::vertical().auto_shrink([false, false]),
+                |area, ui| area.show(ui, |ui| {
+                    bleed_clip(ui, self.bleed.below_header());
 
-            ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                bleed_clip(ui, self.bleed.below_header());
+                    let uploads = format!("Своих файлов: {}", self.ctl.library.len());
+                    let rows = [
+                        (View::CollectionLiked, "Понравившиеся", "Скоро".to_string()),
+                        (View::CollectionPlaylists, "Плейлисты", "Скоро".to_string()),
+                        (View::CollectionDownloaded, "Скачанные", "Скоро".to_string()),
+                        (View::Library, "Ваши загрузки", uploads),
+                    ];
+                    if let Some(view) = nav_list(ui, theme, &rows, f32::INFINITY, false) {
+                        self.view = view;
+                    }
 
-                let uploads = format!("Своих файлов: {}", self.ctl.library.len());
-                let rows = [
-                    (View::CollectionLiked, "Понравившиеся", "Скоро".to_string()),
-                    (View::CollectionPlaylists, "Плейлисты", "Скоро".to_string()),
-                    (View::CollectionDownloaded, "Скачанные", "Скоро".to_string()),
-                    (View::Library, "Ваши загрузки", uploads),
-                ];
-                if let Some(view) = nav_list(ui, theme, &rows, f32::INFINITY, false) {
-                    self.view = view;
-                }
-
-                // ---------- недавно слушали ----------
-                ui.add_space(14.0);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Недавно слушали").size(18.0).strong());
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if !self.ctl.history.is_empty()
-                            && pill_button(ui, theme, "Смотреть все", None, ButtonKind::Tonal).clicked()
-                        {
-                            self.view = View::CollectionHistory;
+                    // ---------- недавно слушали ----------
+                    centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
+                        ui.add_space(14.0);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Недавно слушали").size(18.0).strong());
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if !self.ctl.history.is_empty()
+                                    && pill_button(ui, theme, "Смотреть все", None, ButtonKind::Tonal).clicked()
+                                {
+                                    self.view = View::CollectionHistory;
+                                }
+                            });
+                        });
+                        ui.add_space(6.0);
+                        if self.ctl.history.is_empty() {
+                            ui.label(
+                                RichText::new("Здесь появятся треки, которые вы включали в этом сеансе.")
+                                    .color(p.on_surface_variant),
+                            );
+                        } else {
+                            let recent: Vec<Track> = self.ctl.history.iter().take(RECENT_COUNT).cloned().collect();
+                            if let Some(i) = self.history_rows(ui, theme, &recent, "glide_recent") {
+                                // Очередь = эти же три трека (как в «Моей музыке»: очередь это показанный список).
+                                self.ctl.play_list(recent, i);
+                            }
                         }
                     });
-                });
-                ui.add_space(6.0);
-                if self.ctl.history.is_empty() {
-                    ui.label(
-                        RichText::new("Здесь появятся треки, которые вы включали в этом сеансе.")
-                            .color(p.on_surface_variant),
-                    );
-                } else {
-                    let recent: Vec<Track> = self.ctl.history.iter().take(RECENT_COUNT).cloned().collect();
-                    if let Some(i) = self.history_rows(ui, theme, &recent, "glide_recent") {
-                        // Очередь = эти же три трека (как в «Моей музыке»: очередь это показанный список).
-                        self.ctl.play_list(recent, i);
-                    }
-                }
-                scroll_end_padding(ui, self.bottom_inset);
-            });
+                    scroll_end_padding(ui, self.bottom_inset);
+                }),
+            );
         });
     }
 
     /// Полная история прослушивания (за сеанс).
     pub fn collection_history_view(&mut self, ui: &mut Ui, theme: &Theme) {
-        centered_column(ui, 900.0, |ui| {
+        centered_column(ui, f32::INFINITY, |ui| {
             let p = &theme.palette;
             if settings_header(ui, theme, "История") {
                 self.view = View::Collection;
             }
             ui.add_space(4.0);
-
-            ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                bleed_clip(ui, self.bleed.below_header());
-                if self.ctl.history.is_empty() {
-                    ui.label(RichText::new("Пока пусто: включите любой трек.").color(p.on_surface_variant));
-                } else {
-                    let items = self.ctl.history.clone();
-                    if let Some(i) = self.history_rows(ui, theme, &items, "glide_history") {
-                        self.ctl.play_list(items, i);
+            pane_scroll(
+                ui,
+                self.bleed.below_header(),
+                ScrollArea::vertical().auto_shrink([false, false]),
+                |area, ui| area.show(ui, |ui| {
+                    bleed_clip(ui, self.bleed.below_header());
+                    if self.ctl.history.is_empty() {
+                        ui.label(RichText::new("Пока пусто: включите любой трек.").color(p.on_surface_variant));
+                    } else {
+                        let items = self.ctl.history.clone();
+                        if let Some(i) = self.history_rows(ui, theme, &items, "glide_history") {
+                            self.ctl.play_list(items, i);
+                        }
                     }
-                }
-                scroll_end_padding(ui, self.bottom_inset);
-            });
+                    scroll_end_padding(ui, self.bottom_inset);
+                }),
+            );
         });
     }
 
@@ -107,6 +117,10 @@ impl McrateApp {
         );
     }
 
+    /// Требование к будущему экрану плейлиста: двухколоночная компоновка как на референсе.
+    /// Слева — ограниченная панель обложки, описания, владельца и кнопок управления;
+    /// справа — отдельный список треков с мини-обложкой, названием/исполнителем,
+    /// самостоятельными колонками лайка и длительности. Список не растягивать на весь экран.
     pub fn collection_playlists_view(&mut self, ui: &mut Ui, theme: &Theme) {
         self.collection_stub(
             ui,
@@ -132,7 +146,7 @@ impl McrateApp {
     /// Подэкран-заглушка: заголовок с кнопкой «назад» и пустое состояние по центру.
     fn collection_stub(&mut self, ui: &mut Ui, theme: &Theme, title: &str, icon: Icon, headline: &str, text: &str) {
         let p = &theme.palette;
-        centered_column(ui, 760.0, |ui| {
+        centered_column(ui, f32::INFINITY, |ui| {
             if settings_header(ui, theme, title) {
                 self.view = View::Collection;
             }
@@ -155,23 +169,25 @@ impl McrateApp {
 
     /// Список треков из истории; возвращает номер строки, по которой кликнули.
     fn history_rows(&self, ui: &mut Ui, theme: &Theme, items: &[Track], glide_id: &str) -> Option<usize> {
-        let current = self.ctl.now.as_ref().map(|t| (t.id.clone(), t.provider));
-        let playing = self.ctl.is_playing();
-        let time = ui.input(|i| i.time);
-        let glide_slot = glide_begin(ui);
-        let mut hovered = None;
-        let mut clicked = None;
-        for (i, track) in items.iter().enumerate() {
-            let is_current = current.as_ref().is_some_and(|(id, kind)| *id == track.id && *kind == track.provider);
-            let resp = track_row(ui, theme, i, track, is_current, is_current && playing, time);
-            if resp.hovered() {
-                hovered = Some((egui::Id::unique(&track.id).value(), resp.rect));
+        centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
+            let current = self.ctl.now.as_ref().map(|t| (t.id.clone(), t.provider));
+            let playing = self.ctl.is_playing();
+            let time = ui.input(|i| i.time);
+            let glide_slot = glide_begin(ui);
+            let mut hovered = None;
+            let mut clicked = None;
+            for (i, track) in items.iter().enumerate() {
+                let is_current = current.as_ref().is_some_and(|(id, kind)| *id == track.id && *kind == track.provider);
+                let resp = track_row(ui, theme, i, track, is_current, is_current && playing, time);
+                if resp.hovered() {
+                    hovered = Some((egui::Id::unique(&track.id).value(), resp.rect));
+                }
+                if resp.clicked() {
+                    clicked = Some(i);
+                }
             }
-            if resp.clicked() {
-                clicked = Some(i);
-            }
-        }
-        glide_end(ui, theme, glide_slot, ui.scope_id().with(glide_id), hovered, 18.0);
-        clicked
+            glide_end(ui, theme, glide_slot, ui.scope_id().with(glide_id), hovered, 18.0);
+            clicked
+        })
     }
 }

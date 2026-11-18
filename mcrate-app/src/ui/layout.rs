@@ -2,8 +2,7 @@
 //! Всё в «точках» egui (логических пикселях), поэтому масштаб Windows (125%, 150%) учитывается сам.
 //! Правила собраны здесь, а не размазаны по экранам: так их проще менять и проверять тестами.
 
-use egui::epaint::{Mesh, Vertex};
-use egui::{Align, Color32, Layout, Margin, Rect, ScrollArea, Ui, UiBuilder, Shape, pos2, vec2};
+use egui::{Align, Layout, Margin, Rect, ScrollArea, Ui, UiBuilder, pos2, vec2};
 
 /// Размерный класс окна (в Material 3 это называется window size class).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -72,6 +71,20 @@ pub fn centered_column<R>(ui: &mut Ui, max_width: f32, add: impl FnOnce(&mut Ui)
     ui.scope_builder(UiBuilder::new().max_rect(rect).layout(Layout::top_down(Align::Min)), add).inner
 }
 
+/// Максимальная ширина элементов на экранах настроек. Сама панель и область прокрутки
+/// остаются полноширинными; ограничивается только содержимое внутри них.
+pub const SETTINGS_CONTENT_MAX_WIDTH: f32 = 960.0;
+
+/// Максимальная ширина списков треков. Это сохраняет плотную читаемую колонку на широких окнах.
+pub const TRACK_LIST_MAX_WIDTH: f32 = 920.0;
+
+/// Колонка элементов настроек. Ограничивается только содержимое: родительская панель
+/// и её ScrollArea остаются полноширинными. На узком окне centered_column автоматически
+/// использует всю доступную ширину, а на широком центрирует контент с заданным максимумом.
+pub fn responsive_column<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    centered_column(ui, SETTINGS_CONTENT_MAX_WIDTH, add)
+}
+
 /// «Вылет» (bleed): на сколько пикселей содержимое страницы может выходить за её отступы
 /// к самым краям панели. Страница рисуется с отступом (20 px) от краёв панели, а прокрутка
 /// (`ScrollArea`) обрезает содержимое по своей рамке (clip rect), поэтому раньше карточки
@@ -116,91 +129,33 @@ pub fn bleed_clip(ui: &mut Ui, bleed: Bleed) {
     ui.set_clip_rect(bleed.expand(c));
 }
 
-/// Геометрия прокрутки внутри поверхности. Содержимое сохраняет прежнее начало, а область
-/// ScrollArea занимает поверхность целиком, до всех четырёх краёв (раньше она отступала на 20 px
-/// сверху и снизу, и прокручиваемое содержимое обрезалось жёсткой линией внутри панели).
-/// Если понадобится вернуть отступ бегунка от скруглений, это константа ниже.
-const SCROLLBAR_END_INSET: f32 = 0.0;
-
+/// Геометрия прокрутки внутри поверхности. Область ScrollArea расширяется по Bleed
+/// до краёв панели, а отступы содержимого компенсируют это расширение. Скругления здесь
+/// намеренно не маскируются и не меняют длину дорожки скроллбара.
 fn pane_scroll_geometry(page: Rect, bleed: Bleed) -> (Rect, Margin) {
-    let expanded = bleed.expand(page);
-    let end_inset = SCROLLBAR_END_INSET.min((expanded.height() * 0.5).max(0.0));
-    let scroll_rect = Rect::from_min_max(
-        pos2(expanded.left(), expanded.top() + end_inset),
-        pos2(expanded.right(), expanded.bottom() - end_inset),
-    );
-
-    // Компенсируем верхний inset, чтобы первый виджет не сдвинулся вниз.
-    // `Margin` хранит i8, а величины Bleed заданы в целых логических пикселях.
-    let top = (bleed.top - end_inset).max(0.0) as i8;
+    let scroll_rect = bleed.expand(page);
     let margin = Margin {
         left: bleed.left.max(0.0) as i8,
         right: bleed.right.max(0.0) as i8,
-        top,
+        top: bleed.top.max(0.0) as i8,
         bottom: 0,
     };
     (scroll_rect, margin)
 }
 
-/// Область прокрутки занимает поверхность целиком (до всех четырёх краёв), поэтому содержимое
-/// можно прокручивать под самый край панели. Бегунок при этом остаётся ВНУТРИ скруглений:
-/// его дорожка короче области прокрутки на `corner` px сверху и снизу (`scroll_bar_rect`).
-/// Если задан `mask`, в четырёх скруглённых углах поверх содержимого рисуется заливка цветом фона
-/// за панелью: прямоугольная область прокрутки иначе показывала бы «квадратные» углы у карточек,
-/// которые доходят до краёв. Закрытие получает готовую `ScrollArea` и вызывает у неё `show` или `show_rows`.
+/// Область прокрутки занимает поверхность целиком. Содержимое остаётся в исходных
+/// отступах, а скроллбар не получает дополнительных inset-ов у верхнего и нижнего края.
 pub fn pane_scroll<R>(
     ui: &mut Ui,
     bleed: Bleed,
-    corner: f32,
-    mask: Option<Color32>,
     area: ScrollArea,
     show: impl FnOnce(ScrollArea, &mut Ui) -> R,
 ) -> R {
     let (scroll_rect, margin) = pane_scroll_geometry(ui.available_rect_before_wrap(), bleed);
-    let bar_rect = Rect::from_min_max(
-        pos2(scroll_rect.left(), scroll_rect.top() + corner),
-        pos2(scroll_rect.right(), scroll_rect.bottom() - corner),
-    );
-    let out = ui
-        .scope_builder(UiBuilder::new().max_rect(scroll_rect).layout(Layout::top_down(Align::Min)), |ui| {
-            show(area.content_margin(margin).scroll_bar_rect(bar_rect), ui)
-        })
-        .inner;
-    if let Some(color) = mask {
-        paint_corner_masks(&ui.painter().with_clip_rect(scroll_rect), scroll_rect, corner, color);
-    }
-    out
-}
-
-/// Заливает «пустоты» между углом прямоугольника и дугой скругления радиуса `r` цветом `color`.
-/// В каждом углу пустота это фигура между вершиной угла и четвертью окружности; её можно
-/// разбить веером треугольников из вершины угла по точкам дуги.
-pub fn paint_corner_masks(painter: &egui::Painter, rect: Rect, r: f32, color: Color32) {
-    const STEPS: usize = 12;
-    if r < 1.0 {
-        return;
-    }
-    // (вершина угла, центр окружности, начальный угол дуги). Углы считаются по часовой стрелке в экранных осях.
-    let corners = [
-        (rect.left_top(), rect.left_top() + vec2(r, r), std::f32::consts::PI),
-        (rect.right_top(), rect.right_top() + vec2(-r, r), std::f32::consts::PI * 1.5),
-        (rect.right_bottom(), rect.right_bottom() + vec2(-r, -r), 0.0),
-        (rect.left_bottom(), rect.left_bottom() + vec2(r, -r), std::f32::consts::PI * 0.5),
-    ];
-    let mut mesh = Mesh::default();
-    for (corner, center, start) in corners {
-        let base = mesh.vertices.len() as u32;
-        mesh.vertices.push(Vertex { pos: corner, uv: egui::epaint::WHITE_UV, color });
-        for i in 0..=STEPS {
-            let a = start + std::f32::consts::FRAC_PI_2 * i as f32 / STEPS as f32;
-            let pos = center + vec2(a.cos(), a.sin()) * r;
-            mesh.vertices.push(Vertex { pos, uv: egui::epaint::WHITE_UV, color });
-        }
-        for i in 0..STEPS as u32 {
-            mesh.indices.extend_from_slice(&[base, base + 1 + i, base + 2 + i]);
-        }
-    }
-    painter.add(Shape::mesh(mesh));
+    ui.scope_builder(UiBuilder::new().max_rect(scroll_rect).layout(Layout::top_down(Align::Min)), |ui| {
+        show(area.content_margin(margin), ui)
+    })
+    .inner
 }
 
 /// Единый запас в конце прокручиваемых страниц. В Material 3 это небольшой край,

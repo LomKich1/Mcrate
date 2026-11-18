@@ -191,12 +191,12 @@ fn row_ui(ui: &mut Ui, theme: &Theme, group_id: &str, index: usize, mut row: Row
     };
     let title_font = FontId::proportional(theme.text_size(TextRole::BodyLarge));
     let sub_font = FontId::proportional(theme.text_size(TextRole::BodySmall));
+    let text_width = (total_w - text_off - reserve).max(40.0);
 
     // Подписи раскладываем заранее: от их высоты зависит высота строки.
-    let title_galley = (!row.title.is_empty()).then(|| ui.painter().layout_no_wrap(row.title.to_string(), title_font, p.on_surface));
-    let sub_galley = row
-        .subtitle
-        .map(|t| ui.painter().layout(t.to_string(), sub_font, p.on_surface_variant, (total_w - text_off - reserve).max(40.0)));
+    // На узкой панели длинные названия переносятся, а не наезжают на переключатель или значение.
+    let title_galley = (!row.title.is_empty()).then(|| ui.painter().layout(row.title.to_string(), title_font, p.on_surface, text_width));
+    let sub_galley = row.subtitle.map(|t| ui.painter().layout(t.to_string(), sub_font, p.on_surface_variant, text_width));
     let title_h = title_galley.as_ref().map_or(0.0, |g| g.size().y);
     let sub_h = sub_galley.as_ref().map_or(0.0, |g| g.size().y);
 
@@ -205,11 +205,14 @@ fn row_ui(ui: &mut Ui, theme: &Theme, group_id: &str, index: usize, mut row: Row
     let mut chips_h = 0.0;
     if let Trailing::Choice(choice) = &row.trailing {
         let avail = (total_w - text_off - 14.0).max(60.0);
+        // На широком окне чипы не растягиваются на сотни пикселей каждый:
+        // оставляем компактную группу, а при узком окне используем всю доступную ширину.
+        let chip_width = if total_w >= 900.0 { avail.min(560.0) } else { avail };
         let n = choice.chips.len().max(1) as f32;
         let (mut x, mut y) = (0.0_f32, 0.0_f32);
         for chip in &choice.chips {
             let w = if choice.stretch {
-                (avail - CHIP_GAP * (n - 1.0)) / n
+                (chip_width - CHIP_GAP * (n - 1.0)) / n
             } else {
                 let tw = ui.painter().layout_no_wrap(chip.label.to_string(), FontId::proportional(theme.text_size(TextRole::LabelLarge)), p.on_surface).size().x;
                 tw + 36.0 + if chip.locked { 22.0 } else { 0.0 }
@@ -424,11 +427,13 @@ pub struct Tile {
 const TILE_H: f32 = 116.0;
 const TILE_GAP: f32 = 12.0;
 
-/// Плитки в две колонки. Возвращает номер плитки, на которую нажали.
+/// Адаптивная сетка плиток. Возвращает номер плитки, на которую нажали.
 pub fn settings_tiles(ui: &mut Ui, theme: &Theme, tiles: &[Tile]) -> Option<usize> {
-    let columns = 2usize;
-    let rows = tiles.len().div_ceil(columns);
     let total_w = ui.available_width();
+    // На узком окне оставляем одну колонку, затем постепенно добавляем ещё колонки,
+    // чтобы плитки не становились чрезмерно растянутыми.
+    let columns = if total_w < 620.0 { 1 } else if total_w < 1000.0 { 2 } else if total_w < 1400.0 { 3 } else { 4 };
+    let rows = tiles.len().div_ceil(columns);
     let tile_w = (total_w - TILE_GAP * (columns as f32 - 1.0)) / columns as f32;
     let total_h = rows as f32 * TILE_H + rows.saturating_sub(1) as f32 * TILE_GAP;
     let (area, _) = ui.allocate_exact_size(vec2(total_w, total_h), Sense::hover());
@@ -543,15 +548,21 @@ pub fn profile_card(ui: &mut Ui, theme: &Theme, name: &str, subtitle: &str) -> R
     painter.rect_filled(rect, radius, p.surface_container_high);
     painter.rect_stroke(rect, radius, Stroke::new(1.0, with_alpha(p.outline_variant, 110)), StrokeKind::Inside);
 
-    // Аватар: цветной круг с первой буквой имени.
-    let avatar = pos2(rect.left() + 20.0 + 28.0, rect.center().y);
-    painter.circle_filled(avatar, 28.0, p.primary_container);
+    // Аватар и подписи подстраиваются под ширину; длинные имена не заходят на стрелку.
+    let compact = rect.width() < 560.0;
+    let avatar_radius = if compact { 24.0 } else { 28.0 };
+    let avatar_left = if compact { 16.0 } else { 20.0 };
+    let avatar = pos2(rect.left() + avatar_left + avatar_radius, rect.center().y);
+    painter.circle_filled(avatar, avatar_radius, p.primary_container);
     let initial = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "?".into());
-    painter.text(avatar, Align2::CENTER_CENTER, initial, FontId::proportional(24.0), p.on_primary_container);
+    painter.text(avatar, Align2::CENTER_CENTER, initial, FontId::proportional(if compact { 21.0 } else { 24.0 }), p.on_primary_container);
 
-    let x = avatar.x + 28.0 + 16.0;
-    painter.text(pos2(x, rect.center().y - 11.0), Align2::LEFT_CENTER, name, FontId::proportional(theme.text_size(TextRole::TitleMedium) + 1.0), p.on_surface);
-    painter.text(pos2(x, rect.center().y + 12.0), Align2::LEFT_CENTER, subtitle, FontId::proportional(theme.text_size(TextRole::BodySmall) + 0.5), p.on_surface_variant);
+    let text_gap = if compact { 12.0 } else { 16.0 };
+    let x = avatar.x + avatar_radius + text_gap;
+    let text_clip = Rect::from_min_max(pos2(x, rect.top()), pos2((rect.right() - 56.0).max(x), rect.bottom()));
+    let text_painter = painter.with_clip_rect(text_clip);
+    text_painter.text(pos2(x, rect.center().y - 11.0), Align2::LEFT_CENTER, name, FontId::proportional(theme.text_size(TextRole::TitleMedium) + 1.0), p.on_surface);
+    text_painter.text(pos2(x, rect.center().y + 12.0), Align2::LEFT_CENTER, subtitle, FontId::proportional(theme.text_size(TextRole::BodySmall) + 0.5), p.on_surface_variant);
     paint_symbol(painter, mi::ICON_CHEVRON_RIGHT, pos2(rect.right() - 26.0, rect.center().y), 24.0, p.on_surface_variant);
 
     super::ripple::state_layer(ui, theme, painter, &resp, rect, radius, p.on_surface, 20, 30);

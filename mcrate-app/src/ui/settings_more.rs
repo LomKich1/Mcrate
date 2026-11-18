@@ -8,7 +8,7 @@ use egui::{ScrollArea, Ui, vec2};
 use egui_material_icons::MaterialIcon;
 use egui_material_icons::icons as mi;
 
-use super::layout::{bleed_clip, centered_column, scroll_end_padding};
+use super::layout::{bleed_clip, centered_column, pane_scroll, responsive_column, scroll_end_padding};
 use super::settings_view::settings_header;
 use super::settings_widgets::{Choice, Chip, Row, Trailing, group_label, hint_text, paint_symbol, settings_card, settings_group};
 use super::widgets::error_banner;
@@ -16,8 +16,6 @@ use crate::app::{McrateApp, View};
 use crate::platform;
 use crate::settings::{GlassQuality, Language, WindowBackdrop};
 use crate::theme::{TextRole, Theme};
-
-const CONTENT_W: f32 = 720.0;
 
 /// Какой экран-«скоро» показать.
 #[derive(Clone, Copy)]
@@ -77,16 +75,24 @@ fn format_size(bytes: u64) -> String {
 impl McrateApp {
     /// Общий каркас подэкрана: шапка «назад», прокрутка, ограничение ширины.
     fn settings_page(&mut self, ui: &mut Ui, theme: &Theme, title: &str, body: impl FnOnce(&mut Self, &mut Ui)) {
-        centered_column(ui, 760.0, |ui| {
-            if settings_header(ui, theme, title) {
-                self.view = View::Settings;
-            }
-            ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                bleed_clip(ui, self.bleed.below_header());
-                ui.set_max_width(CONTENT_W);
-                body(self, ui);
-                scroll_end_padding(ui, self.bottom_inset);
+        centered_column(ui, f32::INFINITY, |ui| {
+            responsive_column(ui, |ui| {
+                if settings_header(ui, theme, title) {
+                    self.view = View::Settings;
+                }
             });
+            pane_scroll(
+                ui,
+                self.bleed.below_header(),
+                ScrollArea::vertical().auto_shrink([false, false]),
+                |area, ui| area.show(ui, |ui| {
+                    bleed_clip(ui, self.bleed.below_header());
+                    responsive_column(ui, |ui| {
+                        body(self, ui);
+                        scroll_end_padding(ui, self.bottom_inset);
+                    });
+                }),
+            );
         });
     }
 
