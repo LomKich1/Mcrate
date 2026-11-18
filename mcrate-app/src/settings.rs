@@ -247,7 +247,7 @@ pub const CROSSFADE_OPTIONS: [u8; 5] = [0, 1, 3, 5, 10];
 /// их изменение не должно пересобирать тему и палитру каждый раз.
 /// `#[serde(default)]`: поле, которого нет в старом файле, получает значение по умолчанию.
 /// Приватность пока только сохраняется. Из настроек воспроизведения движок читает нормализацию
-/// громкости (см. `playback_settings`); кроссфейд, бесшовность и остальное пока только хранятся.
+/// громкости, кроссфейд и бесшовность (см. `playback_settings`); остальное пока только хранится.
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 #[serde(default)]
 pub struct Preferences {
@@ -301,10 +301,15 @@ impl Default for Preferences {
 }
 
 impl Preferences {
-    /// Что из настроек знает движок воспроизведения. Пока это только нормализация громкости;
-    /// кроссфейд и бесшовность добавим сюда, когда они появятся в `mcrate-audio`.
+    /// Что из настроек знает движок воспроизведения: нормализация громкости, длина кроссфейда и
+    /// бесшовность. Целевые LUFS в интерфейсе не настраиваются и остаются по умолчанию.
     pub fn playback_settings(&self) -> mcrate_audio::PlaybackSettings {
-        mcrate_audio::PlaybackSettings { normalize_volume: self.normalize_volume, ..Default::default() }
+        mcrate_audio::PlaybackSettings {
+            normalize_volume: self.normalize_volume,
+            crossfade_secs: self.crossfade_secs,
+            gapless: self.gapless,
+            ..Default::default()
+        }
     }
 }
 
@@ -326,12 +331,27 @@ mod tests {
     }
 
     #[test]
+    fn playback_settings_follow_crossfade_and_gapless() {
+        let mut prefs = Preferences::default();
+        assert_eq!(prefs.playback_settings().crossfade_secs, prefs.crossfade_secs);
+        assert!(prefs.playback_settings().gapless, "по умолчанию бесшовность включена");
+
+        for secs in CROSSFADE_OPTIONS {
+            prefs.crossfade_secs = secs;
+            assert_eq!(prefs.playback_settings().crossfade_secs, secs);
+        }
+        prefs.gapless = false;
+        assert!(!prefs.playback_settings().gapless);
+    }
+
+    #[test]
     fn unrelated_prefs_do_not_change_playback_settings() {
         // Иначе приложение слало бы движку настройки при каждом клике по несвязанным переключателям
         let mut prefs = Preferences::default();
         let before = prefs.playback_settings();
         prefs.notifications = !prefs.notifications;
-        prefs.crossfade_secs = 10;
+        prefs.autoplay = !prefs.autoplay;
+        prefs.background_play = !prefs.background_play;
         prefs.cover_morph = !prefs.cover_morph;
         assert_eq!(prefs.playback_settings(), before);
     }

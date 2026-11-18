@@ -15,6 +15,8 @@ pub const DEFAULT_TARGET_LUFS: f32 = -14.0;
 const TARGET_RANGE: (f32, f32) = (-30.0, -6.0);
 /// Усиливать можно не больше чем в 4 раза (+12 дБ).
 const MAX_GAIN: f32 = 4.0;
+/// Самый длинный кроссфейд, секунд (в интерфейсе максимум 10; запас на будущее).
+pub const MAX_CROSSFADE_SECS: u8 = 12;
 /// Ослаблять можно не больше чем в 20 раз (-26 дБ): защита от странных замеров.
 const MIN_GAIN: f32 = 0.05;
 /// Как быстро усиление меняется на ходу, дБ в секунду. 6 дБ/с = плавный «подъезд», а не скачок.
@@ -22,25 +24,41 @@ const RAMP_DB_PER_SEC: f32 = 6.0;
 /// Сколько треков помним в кэше замеров. При переполнении кэш просто очищается.
 const MAX_CACHED: usize = 4096;
 
-/// Настройки воспроизведения. Позже сюда добавятся кроссфейд и бесшовность.
+/// Настройки воспроизведения.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlaybackSettings {
     /// Выравнивать громкость треков (чтобы не приходилось крутить ползунок между треками).
     pub normalize_volume: bool,
     /// До какой громкости выравнивать, LUFS (-14 = как у стримингов, -23 = стандарт вещания).
     pub target_lufs: f32,
+    /// Длина кроссфейда (наложения конца трека на начало следующего), секунд. 0 = без наложения.
+    /// Действует только на естественный конец трека: ручное «Далее»/«Назад» переключает резко.
+    /// Больше `MAX_CROSSFADE_SECS` зажимается (см. `sanitized`).
+    pub crossfade_secs: u8,
+    /// Бесшовный стык: следующий трек дописывается в очередь, и между треками нет паузы.
+    /// Нужен при `crossfade_secs == 0`; при кроссфейде больше нуля стык делает сам кроссфейд.
+    pub gapless: bool,
 }
 
 impl Default for PlaybackSettings {
+    /// Нормализация выключена, кроссфейда нет, бесшовный стык включён (так движок играл до
+    /// появления этих настроек).
     fn default() -> Self {
-        Self { normalize_volume: false, target_lufs: DEFAULT_TARGET_LUFS }
+        Self { normalize_volume: false, target_lufs: DEFAULT_TARGET_LUFS, crossfade_secs: 0, gapless: true }
     }
 }
 
 impl PlaybackSettings {
+    /// Длина кроссфейда как `Duration` (с учётом границы `MAX_CROSSFADE_SECS`).
+    /// `Duration::ZERO` = кроссфейда нет.
+    pub fn crossfade(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(u64::from(self.crossfade_secs.min(MAX_CROSSFADE_SECS)))
+    }
+
     /// Приводит значения к допустимым: целевая громкость зажимается в границы, а
-    /// нечисло (NaN) заменяется значением по умолчанию.
+    /// нечисло (NaN) заменяется значением по умолчанию; кроссфейд не длиннее `MAX_CROSSFADE_SECS`.
     pub fn sanitized(mut self) -> Self {
+        self.crossfade_secs = self.crossfade_secs.min(MAX_CROSSFADE_SECS);
         self.target_lufs = if self.target_lufs.is_finite() {
             self.target_lufs.clamp(TARGET_RANGE.0, TARGET_RANGE.1)
         } else {
@@ -249,13 +267,43 @@ mod tests {
 
     #[test]
     fn settings_are_sanitized() {
-        let s = PlaybackSettings { normalize_volume: true, target_lufs: -100.0 }.sanitized();
+        let s = PlaybackSettings { normalize_volume: true, target_lufs: -100.0, ..PlaybackSettings::default() }.sanitized();
         assert_eq!(s.target_lufs, -30.0);
-        let s = PlaybackSettings { normalize_volume: true, target_lufs: 5.0 }.sanitized();
+        let s = PlaybackSettings { normalize_volume: true, target_lufs: 5.0, ..PlaybackSettings::default() }.sanitized();
         assert_eq!(s.target_lufs, -6.0);
-        let s = PlaybackSettings { normalize_volume: true, target_lufs: f32::NAN }.sanitized();
+        let s = PlaybackSettings { normalize_volume: true, target_lufs: f32::NAN, ..PlaybackSettings::default() }.sanitized();
         assert_eq!(s.target_lufs, DEFAULT_TARGET_LUFS);
         assert!(!PlaybackSettings::default().normalize_volume);
+    }
+
+    #[test]
+    fn crossfade_and_gapless_defaults_keep_the_old_behaviour() {
+        // До появления этих настроек движок всегда стыковал треки без паузы и не накладывал их
+        let s = PlaybackSettings::default();
+        assert_eq!(s.crossfade_secs, 0);
+        assert!(s.gapless);
+        assert_eq!(s.crossfade(), std::time::Duration::ZERO);
+    }
+
+    #[test]
+    fn crossfade_is_clamped_and_converted_to_duration() {
+        let long = PlaybackSettings { crossfade_secs: 200, ..PlaybackSettings::default() };
+        assert_eq!(long.sanitized().crossfade_secs, MAX_CROSSFADE_SECS);
+        assert_eq!(long.crossfade(), std::time::Duration::from_secs(u64::from(MAX_CROSSFADE_SECS)));
+        let five = PlaybackSettings { crossfade_secs: 5, ..PlaybackSettings::default() };
+        assert_eq!(five.sanitized().crossfade_secs, 5, "допустимое значение не трогаем");
+        assert_eq!(five.crossfade(), std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn crossfade_and_gapless_do_not_touch_normalization() {
+        // Смена длины кроссфейда или бесшовности не должна сдвигать целевое усиление трека
+        let mut n = Normalizer::new(on());
+        n.begin_track(key("a"));
+        n.record(key("a"), Some(loud(-8.0, 0.5)));
+        let target = n.target; // поле приватное, но тесты лежат внутри модуля
+        n.set_settings(PlaybackSettings { crossfade_secs: 10, gapless: false, ..on() });
+        assert_eq!(n.target, target);
     }
 
     #[test]
@@ -346,7 +394,7 @@ mod tests {
         let mut n = Normalizer::new(on());
         n.begin_track(key("a"));
         n.record(key("a"), Some(loud(-8.0, 1.0)));
-        n.set_settings(PlaybackSettings { normalize_volume: true, target_lufs: -20.0 });
+        n.set_settings(PlaybackSettings { normalize_volume: true, target_lufs: -20.0, ..PlaybackSettings::default() });
         n.tick(Duration::from_secs(10));
         assert_close(n.gain(), 0.251); // -12 дБ
     }
