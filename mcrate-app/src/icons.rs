@@ -65,7 +65,7 @@ impl Icon {
             Self::VolumeMute => mi::ICON_VOLUME_OFF,
             Self::Note => mi::ICON_MUSIC_NOTE,
             Self::Queue => mi::ICON_QUEUE_MUSIC,
-            Self::Settings => mi::ICON_TUNE,
+            Self::Settings => mi::ICON_SETTINGS,
             Self::Plus => mi::ICON_ADD,
             Self::Folder => mi::ICON_FOLDER,
             Self::Home => mi::ICON_HOME,

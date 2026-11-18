@@ -2,10 +2,9 @@
 
 use egui::{Align, Layout, RichText, Sense, Ui, Vec2, vec2};
 
-use super::home::tracks_word;
+use super::home::{title_search_row, tracks_word};
 use super::layout::{centered_column, TRACK_LIST_MAX_WIDTH};
-use super::settings_view::settings_header;
-use super::widgets::{ButtonKind, cover_tile, error_banner, glide_begin, glide_end, pill_button, search_bar, status_snackbar, track_row};
+use super::widgets::{ButtonKind, cover_tile, error_banner, glide_begin, glide_end, pill_button, status_snackbar, track_row};
 use crate::app::{McrateApp, View};
 use crate::icons::{self, Icon};
 use crate::theme::{Theme, with_alpha};
@@ -18,27 +17,29 @@ impl McrateApp {
         centered_column(ui, f32::INFINITY, |ui| {
             let p = &theme.palette;
 
-            // Поиск остаётся над шапкой и не прокручивается вместе со списком.
-            search_bar(ui, theme, &mut self.search, "Поиск по названию и исполнителю");
-            ui.add_space(10.0);
-
-            ui.horizontal(|ui| {
-                if settings_header(ui, theme, "Библиотека") {
-                    self.view = View::Collection;
-                }
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if pill_button(ui, theme, "Папка", Some(Icon::Folder), ButtonKind::Tonal).clicked() {
-                        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                            self.ctl.add_paths(&[dir]);
-                        }
-                    }
+            // Шапка как на главной: «назад», заголовок с подписью, поиск и кнопки «Папка»/«Файлы» на одной линии.
+            let ctl = &mut self.ctl;
+            let (_, back) = title_search_row(
+                ui, theme, "Ваши загрузки", "Локальная коллекция", true, &mut self.search,
+                "Поиск по названию и исполнителю", 250.0,
+                &mut |ui| {
+                    // right_to_left: первой добавленная кнопка окажется правее.
                     if pill_button(ui, theme, "Файлы", Some(Icon::Plus), ButtonKind::Filled).clicked() {
                         if let Some(files) = rfd::FileDialog::new().add_filter("Аудио", &AUDIO_EXT).pick_files() {
-                            self.ctl.add_paths(&files);
+                            ctl.add_paths(&files);
                         }
                     }
-                });
-            });
+                    if pill_button(ui, theme, "Папка", Some(Icon::Folder), ButtonKind::Tonal).clicked() {
+                        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                            ctl.add_paths(&[dir]);
+                        }
+                    }
+                },
+                false,
+            );
+            if back {
+                self.view = View::Collection;
+            }
             ui.add_space(10.0);
 
             if let Some(status) = self.ctl.status.clone() {

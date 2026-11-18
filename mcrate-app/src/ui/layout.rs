@@ -2,7 +2,8 @@
 //! Всё в «точках» egui (логических пикселях), поэтому масштаб Windows (125%, 150%) учитывается сам.
 //! Правила собраны здесь, а не размазаны по экранам: так их проще менять и проверять тестами.
 
-use egui::{Align, Layout, Margin, Rect, ScrollArea, Ui, UiBuilder, pos2, vec2};
+use egui::scroll_area::{ScrollAreaOutput, ScrollSource};
+use egui::{Align, Event, Layout, Margin, MouseWheelUnit, Rect, ScrollArea, Ui, UiBuilder, pos2, vec2};
 
 /// Размерный класс окна (в Material 3 это называется window size class).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -73,7 +74,7 @@ pub fn centered_column<R>(ui: &mut Ui, max_width: f32, add: impl FnOnce(&mut Ui)
 
 /// Максимальная ширина элементов на экранах настроек. Сама панель и область прокрутки
 /// остаются полноширинными; ограничивается только содержимое внутри них.
-pub const SETTINGS_CONTENT_MAX_WIDTH: f32 = 960.0;
+pub const SETTINGS_CONTENT_MAX_WIDTH: f32 = 700.0;
 
 /// Максимальная ширина списков треков. Это сохраняет плотную читаемую колонку на широких окнах.
 pub const TRACK_LIST_MAX_WIDTH: f32 = 920.0;
@@ -147,22 +148,117 @@ fn pane_scroll_geometry(page: Rect, bleed: Bleed) -> (Rect, Margin) {
     (scroll_rect, margin)
 }
 
+/// На сколько полоса прокрутки отступает от верхнего и нижнего края поверхности. Скругление
+/// поверхностей 28 px: с отступом ползунок лежит внутри скруглённой рамки, а не торчит из углов.
+const SCROLLBAR_END_INSET: f32 = 24.0;
+
+/// Прямоугольник полосы прокрутки: вся область по ширине, но короче на `SCROLLBAR_END_INSET` сверху и снизу.
+fn scroll_bar_rect(scroll_rect: Rect) -> Rect {
+    Rect::from_min_max(
+        pos2(scroll_rect.left(), scroll_rect.top() + SCROLLBAR_END_INSET),
+        pos2(scroll_rect.right(), scroll_rect.bottom() - SCROLLBAR_END_INSET),
+    )
+}
+
+/// Скорость сглаживания колеса, 1/с: примерно 90% пути за 0,13 с. Шаг считается по реальному
+/// времени кадра, поэтому на 144/300 Гц прокрутка идёт так же быстро, но с гораздо более частыми шагами.
+const WHEEL_SMOOTH_RATE: f32 = 18.0;
+
+/// Состояние плавной прокрутки колесом одной области (хранится в памяти egui).
+#[derive(Clone, Copy, Default)]
+struct WheelScroll {
+    /// Куда прокрутка должна прийти.
+    target: f32,
+    /// Где она сейчас по нашей анимации.
+    shown: f32,
+    /// Что мы передали в `ScrollArea` в прошлом кадре (чтобы заметить чужое смещение, например перетаскивание ползунка).
+    applied: f32,
+    /// Смещение области по данным egui в прошлом кадре.
+    offset: f32,
+    /// Максимально допустимое смещение (из прошлого кадра).
+    max: f32,
+    active: bool,
+}
+
+/// Сколько точек прокрутило колесо за этот кадр (положительное: содержимое уезжает вниз).
+/// С Shift (горизонталь) и Ctrl (масштаб) не реагируем: их обрабатывает egui отдельно.
+fn wheel_delta_y(ui: &Ui) -> f32 {
+    let line = ui.ctx().options(|o| o.input_options.line_scroll_speed);
+    let page = ui.ctx().viewport_rect().height();
+    ui.input(|i| {
+        if i.modifiers.any() {
+            return 0.0;
+        }
+        i.events
+            .iter()
+            .map(|event| match event {
+                Event::MouseWheel { unit, delta, .. } => match unit {
+                    MouseWheelUnit::Point => delta.y,
+                    MouseWheelUnit::Line => delta.y * line,
+                    MouseWheelUnit::Page => delta.y * page,
+                },
+                _ => 0.0,
+            })
+            .sum()
+    })
+}
+
 /// Область прокрутки занимает поверхность целиком. Содержимое остаётся в исходных
 /// отступах, а скроллбар не получает дополнительных inset-ов у верхнего и нижнего края.
-pub fn pane_scroll<R>(
+///
+/// Колесо мыши обрабатываем сами: каждый кадр смещение приближается к цели по экспоненте от реального
+/// времени кадра. Встроенное сглаживание egui шло с постоянной формой по кадрам и на высокой частоте
+/// обновления (300 Гц) выглядело ступенчатым. Ползунок и остальные способы прокрутки работают как раньше.
+pub fn pane_scroll<T>(
     ui: &mut Ui,
     bleed: Bleed,
     area: ScrollArea,
-    show: impl FnOnce(ScrollArea, &mut Ui) -> R,
-) -> R {
+    show: impl FnOnce(ScrollArea, &mut Ui) -> ScrollAreaOutput<T>,
+) -> ScrollAreaOutput<T> {
     let (scroll_rect, margin) = pane_scroll_geometry(ui.available_rect_before_wrap(), bleed);
     ui.scope_builder(UiBuilder::new().max_rect(scroll_rect).layout(Layout::top_down(Align::Min)), |ui| {
-        show(
-            area
-                .wheel_scroll_multiplier(vec2(WHEEL_SCROLL_MULTIPLIER, WHEEL_SCROLL_MULTIPLIER))
-                .content_margin(margin),
-            ui,
-        )
+        let state_id = ui.make_persistent_id("pane_wheel_scroll");
+        let mut st: WheelScroll = ui.ctx().data_mut(|d| d.get_temp(state_id)).unwrap_or_default();
+        let ppp = ui.ctx().pixels_per_point();
+        let dt = ui.input(|i| i.unstable_dt).clamp(0.0, 0.05);
+
+        let wheel = if ui.rect_contains_pointer(scroll_rect) { wheel_delta_y(ui) } else { 0.0 };
+        if wheel != 0.0 {
+            if !st.active {
+                st.active = true;
+                st.shown = st.offset;
+                st.target = st.offset;
+                st.applied = st.offset;
+            }
+            st.target = (st.target - wheel * WHEEL_SCROLL_MULTIPLIER).clamp(0.0, st.max);
+        }
+
+        let mut forced = None;
+        if st.active {
+            if (st.offset - st.applied).abs() > 1.0 {
+                st.active = false; // область сдвинул кто-то другой (ползунок, scroll_to): уступаем
+            } else {
+                st.shown += (st.target - st.shown) * (1.0 - (-WHEEL_SMOOTH_RATE * dt).exp());
+                if (st.target - st.shown).abs() < 0.5 / ppp {
+                    st.shown = st.target;
+                    st.active = false;
+                }
+                // Привязка к физическим пикселям: текст не «дрожит» на дробных смещениях.
+                st.applied = (st.shown * ppp).round() / ppp;
+                forced = Some(st.applied);
+                ui.ctx().request_repaint();
+            }
+        }
+
+        let mut area = area.scroll_source(ScrollSource { mouse_wheel: false, ..ScrollSource::default() }).content_margin(margin).scroll_bar_rect(scroll_bar_rect(scroll_rect));
+        if let Some(offset) = forced {
+            area = area.vertical_scroll_offset(offset);
+        }
+        let out = show(area, ui);
+        st.offset = out.state.clamped_offset().y;
+        st.max = (out.content_size.y - out.inner_rect.height()).max(0.0);
+        ui.ctx().data_mut(|d| d.insert_temp(state_id, st));
+        out
     })
     .inner
 }

@@ -10,7 +10,10 @@
 use egui::{Align, Layout, RichText, ScrollArea, Sense, Ui, Vec2, vec2};
 use mcrate_core::Track;
 
-use super::layout::{bleed_clip, centered_column, pane_scroll, scroll_end_padding, TRACK_LIST_MAX_WIDTH};
+use egui_material_icons::icons as mi;
+
+use super::layout::{bleed_clip, centered_column, pane_scroll, scroll_end_padding, SETTINGS_CONTENT_MAX_WIDTH, TRACK_LIST_MAX_WIDTH};
+use super::settings_widgets::{Row, Trailing, settings_group};
 use super::settings_view::{nav_list, settings_header};
 use super::widgets::{ButtonKind, glide_begin, glide_end, pill_button, track_row};
 use crate::app::{McrateApp, View};
@@ -25,8 +28,10 @@ impl McrateApp {
     pub fn collection_view(&mut self, ui: &mut Ui, theme: &Theme) {
         centered_column(ui, f32::INFINITY, |ui| {
             let p = &theme.palette;
-            ui.heading("Библиотека");
-            ui.add_space(8.0);
+            centered_column(ui, SETTINGS_CONTENT_MAX_WIDTH, |ui| {
+                ui.heading("Библиотека");
+                ui.add_space(8.0);
+            });
             pane_scroll(
                 ui,
                 self.bleed.below_header(),
@@ -35,18 +40,34 @@ impl McrateApp {
                     bleed_clip(ui, self.bleed.below_header());
 
                     let uploads = format!("Своих файлов: {}", self.ctl.library.len());
-                    let rows = [
-                        (View::CollectionLiked, "Понравившиеся", "Скоро".to_string()),
-                        (View::CollectionPlaylists, "Плейлисты", "Скоро".to_string()),
-                        (View::CollectionDownloaded, "Скачанные", "Скоро".to_string()),
-                        (View::Library, "Ваши загрузки", uploads),
-                    ];
-                    if let Some(view) = nav_list(ui, theme, &rows, f32::INFINITY, false) {
-                        self.view = view;
-                    }
+                    let views = [View::CollectionLiked, View::CollectionPlaylists, View::CollectionDownloaded, View::Library];
+                    // Меню шириной 700 и с тем же видом пунктов, что на экране настроек.
+                    centered_column(ui, SETTINGS_CONTENT_MAX_WIDTH, |ui| {
+                        if theme.glass_active() {
+                            let rows = [
+                                (views[0], "Понравившиеся", "Скоро".to_string()),
+                                (views[1], "Плейлисты", "Скоро".to_string()),
+                                (views[2], "Скачанные", "Скоро".to_string()),
+                                (views[3], "Ваши загрузки", uploads),
+                            ];
+                            if let Some(view) = nav_list(ui, theme, &rows, SETTINGS_CONTENT_MAX_WIDTH, true) {
+                                self.view = view;
+                            }
+                        } else {
+                            let rows = vec![
+                                Row::new(mi::ICON_FAVORITE, "Понравившиеся", Trailing::Value("Скоро".into())),
+                                Row::new(mi::ICON_QUEUE_MUSIC, "Плейлисты", Trailing::Value("Скоро".into())),
+                                Row::new(mi::ICON_DOWNLOAD, "Скачанные", Trailing::Value("Скоро".into())),
+                                Row::new(mi::ICON_FOLDER, "Ваши загрузки", Trailing::Value(uploads)),
+                            ];
+                            if let Some(i) = settings_group(ui, theme, "collection", rows) {
+                                self.view = views[i];
+                            }
+                        }
+                    });
 
                     // ---------- недавно слушали ----------
-                    centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
+                    centered_column(ui, SETTINGS_CONTENT_MAX_WIDTH, |ui| {
                         ui.add_space(14.0);
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("Недавно слушали").size(18.0).strong());

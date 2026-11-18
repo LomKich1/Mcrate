@@ -32,6 +32,18 @@ const GLASS_BAR_BOTTOM_GAP: f32 = 28.0;
 /// прокрутки при этом уходит под край панели, а не режется в этих 20 px (см. `Bleed`).
 const GLASS_PAGE_PAD: f32 = 20.0;
 
+/// Мини-плеер в 1,5 раза уже прежнего и по центру контентной области. Нижняя граница по ширине:
+/// 640 px (меньше колонки плеера вырождаются), а в узком окне плеер занимает всю прежнюю ширину.
+fn mini_bar_rect(content_pane: Rect, bottom: f32) -> Rect {
+    let full_w = content_pane.width() - GLASS_BAR_SIDE_INSET * 2.0;
+    let w = (full_w / 1.5).max(640.0_f32.min(full_w));
+    let cx = content_pane.center().x;
+    Rect::from_min_max(
+        pos2(cx - w * 0.5, bottom - GLASS_BAR_BOTTOM_GAP - GLASS_BAR_H),
+        pos2(cx + w * 0.5, bottom - GLASS_BAR_BOTTOM_GAP),
+    )
+}
+
 /// Какой экран открыт.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -164,6 +176,8 @@ pub struct McrateApp {
     /// Экран, который показан (или к которому идёт переход). Сравнивается с `view`,
     /// чтобы заметить смену экрана и запустить анимацию (см. ui/transition.rs).
     pub shown_view: View,
+    /// Экран, с которого открыли «Сейчас играет» стрелкой в мини-плеере (туда же возвращает закрытие).
+    pub view_before_np: View,
     pub transition: Option<ViewTransition>,
     /// Время кадра основного контекста (секунды). Страница живого фона рисуется ещё раз в закадровом
     /// контексте со своими часами; чтобы переход экранов шёл в такт и там, время берём отсюда.
@@ -227,6 +241,7 @@ impl McrateApp {
             ctl,
             view: View::Home,
             shown_view: View::Home,
+            view_before_np: View::Home,
             transition: None,
             frame_time: 0.0,
             search: String::new(),
@@ -324,10 +339,7 @@ impl McrateApp {
             pos2(full.left() + rail_width + 4.0, full.top() + 12.0),
             pos2(full.right() - 12.0, full.bottom() - 12.0),
         );
-        let bar = Rect::from_min_max(
-            pos2(content_pane.left() + GLASS_BAR_SIDE_INSET, full.bottom() - GLASS_BAR_BOTTOM_GAP - GLASS_BAR_H),
-            pos2(content_pane.right() - GLASS_BAR_SIDE_INSET, full.bottom() - GLASS_BAR_BOTTOM_GAP),
-        );
+        let bar = mini_bar_rect(content_pane, full.bottom());
         // Мини-плеер лежит поверх контентной поверхности, а не обрезает её.
         // Поэтому viewport продолжается до нижнего края Surface::Content (где меняется фон),
         // а прокручиваемые экраны получают нижний отступ на высоту перекрытия плеером.
@@ -353,7 +365,10 @@ impl McrateApp {
         // Плавающая карточка: 16 px бокового inset и 28 px от нижнего края окна,
         // как у Liquid Glass. Внутренние отступы Surface::PlayerBar оставляют 80 px
         // под органы управления (52 + 4 + 24).
+        // Прозрачный «щит» (как в Liquid Glass): без него клики и прокрутка проваливались бы
+        // сквозь карточку плеера в список под ней. Он идёт до содержимого плеера, поэтому кнопки выше него.
         ui.scope_builder(UiBuilder::new().max_rect(bar), |ui| {
+            ui.interact(bar, egui::Id::unique("bar_shield_m3"), Sense::click_and_drag());
             theme.surface(ui, Surface::PlayerBar, |ui| self.player_bar(ui, theme));
         });
     }
@@ -380,10 +395,7 @@ impl McrateApp {
         let content_pane = Rect::from_min_max(pos2(rail.right() + 8.0, pane.top()), pane.right_bottom());
         // Плеер отступает на одинаковое расстояние от левого и правого краёв
         // центральной области. Его центр совпадает с центром контента, а не всего окна.
-        let bar = Rect::from_min_max(
-            pos2(content_pane.left() + GLASS_BAR_SIDE_INSET, full.bottom() - GLASS_BAR_BOTTOM_GAP - GLASS_BAR_H),
-            pos2(content_pane.right() - GLASS_BAR_SIDE_INSET, full.bottom() - GLASS_BAR_BOTTOM_GAP),
-        );
+        let bar = mini_bar_rect(content_pane, full.bottom());
         let inner = Rect::from_min_max(
             pos2(content_pane.left() + GLASS_PAGE_PAD, content_pane.top() + GLASS_PAGE_PAD),
             pos2(content_pane.right() - GLASS_PAGE_PAD, content_pane.bottom()),

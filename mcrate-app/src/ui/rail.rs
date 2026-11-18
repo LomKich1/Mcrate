@@ -1,8 +1,8 @@
 //! Левая навигация.
 
-use egui::{Rect, Response, RichText, Sense, Shape, Ui, Vec2, pos2, vec2};
+use egui::{Align, Layout, Rect, Response, RichText, Sense, Shape, Ui, Vec2, pos2, vec2};
 
-use super::widgets::{NAV_PRESS, cover_tile, nav_item, section_label, spring_step, squish};
+use super::widgets::{ButtonKind, NAV_PRESS, cover_tile, icon_button, nav_item, section_label, spring_step, squish};
 use crate::app::{McrateApp, View};
 use crate::icons::Icon;
 use crate::theme::Theme;
@@ -16,19 +16,32 @@ impl McrateApp {
             ui.spacing_mut().item_spacing.y = 4.0;
         }
         ui.add_space(4.0);
+        // Кнопка настроек (шестерёнка) стоит вверху, рядом со значком приложения.
+        // «Сейчас играет» не отдельный раздел: пока он открыт, подсвечен пункт, с которого его открыли.
+        let nav_view = if self.view == View::NowPlaying { self.view_before_np } else { self.view };
+        let settings_active = nav_view.is_settings();
+        let mut open_settings = false;
         if compact {
-            // Узкая панель: только значок приложения по центру.
+            // Узкая панель: шестерёнка, под ней значок приложения по центру.
             ui.vertical_centered(|ui| {
+                open_settings = icon_button(ui, theme, Icon::Settings, 40.0, ButtonKind::Plain, settings_active, "Настройки").clicked();
+                ui.add_space(4.0);
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
                 cover_tile(ui, theme, rect, "mcrate", 13.0);
             });
         } else {
-            ui.horizontal(|ui| {
-                ui.add_space(8.0);
+            let row_w = ui.available_width();
+            ui.allocate_ui_with_layout(vec2(row_w, 44.0), Layout::left_to_right(Align::Center), |ui| {
+                ui.add_space(2.0);
+                open_settings = icon_button(ui, theme, Icon::Settings, 40.0, ButtonKind::Plain, settings_active, "Настройки").clicked();
+                ui.add_space(2.0);
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::hover());
                 cover_tile(ui, theme, rect, "mcrate", 12.0);
                 ui.label(RichText::new("Mcrate").size(22.0).strong());
             });
+        }
+        if open_settings {
+            self.view = View::Settings; // из подэкрана вернёт на список разделов
         }
         ui.add_space(14.0);
 
@@ -43,10 +56,9 @@ impl McrateApp {
         for (view, icon, label) in [
             (View::Home, Icon::Home, "Главная"),
             (View::Collection, Icon::Library, "Библиотека"),
-            (View::NowPlaying, Icon::Queue, "Сейчас играет"),
         ] {
             // «Библиотека» подсвечена и на её подэкранах (в том числе «Ваши загрузки»).
-            let is_sel = if view == View::Collection { self.view.is_collection() } else { self.view == view };
+            let is_sel = if view == View::Collection { nav_view.is_collection() } else { nav_view == view };
             let resp = nav_item(ui, theme, icon, label, is_sel, true, None, compact);
             if is_sel {
                 selected = Some((idx, resp.clone()));
@@ -65,7 +77,7 @@ impl McrateApp {
         }
         // Провайдеры появятся по шагам плана (CLAUDE.md, п. 3). Пока это заглушки.
         // SoundCloud уже открывается (экран-заглушка, см. ui/soundcloud_view.rs), остальные ждут своей очереди.
-        let is_sel = self.view == View::SoundCloud;
+        let is_sel = nav_view == View::SoundCloud;
         let resp = nav_item(ui, theme, Icon::Cloud, "SoundCloud", is_sel, true, Some("бета"), compact);
         if is_sel {
             selected = Some((idx, resp.clone()));
@@ -73,26 +85,11 @@ impl McrateApp {
         if resp.clicked() {
             self.view = View::SoundCloud;
         }
-        idx += 1;
         if !short_height {
             for name in ["Yandex Music", "VK Music", "Spotify"] {
                 nav_item(ui, theme, Icon::Plus, name, false, false, Some("скоро"), compact);
             }
         }
-
-        // «Настройки» закреплены у нижнего края рейки и не смещаются,
-        // когда список сервисов становится длиннее.
-        ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-            ui.add_space(8.0);
-            let is_sel = self.view.is_settings();
-            let resp = nav_item(ui, theme, Icon::Settings, "Настройки", is_sel, true, None, compact);
-            if is_sel {
-                selected = Some((idx, resp.clone()));
-            }
-            if resp.clicked() {
-                self.view = View::Settings; // из подэкрана вернёт на список разделов
-            }
-        });
 
         // Физическая пружина совпадает с демо: stiffness=500, damping=34, mass=1.
         // При быстром переключении переносим скорость, поэтому индикатор продолжает

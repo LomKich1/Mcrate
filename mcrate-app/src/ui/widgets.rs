@@ -972,6 +972,52 @@ pub fn cover_tile(ui: &mut Ui, theme: &Theme, rect: Rect, seed: &str, radius: f3
     icons::paint(theme, painter, Icon::Note, rect.center(), rect.height() * 0.5, with_alpha(fg, 200));
 }
 
+/// Индикатор загрузки Material 3 (indeterminate circular progress), без подписей.
+/// Анимация повторяет спецификацию M3: дуга растёт и сжимается (голова и хвост бегут с задержкой),
+/// пока вся фигура вращается; один цикл 1332 мс, пять циклов до полного повтора вращения.
+/// Рисуется в обеих темах одинаково, цвет `primary`. Сам просит перерисовку, пока виден.
+pub fn loading_indicator(ui: &mut Ui, theme: &Theme, size: f32) -> Response {
+    const CYCLE: f64 = 1.332; // секунд на один рост и сжатие дуги
+    const HEAD_TAIL: f32 = 0.666; // длительность бега головы и хвоста
+    const JUMP: f32 = 290.0; // на сколько градусов вырастает дуга
+    const ROTATIONS: f64 = 5.0; // циклов до повтора вращения
+    const BASE_DEG: f32 = 286.0; // равномерное вращение за ROTATIONS циклов
+    const STANDARD: [f32; 4] = [0.4, 0.0, 0.2, 1.0];
+
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return resp;
+    }
+    ui.ctx().request_repaint();
+
+    let time = ui.input(|i| i.time);
+    let in_cycle = (time % CYCLE) as f32;
+    let cycle_index = (time / CYCLE).floor() as i64 % ROTATIONS as i64;
+    let ease = |x: f32| super::transition::cubic_bezier(STANDARD, x.clamp(0.0, 1.0));
+    let end = JUMP * ease(in_cycle / HEAD_TAIL);
+    let start = JUMP * ease((in_cycle - HEAD_TAIL) / HEAD_TAIL);
+    let base = BASE_DEG * ((time % (CYCLE * ROTATIONS)) / (CYCLE * ROTATIONS)) as f32;
+    let offset = -90.0 + (cycle_index as f32 * JUMP) % 360.0 + base;
+    let sweep = (end - start).abs().max(0.5);
+
+    let stroke_w = 4.0 * size / 48.0; // M3: дорожка 4 dp при размере 48 dp
+    let radius = (size - stroke_w) * 0.5;
+    let color = theme.palette.primary;
+    let steps = ((sweep / 4.0).ceil() as usize).max(2);
+    let point = |deg: f32| {
+        let a = deg.to_radians();
+        rect.center() + vec2(a.cos(), a.sin()) * radius
+    };
+    let points: Vec<Pos2> = (0..=steps).map(|i| point(start + offset + sweep * i as f32 / steps as f32)).collect();
+    let painter = ui.painter();
+    painter.add(Shape::line(points.clone(), Stroke::new(stroke_w, color)));
+    // Круглые концы дуги (в egui у линии они плоские).
+    for end_point in [points[0], points[steps]] {
+        painter.circle_filled(end_point, stroke_w * 0.5, color);
+    }
+    resp
+}
+
 /// Контур загрузки: яркий отрезок с затухающим хвостом бежит по периметру обложки, пока трек грузится.
 /// Чисел нет. Контур рисуется чуть внутри обложки (`rect`), чтобы его не обрезала область панели.
 /// При включённом «уменьшении движения» вместо бега показывается неподвижная рамка.
@@ -1074,11 +1120,10 @@ pub fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track, is_cur
         return resp; // не в кадре: ничего не считаем и не рисуем
     }
     let id = ui.scope_id().with(("track_row", &track.id));
-    let rect = if theme.glass_active() {
-        squish(ui, id, &resp, rect, 0.015, 0.07)
-    } else {
-        rect
-    };
+    // Продавливание: содержимое строки чуть сжимается при нажатии. В Material 3 фон текущего трека
+    // и слой подсветки остаются исходного размера (`row_rect`), сжимается только содержимое.
+    let row_rect = rect;
+    let rect = squish(ui, id, &resp, rect, 0.015, 0.07);
     let painter = ui.painter();
 
     if theme.glass_active() && resp.is_pointer_button_down_on() && !is_current {
@@ -1087,13 +1132,15 @@ pub fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track, is_cur
     }
     if is_current {
         if theme.glass_active() {
+            // Тот же цвет, что у выбранного пункта меню (`selected_fill`), плюс акцентная полоска слева.
+            painter.rect_filled(rect, theme.shape_radius(ShapeRole::Large), theme.selected_fill());
             painter.rect_filled(
                 Rect::from_min_size(pos2(rect.left() + 4.0, rect.top() + 12.0), vec2(2.5, 32.0)),
                 1.25,
                 with_alpha(p.primary, 210),
             );
         } else {
-            painter.rect_filled(rect, theme.shape_radius(ShapeRole::Large), p.secondary_container);
+            painter.rect_filled(row_rect, theme.shape_radius(ShapeRole::Large), p.secondary_container);
         }
     }
 

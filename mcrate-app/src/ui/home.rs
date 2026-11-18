@@ -20,7 +20,7 @@ use mcrate_core::Track;
 
 use super::wave::{self, COL_STEP_PX, WaveInput, WaveSim};
 use super::layout::{Bleed, bleed_clip, centered_column, pane_scroll, scroll_end_padding, TRACK_LIST_MAX_WIDTH};
-use super::widgets::{ButtonKind, artists_text, cover_tile, glide_begin, glide_end, glide_end_flat, pill_button, search_bar, squish, track_row};
+use super::widgets::{ButtonKind, artists_text, cover_tile, glass_icon_button, glide_begin, glide_end, glide_end_flat, pill_button, search_bar, squish, track_row};
 use crate::app::{McrateApp, View};
 use crate::icons::{self, Icon};
 use crate::theme::{TextRole, Theme, with_alpha};
@@ -140,7 +140,6 @@ impl McrateApp {
         let mut clicked = None;
 
         egui::Frame::new()
-            .fill(p.surface_container_high)
             .corner_radius(theme.shape_radius(crate::theme::ShapeRole::ExtraLarge))
             .inner_margin(egui::Margin::same(14))
             .show(ui, |ui| {
@@ -323,7 +322,6 @@ impl McrateApp {
             centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| self.home_chart_contents(ui, theme));
         } else {
             egui::Frame::new()
-                .fill(theme.palette.surface_container_high)
                 .corner_radius(theme.shape_radius(crate::theme::ShapeRole::ExtraLarge))
                 .inner_margin(egui::Margin::same(14))
                 .show(ui, |ui| self.home_chart_contents(ui, theme));
@@ -526,17 +524,79 @@ fn arrow_button(ui: &mut Ui, theme: &Theme, right: bool, enabled: bool) -> Respo
 
 /// Заголовок «Моя волна» и подпись. Стоит в одной строке с поиском (см. `home_view`).
 fn wave_title(ui: &mut Ui, theme: &Theme) {
+    screen_title(ui, theme, "Моя волна", "Ваша музыка вперемешку");
+}
+
+/// Крупный заголовок экрана с приглушённой подписью (как «Моя волна» на главной).
+fn screen_title(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str) {
     let p = &theme.palette;
     ui.add(egui::Label::new(
-        RichText::new("Моя волна")
+        RichText::new(title)
             .size(theme.text_size(TextRole::DisplaySmall))
             .strong(),
     ).truncate());
     ui.add(egui::Label::new(
-        RichText::new("Ваша музыка вперемешку")
+        RichText::new(subtitle)
             .size(theme.text_size(TextRole::LabelLarge))
             .color(p.on_surface_variant),
     ).truncate());
+}
+
+/// Общая шапка экранов: слева заголовок с подписью (при `back` перед ним кнопка «назад»),
+/// правее поиск, а справа (если `trailing_w` > 0) блок кнопок, который рисует `trailing`.
+/// Всё стоит в одной строке фиксированной высоты и центрируется по ней: так «назад», заголовок,
+/// поиск и кнопки лежат на одной линии. Возвращает ответ поля поиска и признак нажатия «назад».
+pub(super) fn title_search_row(
+    ui: &mut Ui,
+    theme: &Theme,
+    title: &str,
+    subtitle: &str,
+    back: bool,
+    value: &mut String,
+    hint: &str,
+    trailing_w: f32,
+    trailing: &mut dyn FnMut(&mut Ui),
+    centered_search: bool,
+) -> (Response, bool) {
+    const ROW_H: f32 = 60.0;
+    const BACK_W: f32 = 48.0;
+    const GAP: f32 = 16.0;
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
+    let right_edge = if trailing_w > 0.0 { row.right() - trailing_w - 12.0 } else { row.right() };
+    let centered = Layout::left_to_right(Align::Center);
+    let mut back_clicked = false;
+
+    let mut x = row.left();
+    if back {
+        let r = Rect::from_min_max(pos2(x, row.top()), pos2(x + BACK_W, row.bottom()));
+        back_clicked = ui.scope_builder(UiBuilder::new().max_rect(r).layout(centered), |ui| {
+            glass_icon_button(ui, theme, Icon::ChevronBack, 40.0, ButtonKind::Plain, false, "Назад").clicked()
+        }).inner;
+        x += BACK_W;
+    }
+    let title_w = ((right_edge - x) * 0.45).min(360.0).max(80.0);
+    let title_rect = Rect::from_min_size(pos2(x, row.top() + 2.0), vec2(title_w, ROW_H - 2.0));
+    ui.scope_builder(UiBuilder::new().max_rect(title_rect).layout(Layout::top_down(Align::Min)), |ui| {
+        screen_title(ui, theme, title, subtitle);
+    });
+    x += title_w + GAP;
+
+    let search_rect = if centered_search {
+        // Поле по центру строки (а не прижато к заголовку): симметрично вокруг середины, но не наезжает на заголовок.
+        let half = ((row.center().x - x).min(right_edge - row.center().x)).max(100.0).min(360.0);
+        Rect::from_min_max(pos2(row.center().x - half, row.top()), pos2(row.center().x + half, row.bottom()))
+    } else {
+        Rect::from_min_max(pos2(x.min(right_edge), row.top()), pos2(right_edge, row.bottom()))
+    };
+    let search = ui.scope_builder(UiBuilder::new().max_rect(search_rect).layout(centered), |ui| {
+        search_bar(ui, theme, value, hint)
+    }).inner;
+
+    if trailing_w > 0.0 {
+        let r = Rect::from_min_max(pos2(row.right() - trailing_w, row.top()), row.max);
+        ui.scope_builder(UiBuilder::new().max_rect(r).layout(Layout::right_to_left(Align::Center)), |ui| trailing(ui));
+    }
+    (search, back_clicked)
 }
 
 /// Что показать на карточке полки.
@@ -552,7 +612,7 @@ struct MediaCard<'a> {
 }
 
 /// Текст в одну строку с многоточием, если не влез. `max_w` в пикселях.
-fn elided(painter: &Painter, text: &str, font: FontId, color: Color32, max_w: f32) -> Arc<egui::Galley> {
+pub(super) fn elided(painter: &Painter, text: &str, font: FontId, color: Color32, max_w: f32) -> Arc<egui::Galley> {
     let mut job = egui::text::LayoutJob::simple(text.to_owned(), font, color, max_w);
     job.wrap.max_rows = 1;
     job.wrap.break_anywhere = true;

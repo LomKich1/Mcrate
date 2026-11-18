@@ -71,7 +71,7 @@ impl ViewTransition {
 
 /// Кубическая кривая Безье с концами (0,0) и (1,1): по времени `x` ищем параметр бисекцией,
 /// возвращаем `y`.
-fn cubic_bezier([x1, y1, x2, y2]: [f32; 4], x: f32) -> f32 {
+pub(super) fn cubic_bezier([x1, y1, x2, y2]: [f32; 4], x: f32) -> f32 {
     fn bez(t: f32, a: f32, b: f32) -> f32 {
         let u = 1.0 - t;
         3.0 * u * u * t * a + 3.0 * u * t * t * b + t * t * t
@@ -151,27 +151,36 @@ fn host(ui: &mut Ui, transition: Option<ViewTransition>, view: View, bleed: Blee
     // приходящий экран). Пустой слот просто пропускает номер (`skip_ahead_auto_ids`).
     let Some(tr) = transition else {
         ui.skip_ahead_auto_ids(1); // пустой нижний слот
-        layer(ui, view, rect, bleed, LayerPose { dx: 0.0, alpha: 1.0 }, draw);
+        layer(ui, view, rect, bleed, LayerPose { dx: 0.0, alpha: 1.0 }, false, draw);
         return;
     };
 
     // Пока идёт переход, просим перерисовывать каждый кадр.
     ui.ctx().request_repaint();
 
-    let forward = tr.to.order() >= tr.from.order();
-    let dir = if forward { 1.0 } else { -1.0 };
-    let (out_pose, in_pose) = poses(tr.progress(), dir, rect.width());
+    // Переходы в «Сейчас играет» и обратно идут по вертикали: открытие поднимает экран снизу,
+    // закрытие опускает его вниз (в паре со стрелкой в мини-плеере). Остальные идут по горизонтали.
+    let vertical = tr.from == View::NowPlaying || tr.to == View::NowPlaying;
+    let dir = if vertical {
+        if tr.to == View::NowPlaying { 1.0 } else { -1.0 }
+    } else if tr.to.order() >= tr.from.order() {
+        1.0
+    } else {
+        -1.0
+    };
+    let extent = if vertical { rect.height() } else { rect.width() };
+    let (out_pose, in_pose) = poses(tr.progress(), dir, extent);
 
     // Уходящий рисуется первым (под низом), новый поверх.
-    layer(ui, tr.from, rect, bleed, out_pose, draw);
+    layer(ui, tr.from, rect, bleed, out_pose, vertical, draw);
     // «Щит»: невидимая область поверх уходящего экрана. Клики и наведение достаются ему,
     // а не кнопкам под ним. Виджеты нового экрана добавляются позже, поэтому они выше щита.
     ui.interact(rect, ui.scope_id().with("view_transition_shield"), Sense::click_and_drag());
-    layer(ui, tr.to, rect, bleed, in_pose, draw);
+    layer(ui, tr.to, rect, bleed, in_pose, vertical, draw);
 }
 
 /// Один слой: экран, сдвинутый по X и с заданной прозрачностью, обрезанный по `rect`.
-fn layer(ui: &mut Ui, view: View, rect: Rect, bleed: Bleed, pose: LayerPose, draw: &mut dyn FnMut(&mut Ui, View)) {
+fn layer(ui: &mut Ui, view: View, rect: Rect, bleed: Bleed, pose: LayerPose, vertical: bool, draw: &mut dyn FnMut(&mut Ui, View)) {
     // Слой прозрачнее одного шага 8-битного канала не виден: не тратим на него кадр.
     // Но номер в нумерации id занимаем (см. комментарий в `host`).
     if pose.alpha < 1.0 / 255.0 {
@@ -183,7 +192,7 @@ fn layer(ui: &mut Ui, view: View, rect: Rect, bleed: Bleed, pose: LayerPose, dra
     let mut child = ui.new_child(
         UiBuilder::new()
             .id_salt(("view_layer", view as u8))
-            .max_rect(rect.translate(vec2(pose.dx, 0.0)))
+            .max_rect(rect.translate(if vertical { vec2(0.0, pose.dx) } else { vec2(pose.dx, 0.0) }))
             .layout(*ui.layout()),
     );
     // Не даём содержимому вылезать за пределы области (при сдвиге оно чуть уезжает под край).

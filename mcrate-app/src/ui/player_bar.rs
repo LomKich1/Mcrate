@@ -1,13 +1,14 @@
 //! Нижняя панель плеера: трек слева, управление и перемотка по центру, громкость справа.
 
-use egui::{Align, Align2, FontId, Layout, Pos2, Rect, RichText, Sense, Ui, UiBuilder, Vec2, pos2, vec2};
+use egui::{Align, Align2, CursorIcon, FontId, Id, Layout, Pos2, Rect, RichText, Sense, Shape, Stroke, Ui, UiBuilder, Vec2, pos2, vec2};
 use mcrate_audio::RepeatMode;
 
+use super::home::elided;
 use super::layout::bar_columns;
 use super::widgets::{ButtonKind, artists_text, cover_tile, fmt_time, icon_button, loading_outline, slider_bar};
-use crate::app::McrateApp;
+use crate::app::{McrateApp, View};
 use crate::icons::Icon;
-use crate::theme::Theme;
+use crate::theme::{Theme, with_alpha};
 
 /// Высота содержимого панели: ряд кнопок + зазор + строка перемотки.
 const CONTROLS_H: f32 = 52.0; // высота главной кнопки «играть»
@@ -62,15 +63,21 @@ impl McrateApp {
                     let time = ui.input(|i| i.time);
                     loading_outline(ui, theme, rect, cover_radius, time);
                 }
-                ui.vertical(|ui| {
-                    ui.set_max_width((width - cover_size - 14.0).max(60.0));
-                    // В компактном состоянии скрываем вторичные метаданные, чтобы название
-                    // оставалось читаемым и не сжимало центральные кнопки.
-                    ui.add(egui::Label::new(RichText::new(&t.title).size(if compact { 13.5 } else { 15.0 }).strong()).truncate());
-                    if !compact {
-                        ui.add(egui::Label::new(RichText::new(artists_text(&t)).size(12.5).color(p.on_surface_variant)).truncate());
-                    }
-                });
+                // Текст по вертикали центрируется по обложке: считаем высоту блока по реальным строкам
+                // и кладём его вровень с центром обложки (ui.vertical прижимал текст к верху колонки).
+                let text_w = (width - cover_size - 14.0).max(60.0);
+                let painter = ui.painter().clone();
+                let title = elided(&painter, &t.title, FontId::proportional(if compact { 13.5 } else { 15.0 }), p.on_surface, text_w);
+                let artists = (!compact).then(|| elided(&painter, &artists_text(&t), FontId::proportional(12.5), p.on_surface_variant, text_w));
+                let gap = 3.0;
+                let block_h = title.size().y + artists.as_ref().map_or(0.0, |a| gap + a.size().y);
+                let x = rect.right() + 14.0;
+                let mut y = rect.center().y - block_h * 0.5;
+                painter.galley(pos2(x, y), title.clone(), p.on_surface);
+                y += title.size().y + gap;
+                if let Some(a) = artists {
+                    painter.galley(pos2(x, y), a, p.on_surface_variant);
+                }
             }
             None => {
                 ui.label(RichText::new("Ничего не играет").color(p.on_surface_variant));
@@ -166,10 +173,41 @@ impl McrateApp {
         }
     }
 
+    /// Стрелка «Сейчас играет»: ^ когда экран закрыт, v когда открыт; поворачивается плавно.
+    /// Открытие запоминает текущий экран, закрытие возвращает на него.
+    fn pb_now_playing_toggle(&mut self, ui: &mut Ui, theme: &Theme) {
+        let p = &theme.palette;
+        let open = self.view == View::NowPlaying;
+        let t = ui.ctx().animate_bool_with_time(Id::new("np_toggle_arrow"), open, 0.30);
+        let e = t * t * (3.0 - 2.0 * t); // smoothstep: плавный старт и остановка
+        let (rect, resp) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::click());
+        let pressed = resp.is_pointer_button_down_on();
+        if resp.hovered() || pressed {
+            ui.painter().circle_filled(rect.center(), 18.0, with_alpha(p.on_surface, if pressed { 32 } else { 20 }));
+        }
+        let (s, c) = (e * std::f32::consts::PI).sin_cos();
+        let pts: Vec<Pos2> = [vec2(-7.0, 3.5), vec2(0.0, -3.5), vec2(7.0, 3.5)]
+            .iter()
+            .map(|v| rect.center() + vec2(v.x * c - v.y * s, v.x * s + v.y * c))
+            .collect();
+        ui.painter().add(Shape::line(pts, Stroke::new(2.2, p.on_surface)));
+        let resp = resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text("Сейчас играет");
+        if resp.clicked() {
+            if open {
+                self.view = self.view_before_np;
+            } else {
+                self.view_before_np = self.view;
+                self.view = View::NowPlaying;
+            }
+        }
+    }
+
     fn pb_volume(&mut self, ui: &mut Ui, theme: &Theme, width: f32) {
         // Layout здесь right_to_left: что добавлено первым, то правее.
-        // Ползунок растёт с панелью, но остаётся в пределах 90..180 px.
-        let slider_w = (width * 0.45).clamp(90.0, 180.0);
+        self.pb_now_playing_toggle(ui, theme);
+        ui.add_space(4.0);
+        // Ползунок растёт с панелью, но остаётся в пределах 64..180 px (минимум снижен из-за стрелки справа).
+        let slider_w = ((width - 36.0) * 0.45).clamp(64.0, 180.0);
         let out = slider_bar(ui, theme, slider_w, self.ctl.volume, true, "Громкость");
         if let Some(v) = out.value {
             self.ctl.set_volume(v);

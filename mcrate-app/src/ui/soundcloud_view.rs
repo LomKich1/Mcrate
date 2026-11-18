@@ -7,33 +7,30 @@
 //!
 //! Вход в аккаунт (токен) появится позже; пока экран работает без него.
 
-use egui::{Align, Key, Layout, RichText, ScrollArea, Sense, Spinner, Ui, Vec2};
+use egui::{Align, Key, Layout, RichText, ScrollArea, Sense, Ui, Vec2};
 
-use super::home::tracks_word;
+use super::home::{title_search_row, tracks_word};
 use super::layout::{bleed_clip, centered_column, pane_scroll, scroll_end_padding, TRACK_LIST_MAX_WIDTH};
-use super::widgets::{error_banner, glide_begin, glide_end, search_bar, track_row};
+use super::widgets::{error_banner, glide_begin, glide_end, loading_indicator, track_row};
 use crate::app::McrateApp;
 use crate::icons::{self, Icon};
 use crate::theme::{Theme, with_alpha};
+
+/// Размер индикатора загрузки по умолчанию в M3: 48 dp.
+const LOADING_SIZE: f32 = 48.0;
 
 impl McrateApp {
     pub fn soundcloud_view(&mut self, ui: &mut Ui, theme: &Theme) {
         centered_column(ui, f32::INFINITY, |ui| {
             let p = &theme.palette;
 
-            // Название экрана слева от поиска — одна строка, как на главной странице.
-            centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
-                let search = ui.horizontal(|ui| {
-                    ui.heading("SoundCloud");
-                    ui.add_space(16.0);
-                    search_bar(ui, theme, &mut self.sc_input, "Поиск по SoundCloud")
-                }).inner;
-                if search.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !self.sc_input.trim().is_empty() {
-                    let query = self.sc_input.clone();
-                    self.ctl.sc_search(&query);
-                }
-            });
-            ui.add_space(8.0);
+            // Шапка как на главной: заголовок с подписью слева, поиск справа.
+            let (search, _) = title_search_row(ui, theme, "SoundCloud", "Поиск музыки по сервису", false, &mut self.sc_input, "Поиск по SoundCloud", 0.0, &mut |_| {}, true);
+            if search.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !self.sc_input.trim().is_empty() {
+                let query = self.sc_input.clone();
+                self.ctl.sc_search(&query);
+            }
+            ui.add_space(18.0);
             // Высоту видимой области берём ДО ScrollArea: внутри неё доступная высота не ограничена,
             // а она нужна, чтобы поставить пустое состояние примерно по центру.
             let view_height = ui.available_height();
@@ -46,8 +43,11 @@ impl McrateApp {
                     centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
                         // ---------- состояние: поиск, загрузка, ошибки ----------
                         if self.ctl.sc.searching {
-                            let hint = format!("Ищем «{}»…", self.ctl.sc.query);
-                            status_line(ui, theme, &hint, Some("Первый поиск после установки может занять до 30 секунд"), true);
+                            // Индикатор M3 по центру области, без подписей.
+                            ui.vertical_centered(|ui| {
+                                ui.add_space(((view_height - self.bottom_inset - LOADING_SIZE) * 0.5).max(16.0));
+                                loading_indicator(ui, theme, LOADING_SIZE);
+                            });
                         }
                         if let Some(err) = self.ctl.sc.error.clone() {
                             error_banner(ui, theme, &err);
@@ -130,23 +130,6 @@ impl McrateApp {
             );
         });
     }
-}
-
-/// Строка состояния: спиннер (если идёт работа), основной текст и необязательная приглушённая подпись.
-fn status_line(ui: &mut Ui, theme: &Theme, text: &str, sub: Option<&str>, spinner: bool) {
-    let p = &theme.palette;
-    ui.horizontal(|ui| {
-        if spinner {
-            ui.add(Spinner::new().size(16.0).color(p.primary));
-        }
-        ui.vertical(|ui| {
-            ui.label(RichText::new(text).size(14.0).color(p.on_surface));
-            if let Some(sub) = sub {
-                ui.label(RichText::new(sub).size(12.5).color(p.on_surface_variant));
-            }
-        });
-    });
-    ui.add_space(10.0);
 }
 
 /// Пустое состояние по центру: круглая иконка, заголовок и пояснение (как на экране «Ваши загрузки»).

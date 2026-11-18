@@ -201,10 +201,10 @@ impl Theme {
 
     pub fn hover_glide_alpha(&self) -> u8 {
         match (self.design(), self.palette.dark) {
-            (Design::LiquidGlass, true) => 18,
-            (Design::LiquidGlass, false) => 24,
-            (_, true) => 70,
-            (_, false) => 30,
+            (Design::LiquidGlass, true) => 26,
+            (Design::LiquidGlass, false) => 32,
+            (_, true) => 84,
+            (_, false) => 40,
         }
     }
 
