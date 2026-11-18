@@ -5,6 +5,7 @@ pub mod queue;
 pub use queue::{PlayQueue, RepeatMode}; // чтобы писать mcrate_audio::PlayQueue
 pub mod engine;
 pub use engine::{PlaybackEngine, PlaybackEvent, PlaybackState};
+mod crossfade; // кроссфейд: кривые и ход фейда (внутренний)
 mod gain; // усиление нормализации на уровне источника: у каждого трека своё (внутренний)
 mod growing_file; // чтение файла, который ещё докачивается (внутренний)
 mod loudness; // измерение громкости трека по EBU R128 (внутренний)
@@ -17,7 +18,7 @@ pub use visualizer::{VisualizerFrame, VISUALIZER_POINTS};
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -29,6 +30,7 @@ use mcrate_net::{Available, DownloadProgress};
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use thiserror::Error;
 
+use crate::crossfade::Fade;
 use crate::gain::{GainSource, TrackGain};
 use crate::growing_file::{GrowingFile, HEADER_LEN};
 use crate::stitch::{CancelSource, Stitch};
@@ -125,6 +127,12 @@ pub struct AudioPlayer {
     /// Номер активной деки (0 или 1): та, что сейчас «играет». Вторая (простаивающая)
     /// держит предзагруженный следующий трек на паузе или пуста.
     active: AtomicUsize,
+    /// Ползунок громкости пользователя (биты `f32`). Нужен самому плееру: во время кроссфейда
+    /// громкость каждой деки = ползунок × кривая фейда.
+    slider: AtomicU32,
+    /// Идущий кроссфейд. Пока он идёт, активная дека это ПРИХОДЯЩИЙ трек, а простаивающая
+    /// (`idle_deck`) ещё доигрывает УХОДЯЩИЙ.
+    fade: Mutex<Option<Fade>>,
     visualizer: VisualizerFeed,
     _sink: MixerDeviceSink, // `_` в начале = «поле нужно, чтобы жить, но мы его не читаем»
 }
@@ -155,7 +163,14 @@ impl AudioPlayer {
         let mut sink = DeviceSinkBuilder::open_default_sink()?;
         sink.log_on_drop(false); // не печатать предупреждение при закрытии
         let decks = [Deck::new(&sink), Deck::new(&sink)]; // обе деки подключены к «выходу»
-        Ok(Self { decks, active: AtomicUsize::new(0), visualizer, _sink: sink })
+        Ok(Self {
+            decks,
+            active: AtomicUsize::new(0),
+            slider: AtomicU32::new(1.0f32.to_bits()),
+            fade: Mutex::new(None),
+            visualizer,
+            _sink: sink,
+        })
     }
 
     fn active_index(&self) -> usize {
@@ -268,6 +283,7 @@ impl AudioPlayer {
     /// Старая предзагрузка заменяется. Громкость второй деки сначала равна громкости
     /// активной; `set_preload_volume` меняет её до переключения.
     pub fn preload_file(&self, path: &Path) -> Result<Option<Duration>, AudioError> {
+        self.ensure_not_crossfading()?;
         let idle = self.idle_deck();
         let total = self.install_file(idle, path)?;
         idle.player.set_volume(self.active_deck().player.volume());
@@ -281,6 +297,7 @@ impl AudioPlayer {
         dest: &Path,
         progress: &DownloadProgress,
     ) -> Result<Option<Duration>, AudioError> {
+        self.ensure_not_crossfading()?;
         if progress.is_finished() && dest.exists() {
             return self.preload_file(dest);
         }
@@ -292,7 +309,8 @@ impl AudioPlayer {
 
     /// Есть ли подготовленный трек во второй деке?
     pub fn has_preloaded(&self) -> bool {
-        !self.idle_deck().player.empty()
+        // Во время кроссфейда вторая дека занята уходящим треком, а не предзагрузкой
+        !self.is_crossfading() && !self.idle_deck().player.empty()
     }
 
     /// Громкость ползунка для предзагруженного трека (после переключения он должен звучать так же).
@@ -307,9 +325,14 @@ impl AudioPlayer {
 
     /// Выбросить предзагруженный трек.
     pub fn discard_preloaded(&self) {
+        // Если шёл кроссфейд, то уходящий трек обрывается, а приходящий (активная дека) звучит как есть
+        let was_fading = self.fade_slot().take().is_some();
         let idle = self.idle_deck();
         if !idle.player.empty() || idle.ctx().is_some() {
             idle.clear();
+        }
+        if was_fading {
+            self.active_deck().player.set_volume(self.slider());
         }
     }
 
@@ -317,7 +340,7 @@ impl AudioPlayer {
     /// активным. Пауза сохраняется (стояли на паузе, останемся на паузе, играли, играем).
     /// Без предзагрузки ничего не делает и возвращает `false`.
     pub fn switch_to_preloaded(&self) -> bool {
-        if !self.has_preloaded() {
+        if !self.has_preloaded() { // (во время кроссфейда предзагрузки нет)
             return false;
         }
         let old = self.active_index();
@@ -329,6 +352,80 @@ impl AudioPlayer {
             self.decks[1 - old].player.play();
         }
         true
+    }
+
+    // ----- кроссфейд: две деки играют вместе -----
+
+    /// Начать кроссфейд на предзагруженный трек: вторая дека начинает играть (с нуля громкости),
+    /// и СРАЗУ становится активной, то есть позиция, перемотка, пауза и усиление относятся уже к
+    /// новому треку, а прежний (теперь «простаивающий») доигрывает и затихает. Ход фейда двигает
+    /// `advance_crossfade`. `false`, если нечего запускать, фейд уже идёт или играющий трек на
+    /// паузе (с паузы кроссфейд не начинают).
+    pub fn start_crossfade(&self, length: Duration) -> bool {
+        if self.is_crossfading() || !self.has_preloaded() || self.is_paused() {
+            return false;
+        }
+        let old = self.active_index();
+        let fade = Fade::new(length);
+        *self.fade_slot() = Some(fade);
+        self.active.store(1 - old, Ordering::Release);
+        self.apply_fade_volumes(&fade); // приходящий начинает с нуля, ещё до `play`
+        self.decks[1 - old].player.play();
+        true
+    }
+
+    /// Идёт ли кроссфейд?
+    pub fn is_crossfading(&self) -> bool {
+        self.fade_slot().is_some()
+    }
+
+    /// Подвинуть кроссфейд на `dt` и выставить громкости. Возвращает `true`, когда фейд закончился
+    /// именно сейчас (уходящая дека очищена, громкость нового трека равна ползунку).
+    pub fn advance_crossfade(&self, dt: Duration) -> bool {
+        let fade = {
+            let mut slot = self.fade_slot();
+            let Some(fade) = slot.as_mut() else { return false };
+            fade.advance(dt);
+            *fade
+        };
+        if fade.is_done() {
+            self.end_crossfade();
+            return true;
+        }
+        self.apply_fade_volumes(&fade);
+        false
+    }
+
+    /// Закончить кроссфейд сейчас же: уходящий трек обрывается, приходящий звучит в полную громкость.
+    /// Без кроссфейда ничего не делает.
+    pub fn end_crossfade(&self) {
+        if self.fade_slot().take().is_some() {
+            self.idle_deck().clear();
+            self.active_deck().player.set_volume(self.slider());
+        }
+    }
+
+    fn fade_slot(&self) -> MutexGuard<'_, Option<Fade>> {
+        self.fade.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn slider(&self) -> f32 {
+        f32::from_bits(self.slider.load(Ordering::Relaxed))
+    }
+
+    fn ensure_not_crossfading(&self) -> Result<(), AudioError> {
+        if self.is_crossfading() {
+            return Err(AudioError::Engine("идёт кроссфейд: вторая дека занята уходящим треком".to_string()));
+        }
+        Ok(())
+    }
+
+    /// Громкость каждой деки: ползунок × кривая фейда (усиление нормализации уже в источниках).
+    fn apply_fade_volumes(&self, fade: &Fade) {
+        let (out, incoming) = fade.gains();
+        let slider = self.slider();
+        self.idle_deck().player.set_volume(slider * out); // уходящий
+        self.active_deck().player.set_volume(slider * incoming); // приходящий
     }
 
     // ----- бесшовный стык: следующий трек в очереди играющей деки -----
@@ -384,12 +481,25 @@ impl AudioPlayer {
         deck.stitch().take_transition()
     }
 
-    pub fn pause(&self) { self.active_deck().player.pause(); }
-    pub fn resume(&self) { self.active_deck().player.play(); }
+    /// Пауза: во время кроссфейда замолкают обе деки (фейд при этом замирает, движок не зовёт `advance_crossfade`).
+    pub fn pause(&self) {
+        self.active_deck().player.pause();
+        if self.is_crossfading() {
+            self.idle_deck().player.pause();
+        }
+    }
+    pub fn resume(&self) {
+        self.active_deck().player.play();
+        if self.is_crossfading() {
+            self.idle_deck().player.play();
+        }
+    }
     pub fn stop(&self) {
         // Стоп убирает всё: и играющий трек, и предзагруженный
+        *self.fade_slot() = None;
         for deck in &self.decks {
             deck.clear();
+            deck.player.set_volume(self.slider());
         }
         self.visualizer.clear();
     }
@@ -401,7 +511,12 @@ impl AudioPlayer {
     /// Громкость ползунка пользователя: 1.0 = как в файле, 0.5 = вдвое тише.
     pub fn set_volume(&self, volume: f32) {
         // Визуализатор от громкости не зависит: он анализирует звук ДО ползунка громкости.
-        self.active_deck().player.set_volume(volume);
+        self.slider.store(volume.to_bits(), Ordering::Relaxed);
+        let fade = *self.fade_slot();
+        match fade {
+            Some(fade) => self.apply_fade_volumes(&fade),
+            None => self.active_deck().player.set_volume(volume),
+        }
     }
 
     /// Усиление нормализации играющего трека (1.0 = без изменений). Отдельно от ползунка:
@@ -700,6 +815,124 @@ mod stream_tests {
         assert!(!player.switch_to_preloaded());
         assert_eq!(player.active_index(), old);
         assert!(!player.is_finished());
+    }
+
+    // ----- кроссфейд -----
+
+    /// Два длинных трека (300 с: нулевое устройство в тестах проглатывает звук быстрее реального
+    /// времени), первый играет, второй предзагружен.
+    fn playing_with_preload(name: &str) -> Option<(AudioPlayer, TempDir)> {
+        let player = device()?;
+        let dir = TempDir::new(name);
+        let (a, b) = (wav_file(&dir, "a.wav", 300), wav_file(&dir, "b.wav", 300));
+        player.play_file(&a).unwrap();
+        player.preload_file(&b).unwrap();
+        Some((player, dir))
+    }
+
+    fn vol(player: &AudioPlayer, deck: usize) -> f32 {
+        player.decks[deck].player.volume()
+    }
+
+    fn near(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-3
+    }
+
+    #[test]
+    fn crossfade_needs_a_preloaded_track_and_a_playing_one() {
+        let Some(player) = device() else { return };
+        let dir = TempDir::new("cf-needs");
+        player.play_file(&wav_file(&dir, "a.wav", 300)).unwrap();
+        assert!(!player.start_crossfade(Duration::from_secs(1)), "без предзагрузки фейдить нечего");
+        player.preload_file(&wav_file(&dir, "b.wav", 300)).unwrap();
+        player.pause();
+        assert!(!player.start_crossfade(Duration::from_secs(1)), "с паузы кроссфейд не начинают");
+        assert!(!player.is_crossfading());
+        assert!(player.has_preloaded(), "отказ ничего не сломал");
+    }
+
+    #[test]
+    fn crossfade_swaps_active_deck_and_follows_the_equal_power_curve() {
+        let Some((player, _dir)) = playing_with_preload("cf-curve") else { return };
+        let old = player.active_index();
+        player.set_volume(0.8);
+        assert!(player.start_crossfade(Duration::from_secs(2)));
+        assert!(player.is_crossfading());
+        assert_eq!(player.active_index(), 1 - old, "новый трек сразу становится активным");
+        assert!(!player.has_preloaded(), "вторая дека занята уходящим треком");
+        assert!(!player.is_paused());
+        assert!(near(vol(&player, old), 0.8) && near(vol(&player, 1 - old), 0.0));
+
+        assert!(!player.advance_crossfade(Duration::from_secs(1))); // середина
+        let half = std::f32::consts::FRAC_1_SQRT_2 * 0.8;
+        assert!(near(vol(&player, old), half) && near(vol(&player, 1 - old), half), "{} {}", vol(&player, old), vol(&player, 1 - old));
+
+        assert!(player.advance_crossfade(Duration::from_secs(5)), "конец фейда сообщается один раз");
+        assert!(!player.advance_crossfade(Duration::from_secs(1)));
+        assert!(!player.is_crossfading());
+        assert!(player.decks[old].player.empty(), "уходящий трек убран");
+        assert!(!player.is_finished(), "новый трек играет");
+        assert!(near(vol(&player, 1 - old), 0.8), "после фейда громкость равна ползунку");
+    }
+
+    #[test]
+    fn slider_during_crossfade_scales_both_decks() {
+        let Some((player, _dir)) = playing_with_preload("cf-slider") else { return };
+        let old = player.active_index();
+        assert!(player.start_crossfade(Duration::from_secs(2)));
+        player.advance_crossfade(Duration::from_secs(1));
+        player.set_volume(0.5);
+        let half = std::f32::consts::FRAC_1_SQRT_2 * 0.5;
+        assert!(near(vol(&player, old), half) && near(vol(&player, 1 - old), half));
+    }
+
+    #[test]
+    fn pause_and_resume_cover_both_decks_during_crossfade() {
+        let Some((player, _dir)) = playing_with_preload("cf-pause") else { return };
+        let old = player.active_index();
+        assert!(player.start_crossfade(Duration::from_secs(2)));
+        player.pause();
+        assert!(player.decks[old].player.is_paused() && player.decks[1 - old].player.is_paused());
+        player.resume();
+        assert!(!player.decks[old].player.is_paused() && !player.decks[1 - old].player.is_paused());
+    }
+
+    #[test]
+    fn ending_a_crossfade_early_keeps_only_the_new_track() {
+        let Some((player, _dir)) = playing_with_preload("cf-end") else { return };
+        let old = player.active_index();
+        assert!(player.start_crossfade(Duration::from_secs(5)));
+        player.end_crossfade();
+        assert!(!player.is_crossfading());
+        assert!(player.decks[old].player.empty());
+        assert!(near(vol(&player, 1 - old), 1.0));
+        player.end_crossfade(); // повторный вызов безвреден
+    }
+
+    #[test]
+    fn explicit_play_or_stop_cancels_a_crossfade() {
+        let Some((player, dir)) = playing_with_preload("cf-cancel") else { return };
+        let old = player.active_index();
+        assert!(player.start_crossfade(Duration::from_secs(5)));
+        player.play_file(&wav_file(&dir, "c.wav", 300)).unwrap(); // «играть ЭТО»: фейд устарел
+        assert!(!player.is_crossfading());
+        assert!(player.decks[old].player.empty(), "уходящий трек убран");
+        assert!(near(vol(&player, 1 - old), 1.0), "новый трек звучит в полную громкость");
+
+        player.preload_file(&wav_file(&dir, "d.wav", 300)).unwrap();
+        assert!(player.start_crossfade(Duration::from_secs(5)));
+        player.set_volume(0.7);
+        player.stop();
+        assert!(!player.is_crossfading() && player.is_finished());
+        assert!(player.decks.iter().all(|d| d.player.empty() && near(d.player.volume(), 0.7)));
+    }
+
+    #[test]
+    fn preload_is_refused_while_the_second_deck_is_fading_out() {
+        let Some((player, dir)) = playing_with_preload("cf-busy") else { return };
+        assert!(player.start_crossfade(Duration::from_secs(5)));
+        assert!(player.preload_file(&wav_file(&dir, "c.wav", 300)).is_err());
+        assert!(player.is_crossfading(), "отказ не мешает идущему фейду");
     }
 
     #[test]
