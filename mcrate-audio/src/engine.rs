@@ -13,10 +13,13 @@
 //! (`loudness::measure_file`, по готовому файлу), и усиление плавно подтягивается к целевой громкости.
 //! Замеры запоминаются на сессию, повторное проигрывание стартует уже с нужным усилением.
 //!
-//! Предзагрузка: когда текущий трек целиком на диске, движок готовит следующий (`queue.peek_next`)
-//! во второй деке плеера и заранее мерит его громкость. Предзагрузка идёт в своём слоте
-//! (свой номер запроса `preload_request`) и не мешает загрузке текущего трека. Когда трек доиграл
-//! сам, движок переключается на готовую деку: без «загрузки» и сразу с нужным усилением.
+//! Предзагрузка: когда текущий трек целиком на диске, движок готовит следующий (`queue.peek_next`):
+//! дописывает его в очередь той же деки плеера (`AudioPlayer::queue_next_file`) и заранее мерит его
+//! громкость. Предзагрузка идёт в своём слоте (свой номер запроса `preload_request`) и не мешает
+//! загрузке текущего трека. Когда трек доиграл сам, очередь плеера переходит к следующему в тот же
+//! сэмпл (бесшовно), а движок по `take_transition` узнаёт о стыке и обновляет своё состояние: без
+//! «загрузки» и сразу с нужным усилением. Вторая дека плеера для этого не нужна (она останется для
+//! кроссфейда).
 
 use std::collections::HashMap;
 use std::fs;
@@ -367,7 +370,8 @@ fn key_of(track: &Track) -> TrackKey {
 enum PreloadState {
     /// Файл ещё скачивается в фоне.
     Loading,
-    /// Файл стоит во второй деке плеера (на паузе). Внутри: путь к файлу и длина, если декодер её знает.
+    /// Файл дописан в очередь играющей деки и начнётся сам, когда кончится текущий трек.
+    /// Внутри: путь к файлу и длина, если декодер её знает.
     Ready { path: PathBuf, duration: Option<Duration> },
     /// Не получилось (нет файла, битый файл, нет сети). Повторно не пробуем, пока следующий трек тот же.
     Failed,
@@ -422,6 +426,10 @@ impl Worker {
                 Err(mpsc::RecvTimeoutError::Disconnected) => break, // UI закрылся
             }
 
+            // Стык на дописанный трек (бесшовный): звук уже идёт, движку остаётся обновить состояние
+            if self.loaded && self.player.take_transition() {
+                self.on_stitched_transition();
+            }
             if self.loaded && self.player.is_finished() {
                 self.on_track_finished();
             }
@@ -764,10 +772,9 @@ impl Worker {
         // но у каждого трека своё усиление
         self.player.set_volume(self.volume);
         self.player.set_gain(self.normalizer.gain());
-        // Следующий трек (если он готов во второй деке) звучит со своим усилением и тем же ползунком
+        // Следующий трек (если он уже дописан в очередь) начнёт звучать со своим усилением
         if let Some(Preload { key, state: PreloadState::Ready { .. } }) = &self.preload {
-            self.player.set_preload_volume(self.volume);
-            self.player.set_preload_gain(self.normalizer.gain_for_key(key));
+            self.player.set_queued_gain(self.normalizer.gain_for_key(key));
         }
     }
 
@@ -837,26 +844,27 @@ impl Worker {
             self.preload_analysis = None;
         }
         self.normalizer.record(key, loudness);
-        self.apply_volume(); // если замерили следующий трек, его громкость во второй деке обновится
+        self.apply_volume(); // если замерили следующий трек, его усиление в очереди обновится
     }
 
     fn on_track_finished(&mut self) {
         self.loaded = false;
         if self.queue.track_finished().is_some() {
-            // Следующий уже готов во второй деке? Тогда без загрузки, иначе как обычно
-            if !self.start_from_preload() {
-                self.play_current();
-            }
+            self.play_current();
         } else {
             self.set_idle();
             self.emit(PlaybackEvent::QueueEnded);
         }
     }
 
-    /// Предзагрузка: следить, чтобы во второй деке был именно тот трек, что сыграет следующим.
+    /// Предзагрузка: следить, чтобы в очереди плеера стоял именно тот трек, что сыграет следующим.
     /// Зовётся каждый цикл (≈100 мс). Готовим только когда текущий трек целиком на диске: пока он
     /// докачивается, сеть не делим.
     fn sync_preload(&mut self) {
+        // Плеер мог потерять дописанный трек (перемотка пересобрала очередь): считаем предзагрузку сброшенной
+        if matches!(&self.preload, Some(Preload { state: PreloadState::Ready { .. }, .. })) && !self.player.has_queued() {
+            self.drop_preload();
+        }
         let wanted = if self.loaded && !self.loading && self.playing_file.is_some() {
             self.queue.peek_next().cloned()
         } else {
@@ -872,7 +880,7 @@ impl Worker {
         }
     }
 
-    /// Выбросить предзагрузку: отменить скачивание и замер, освободить вторую деку.
+    /// Выбросить предзагрузку: отменить скачивание и замер, отменить дописанный в очередь трек.
     fn drop_preload(&mut self) {
         if let Some(task) = self.preload_task.take() {
             task.abort(); // DownloadGuard внутри задачи прервёт скачивание и уберёт `.part`
@@ -882,11 +890,11 @@ impl Worker {
         }
         self.preload_request += 1; // поздние ответы этой предзагрузки станут устаревшими
         if let Some(Preload { state: PreloadState::Ready { .. }, .. }) = self.preload.take() {
-            self.player.discard_preloaded();
+            self.player.cancel_queued();
         }
     }
 
-    /// Начать подготовку следующего трека. Локальный ставится во вторую деку сразу,
+    /// Начать подготовку следующего трека. Локальный дописывается в очередь сразу,
     /// онлайн скачивается в фоне целиком (ответ придёт командой `PreloadFinished`).
     fn start_preload(&mut self, track: Track) {
         let key = key_of(&track);
@@ -919,9 +927,9 @@ impl Worker {
         self.preload = Some(Preload { key, state: PreloadState::Loading });
     }
 
-    /// Поставить готовый файл во вторую деку. Битый файл из нашего кэша удаляем (как для текущего трека).
+    /// Дописать готовый файл в очередь плеера. Битый файл из нашего кэша удаляем (как для текущего трека).
     fn install_preload(&mut self, path: &std::path::Path) -> PreloadState {
-        match self.player.preload_file(path) {
+        match self.player.queue_next_file(path) {
             Ok(duration) => PreloadState::Ready { path: path.to_path_buf(), duration },
             Err(_) => {
                 if self.cache.contains(path) {
@@ -951,7 +959,7 @@ impl Worker {
         self.after_preload_ready();
     }
 
-    /// Следующий трек встал во вторую деку: выставить его громкость и при нужде измерить его заранее.
+    /// Следующий трек дописан в очередь: выставить его усиление и при нужде измерить его заранее.
     fn after_preload_ready(&mut self) {
         self.apply_volume();
         let Some(Preload { key, state: PreloadState::Ready { path, .. } }) = &self.preload else { return };
@@ -976,34 +984,37 @@ impl Worker {
         });
     }
 
-    /// Трек доиграл сам и следующий (`queue.current()`) готов во второй деке: переключаемся на него.
-    /// Возвращает false, если готового нет (тогда движок запускает трек как обычно).
-    fn start_from_preload(&mut self) -> bool {
-        let Some(track) = self.queue.current().cloned() else { return false };
+    /// Плеер сам перешёл на дописанный трек (бесшовно): звук идёт без перерыва, движку остаётся
+    /// сдвинуть очередь и обновить состояние: усиление, длину, замер громкости, события для UI.
+    fn on_stitched_transition(&mut self) {
+        // Предыдущий трек доиграл: очередь идёт вперёд, как при обычном конце трека
+        let Some(track) = self.queue.track_finished().cloned() else {
+            // Дописанный трек играет, а очередь уже кончилась (режим сменили в тот же момент): начинаем заново
+            self.play_current();
+            return;
+        };
         let key = key_of(&track);
-        let ready = matches!(&self.preload, Some(p) if p.key == key && matches!(p.state, PreloadState::Ready { .. }));
-        if !ready {
-            return false;
-        }
-        let Some(Preload { state: PreloadState::Ready { path, duration }, .. }) = self.preload.take() else {
-            return false;
+        let ready = match self.preload.take() {
+            Some(Preload { key: preload_key, state: PreloadState::Ready { path, duration } }) if preload_key == key => {
+                Some((path, duration))
+            }
+            _ => None,
+        };
+        let Some((path, duration)) = ready else {
+            // Играет не тот трек, который теперь следующий в очереди (режим сменили в тот же момент):
+            // перезапускаем по очереди, пусть и не бесшовно, но верно
+            self.play_current();
+            return;
         };
         // Замер следующего трека, если он ещё идёт, становится замером текущего
         let measuring = self.preload_analysis.take();
-        self.preload_request += 1;
         self.fail_streak = 0;
         self.cancel_loading(); // номер запроса вперёд, сброс прошлого трека (предзагрузки уже нет)
-        // Усиление ставим ДО переключения, чтобы первые такты звучали как надо
-        self.normalizer.begin_track(key);
-        self.player.set_preload_volume(self.volume);
-        self.player.set_preload_gain(self.normalizer.gain());
-        if !self.player.switch_to_preloaded() {
-            return false;
-        }
+        self.normalizer.begin_track(key); // усиление у плеера уже стоит (`set_queued_gain`), движок сверяется
         self.playing_file = Some(path);
         self.analysis = measuring;
+        self.apply_volume();
         self.finish_start(track, duration);
-        true
     }
 
     fn set_idle(&mut self) {
@@ -1714,7 +1725,7 @@ mod tests {
 
         play_queue_paused(&mut fx, &["a", "b"]);
         assert!(wait_calls(&mut fx, &fake.calls, 2, 3000));
-        fx.idle(800); // «b» «скачивается» 300 мс и встаёт во вторую деку
+        fx.idle(800); // «b» «скачивается» 300 мс и дописывается в очередь
 
         fx.engine.toggle_pause(); // «a» играет и скоро доиграет сам
         assert!(fx.wait_for(5000, |e| matches!(e, PlaybackEvent::TrackChanged(Some(t)) if t.id == "b")), "«b» не заиграл (события: {:?})", fx.log);
@@ -1747,7 +1758,7 @@ mod tests {
         play_queue_paused(&mut fx, &["a", "b"]);
         assert!(wait_gain(&mut fx, 6000, is_attenuated), "«a» не измерился");
         assert!(wait_calls(&mut fx, &fake.calls, 2, 3000));
-        fx.idle(2500); // «b» «скачивается», ставится во вторую деку и меряется, пока «a» на паузе
+        fx.idle(2500); // «b» «скачивается», дописывается в очередь и меряется, пока «a» на паузе
 
         fx.engine.toggle_pause(); // «a» доигрывает, начинается «b»
         assert!(fx.wait_for(5000, |e| matches!(e, PlaybackEvent::TrackChanged(Some(t)) if t.id == "b")));

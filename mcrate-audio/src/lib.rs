@@ -10,14 +10,15 @@ mod growing_file; // чтение файла, который ещё докачи
 mod loudness; // измерение громкости трека по EBU R128 (внутренний)
 mod normalize; // нормализация громкости: настройки, усиление, плавная смена
 pub use normalize::{PlaybackSettings, DEFAULT_TARGET_LUFS};
+mod stitch; // бесшовный стык: учёт треков, дописанных в очередь деки (внутренний)
 mod stream_cache; // кэш скачанных онлайн-треков (внутренний, наружу не торчит)
 mod visualizer; // неблокирующий анализатор аудио для визуализатора
 pub use visualizer::{VisualizerFrame, VISUALIZER_POINTS};
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 // Decoder  = превращает файл (mp3/flac/...) в поток звуковых данных
@@ -30,6 +31,7 @@ use thiserror::Error;
 
 use crate::gain::{GainSource, TrackGain};
 use crate::growing_file::{GrowingFile, HEADER_LEN};
+use crate::stitch::{CancelSource, Stitch};
 use crate::visualizer::{AnalyzedSource, VisualizerFeed};
 
 #[derive(Debug, Error)]
@@ -56,14 +58,21 @@ struct Deck {
     /// громкость `Player` это ползунок пользователя, а усиление трека живёт здесь. Не сбрасывается
     /// при очистке деки: движок выставляет его ДО запуска нового трека, чтобы первые такты
     /// звучали как надо.
-    gain: TrackGain,
+    gain: Mutex<TrackGain>,
+    /// Учёт треков, дописанных в очередь этой деки для бесшовного стыка (см. `stitch.rs`).
+    stitch: Mutex<Stitch>,
     /// Some(...) = в деке играет файл, который ещё докачивается (см. `play_stream`).
     stream: Mutex<Option<StreamCtx>>,
 }
 
 impl Deck {
     fn new(sink: &MixerDeviceSink) -> Self {
-        Self { player: Player::connect_new(sink.mixer()), gain: TrackGain::new(1.0), stream: Mutex::new(None) }
+        Self {
+            player: Player::connect_new(sink.mixer()),
+            gain: Mutex::new(TrackGain::new(1.0)),
+            stitch: Mutex::new(Stitch::default()),
+            stream: Mutex::new(None),
+        }
     }
 
     /// Доступ к данным докачиваемого файла. Если другой поток упал с паникой, держа замок,
@@ -72,18 +81,39 @@ impl Deck {
         self.stream.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Ручка усиления играющего трека. На стыке её заменяет ручка следующего трека (`reconcile`).
+    fn gain(&self) -> TrackGain {
+        self.gain.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn stitch(&self) -> MutexGuard<'_, Stitch> {
+        self.stitch.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Сверить учёт дописанных треков с очередью `Player`. Если очередь уже перешла на
+    /// дописанный трек, он становится играющим: его усиление становится усилением деки, а данные
+    /// докачиваемого файла прошлого трека (смещение для перемотки) больше не относятся к деке.
+    fn reconcile(&self) {
+        let promoted = self.stitch().reconcile(self.player.len());
+        if let Some(gain) = promoted {
+            *self.gain.lock().unwrap_or_else(|e| e.into_inner()) = gain;
+            *self.ctx() = None;
+        }
+    }
+
     /// Поставить источник в очередь деки: сначала анализатор спектра (он видит исходный звук),
     /// затем усиление нормализации, затем громкость `Player` (ползунок).
     fn append<S>(&self, source: S, visualizer: &VisualizerFeed)
     where
         S: Source<Item = f32> + Send + 'static,
     {
-        self.player.append(GainSource::new(AnalyzedSource::new(source, visualizer.clone()), self.gain.clone()));
+        self.player.append(GainSource::new(AnalyzedSource::new(source, visualizer.clone()), self.gain()));
     }
 
     /// Убрать из деки всё, что в ней есть (заодно ставит её на паузу).
     fn clear(&self) {
         *self.ctx() = None;
+        self.stitch().reset(); // дописанные треки уйдут вместе с очередью
         self.player.clear();
     }
 }
@@ -272,7 +302,7 @@ impl AudioPlayer {
 
     /// Усиление нормализации предзагруженного трека (см. `set_gain`).
     pub fn set_preload_gain(&self, gain: f32) {
-        self.idle_deck().gain.set(gain);
+        self.idle_deck().gain().set(gain);
     }
 
     /// Выбросить предзагруженный трек.
@@ -301,6 +331,59 @@ impl AudioPlayer {
         true
     }
 
+    // ----- бесшовный стык: следующий трек в очереди играющей деки -----
+
+    /// Дописывает файл в очередь играющей деки: когда текущий трек кончится, этот начнётся в тот же
+    /// сэмпл (без тишины и без участия движка). Возвращает длину, если декодер её знает.
+    /// Ошибка, если ничего не играет (дописывать не к чему: трек начался бы сразу).
+    /// Усиление нового трека сначала 1.0, меняется через `set_queued_gain`; отменить его можно
+    /// до начала через `cancel_queued`; о стыке сообщит `take_transition`.
+    pub fn queue_next_file(&self, path: &Path) -> Result<Option<Duration>, AudioError> {
+        let deck = self.active_deck();
+        if deck.player.empty() {
+            return Err(AudioError::Engine("дописывать некуда: сейчас ничего не играет".to_string()));
+        }
+        let decoder = Decoder::try_from(File::open(path)?)?;
+        let total = decoder.total_duration();
+        let (gain, cancel) = (TrackGain::new(1.0), Arc::new(AtomicBool::new(false)));
+        let source = CancelSource::new(
+            GainSource::new(AnalyzedSource::new(decoder, self.visualizer.clone()), gain.clone()),
+            Arc::clone(&cancel),
+        );
+        deck.reconcile(); // сначала учесть, что очередь могла уже сдвинуться
+        deck.stitch().push(gain, cancel);
+        deck.player.append(source);
+        Ok(total)
+    }
+
+    /// Есть ли дописанный трек, который ещё сыграет?
+    pub fn has_queued(&self) -> bool {
+        let deck = self.active_deck();
+        deck.reconcile();
+        deck.stitch().has_alive()
+    }
+
+    /// Усиление нормализации дописанного трека (он начнёт играть сразу с ним).
+    pub fn set_queued_gain(&self, gain: f32) {
+        self.active_deck().stitch().set_alive_gain(gain);
+    }
+
+    /// Отменяет дописанный трек, пока он не начался: очередь пройдёт его без звука. Играющий
+    /// трек не трогает (если стык уже случился, отменять нечего).
+    pub fn cancel_queued(&self) {
+        let deck = self.active_deck();
+        deck.reconcile(); // стык мог уже случиться: играющий трек отменять нельзя
+        deck.stitch().cancel_all();
+    }
+
+    /// Случился ли стык на дописанный трек с прошлого вопроса? После `true` играет уже новый
+    /// трек: позиция начинается с нуля, а усиление деки стало усилением нового трека.
+    pub fn take_transition(&self) -> bool {
+        let deck = self.active_deck();
+        deck.reconcile();
+        deck.stitch().take_transition()
+    }
+
     pub fn pause(&self) { self.active_deck().player.pause(); }
     pub fn resume(&self) { self.active_deck().player.play(); }
     pub fn stop(&self) {
@@ -324,12 +407,12 @@ impl AudioPlayer {
     /// Усиление нормализации играющего трека (1.0 = без изменений). Отдельно от ползунка:
     /// итоговая громкость = ползунок × усиление. Действует с ближайшего сэмпла.
     pub fn set_gain(&self, gain: f32) {
-        self.active_deck().gain.set(gain);
+        self.active_deck().gain().set(gain);
     }
 
     /// Усиление, которое сейчас применено к играющему треку.
     pub fn gain(&self) -> f32 {
-        self.active_deck().gain.get()
+        self.active_deck().gain().get()
     }
 
     /// Текущая позиция воспроизведения.
@@ -360,6 +443,7 @@ impl AudioPlayer {
         let mut decoder = build_stream_decoder(reader, true, hint.as_deref())?;
         decoder.try_seek(pos)?; // читает данные вперёд до нужного места
         let was_paused = deck.player.is_paused();
+        deck.stitch().reset(); // дописанный следующий трек уходит вместе со старым декодером
         deck.player.clear(); // заодно ставит на паузу
         self.visualizer.clear();
         deck.append(decoder, &self.visualizer);
@@ -706,6 +790,150 @@ mod stream_tests {
         player.seek(Duration::from_secs(2)).unwrap();
         assert!(player.is_paused());
         writer.join().unwrap();
+        player.stop();
+    }
+
+    // ----- бесшовный стык: следующий трек в очереди играющей деки -----
+
+    /// Ждёт стык (до 5 с, опрос каждую миллисекунду). На виртуальном устройстве звук уходит быстрее
+    /// реального времени, поэтому короткий первый трек кончается почти сразу после снятия паузы.
+    fn wait_transition(player: &AudioPlayer) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if player.take_transition() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        false
+    }
+
+    #[test]
+    fn queued_track_takes_over_gain_and_position_at_the_boundary() {
+        let Some(player) = device() else { return };
+        let dir = TempDir::new("stitch-basic");
+        // Второй трек длинный, чтобы он не успел кончиться, пока тест проверяет состояние
+        let (a, b) = (wav_file(&dir, "a.wav", 1), wav_file(&dir, "b.wav", 300));
+        player.play_file(&a).unwrap();
+        player.pause(); // первый стоит, пока не проверим подготовку
+        player.queue_next_file(&b).unwrap();
+        player.set_queued_gain(0.3);
+        assert!(player.has_queued());
+        assert_eq!(player.gain(), 1.0, "пока играет первый, усиление деки его собственное");
+        assert!(!player.take_transition(), "первый на паузе, стыка нет");
+
+        player.resume();
+        assert!(wait_transition(&player), "стык не случился");
+        assert_eq!(player.gain(), 0.3, "усиление деки стало усилением нового трека");
+        assert!(!player.has_queued());
+        assert!(!player.is_finished(), "после стыка играет второй трек");
+        assert!(!player.take_transition(), "стык сообщается один раз");
+        player.stop();
+    }
+
+    #[test]
+    fn cancelled_queued_track_is_skipped_and_the_next_one_follows() {
+        let Some(player) = device() else { return };
+        let dir = TempDir::new("stitch-cancel");
+        let (a, b, c) = (wav_file(&dir, "a.wav", 1), wav_file(&dir, "b.wav", 300), wav_file(&dir, "c.wav", 300));
+        player.play_file(&a).unwrap();
+        player.pause();
+        player.queue_next_file(&b).unwrap();
+        player.set_queued_gain(0.9);
+        player.cancel_queued(); // B больше не нужен (режим очереди сменили)
+        assert!(!player.has_queued());
+        player.queue_next_file(&c).unwrap();
+        player.set_queued_gain(0.5);
+        assert!(player.has_queued());
+
+        player.resume();
+        assert!(wait_transition(&player));
+        assert_eq!(player.gain(), 0.5, "заиграл C, а не отменённый B");
+        assert!(!player.is_finished());
+        player.stop();
+    }
+
+    #[test]
+    fn queue_next_needs_something_to_continue() {
+        let Some(player) = device() else { return };
+        let dir = TempDir::new("stitch-empty");
+        assert!(player.queue_next_file(&wav_file(&dir, "a.wav", 1)).is_err(), "дописывать не к чему");
+        assert!(!player.has_queued());
+    }
+
+    #[test]
+    fn broken_file_is_not_queued() {
+        let Some(player) = device() else { return };
+        let dir = TempDir::new("stitch-broken");
+        let junk = dir.0.join("junk.wav");
+        fs::write(&junk, b"not audio at all").unwrap();
+        player.play_file(&wav_file(&dir, "a.wav", 30)).unwrap();
+        player.pause();
+        assert!(player.queue_next_file(&junk).is_err());
+        assert!(!player.has_queued());
+        assert!(!player.is_finished(), "играющий трек не пострадал");
+    }
+
+    #[test]
+    fn play_file_and_stop_drop_the_queued_track() {
+        let Some(player) = device() else { return };
+        let dir = TempDir::new("stitch-drop");
+        let (a, b, c) = (wav_file(&dir, "a.wav", 30), wav_file(&dir, "b.wav", 30), wav_file(&dir, "c.wav", 30));
+        player.play_file(&a).unwrap();
+        player.queue_next_file(&b).unwrap();
+        player.play_file(&c).unwrap(); // явный запуск другого трека: дописанный устарел
+        assert!(!player.has_queued());
+
+        player.queue_next_file(&b).unwrap();
+        player.stop();
+        assert!(!player.has_queued());
+        assert!(player.is_finished());
+    }
+
+    #[test]
+    fn rebuild_seek_of_a_stream_drops_the_queued_track() {
+        let Some(player) = device() else { return };
+        let dir = TempDir::new("stitch-seek");
+        let part = dir.0.join("p.m4a.part");
+        let dest = dir.0.join("p.m4a");
+        File::create(&part).unwrap();
+        let progress = DownloadProgress::new();
+        let writer = spawn_writer(part.clone(), FMP4.to_vec(), progress.clone(), 2000, 1);
+        assert!(matches!(progress.wait_for_bytes(4000, Duration::from_secs(5)), Available::Data(_)));
+        player.play_stream(&part, &dest, &progress).unwrap();
+        player.pause();
+        player.queue_next_file(&wav_file(&dir, "b.wav", 30)).unwrap();
+        assert!(player.has_queued());
+
+        // Перемотка MP4 пересобирает очередь деки целиком, дописанный трек в ней не остаётся
+        writer.join().unwrap();
+        player.seek(Duration::from_secs(2)).unwrap();
+        assert!(!player.has_queued(), "после пересборки очереди дописанного трека больше нет");
+        assert!(!player.is_finished(), "перемотанный трек на месте");
+        player.stop();
+    }
+
+    #[test]
+    fn transition_forgets_the_seek_offset_of_the_previous_stream() {
+        let Some(player) = device() else { return };
+        let dir = TempDir::new("stitch-offset");
+        let part = dir.0.join("p.m4a.part");
+        let dest = dir.0.join("p.m4a");
+        File::create(&part).unwrap();
+        let progress = DownloadProgress::new();
+        let writer = spawn_writer(part.clone(), FMP4.to_vec(), progress.clone(), 2000, 1);
+        assert!(matches!(progress.wait_for_bytes(4000, Duration::from_secs(5)), Available::Data(_)));
+        player.play_stream(&part, &dest, &progress).unwrap();
+        writer.join().unwrap();
+        player.seek(Duration::from_secs(1)).unwrap(); // у деки теперь смещение +1 с
+        player.pause();
+        player.queue_next_file(&wav_file(&dir, "b.wav", 300)).unwrap();
+
+        player.resume();
+        assert!(wait_transition(&player), "стык не случился");
+        // Смещение перемотки прошлого потока не должно попасть в позицию нового трека (проверяем сами
+        // данные, а не позицию: на виртуальном устройстве звук идёт быстрее реального времени)
+        assert!(player.active_deck().ctx().is_none(), "данные потока прошлого трека остались в деке");
         player.stop();
     }
 }
