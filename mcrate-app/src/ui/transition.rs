@@ -1,26 +1,30 @@
 //! Анимация переключения экранов.
 //!
 //! Идея (в духе Windows 11 и Material 3 «shared axis»): уходящий экран быстро растворяется
-//! и чуть сдвигается назад, а новый выезжает с небольшим сдвигом по горизонтали и плавно
-//! проявляется. Сдвиг маленький (несколько десятков пикселей), поэтому на широком окне
-//! не «пролетает» через весь экран, как раньше. Направление зависит от порядка экранов
-//! (`View::order()`), а не от того, куда кликнули: вперёд экран приходит справа, назад слева.
+//! и чуть сдвигается назад, а новый выезжает с небольшим сдвигом и плавно проявляется. Сдвиг
+//! маленький (несколько десятков пикселей), поэтому на большом окне экран не «пролетает» всю панель.
 //!
-//! Что было сломано в прошлой версии (портированной из Kotlin-проекта sheduleappreload):
-//! 1. Переход замечался в начале кадра, а клик по меню происходит позже, при отрисовке рейки.
-//!    В кадре клика `view_host` рисовал уже НОВЫЙ экран, а на следующем кадре откатывался
-//!    к старому и только потом анимировал. Теперь смена экрана замечается прямо в `view_host`.
-//! 2. `Ui::disable()` умножает прозрачность на 0.5, поэтому уходящий экран тускнел скачком.
-//!    Теперь уходящий слой перекрывается невидимым «щитом», который гасит клики.
-//! 3. Время шло по часам стены: один долгий кадр (первая отрисовка экрана) съедал кусок
-//!    анимации. Теперь шаг времени за кадр ограничен (`MAX_DT`).
-//! 4. Резкая кривая и сдвиг на всю ширину панели при длительности 340 мс.
+//! Ось зависит от экранов:
+//! - переходы в «Сейчас играет» и обратно идут по вертикали: открытие поднимает экран снизу,
+//!   закрытие опускает вниз (в паре со стрелкой в мини-плеере);
+//! - остальные идут по горизонтали, направление задаёт порядок экранов (`View::order()`), а не то,
+//!   куда кликнули: вперёд экран приходит справа, назад слева.
 //!
-//! Что по-прежнему НЕ перенесено из Kotlin-версии: масштаб слоёв. egui не умеет масштабировать
-//! обычный `Ui` без отдельных слоёв (Area), а это усложнит стекло.
+//! Что важно не сломать:
+//! 1. Смена экрана замечается прямо в `view_host`, а не в начале кадра. Клик по меню происходит
+//!    позже, при отрисовке рейки, и иначе в кадре клика мелькнул бы новый экран, а потом старый.
+//! 2. `Ui::disable()` умножает прозрачность на 0.5, поэтому уходящий слой не отключают, а
+//!    перекрывают невидимым «щитом», который гасит клики (иначе экран тускнеет скачком).
+//! 3. Время идёт не по часам стены: шаг за кадр ограничен (`MAX_DT`), иначе один долгий кадр
+//!    (первая отрисовка экрана) съест кусок анимации.
+//! 4. Слоёв всегда два слота (см. `host`): от этого зависят автоматические id виджетов.
+//!
+//! Масштаб слоёв не делаем: egui не умеет масштабировать обычный `Ui` без отдельных слоёв (`Area`),
+//! а это усложнило бы стекло.
 
 use egui::{Rect, Sense, Ui, UiBuilder, vec2};
 
+use super::anim::{EMPHASIZED_DECELERATE, STANDARD, STANDARD_ACCELERATE, cubic_bezier};
 use super::layout::Bleed;
 use crate::app::{McrateApp, View};
 use crate::theme::Theme;
@@ -39,21 +43,16 @@ const OUT_END: f32 = 0.50;
 const IN_START: f32 = 0.05;
 /// Какая часть оставшегося времени уходит на проявление нового экрана (остальное он только доезжает).
 const IN_FADE_SPAN: f32 = 0.50;
-/// Сдвиг в долях ширины панели и его границы в пикселях.
+/// Сдвиг в долях размера панели вдоль оси перехода (ширина или высота) и его границы в пикселях.
 const SLIDE_FRACTION: f32 = 0.06;
 const SLIDE_MIN: f32 = 28.0;
 const SLIDE_MAX: f32 = 72.0;
 /// Уходящий экран сдвигается на эту долю от сдвига нового.
 const OUT_SLIDE_SHARE: f32 = 0.6;
 
-/// Кривые Material (cubic-bezier x1, y1, x2, y2).
-const STANDARD: [f32; 4] = [0.4, 0.0, 0.2, 1.0];
-const STANDARD_ACCELERATE: [f32; 4] = [0.3, 0.0, 1.0, 1.0];
-const EMPHASIZED_DECELERATE: [f32; 4] = [0.05, 0.7, 0.1, 1.0];
-
 /// Идущий сейчас переход.
 #[derive(Clone, Copy)]
-pub struct ViewTransition {
+pub(crate) struct ViewTransition {
     pub from: View,
     pub to: View,
     /// Сколько секунд анимации уже прошло (с ограничением шага, см. `MAX_DT`).
@@ -69,32 +68,7 @@ impl ViewTransition {
     }
 }
 
-/// Кубическая кривая Безье с концами (0,0) и (1,1): по времени `x` ищем параметр бисекцией,
-/// возвращаем `y`.
-pub(super) fn cubic_bezier([x1, y1, x2, y2]: [f32; 4], x: f32) -> f32 {
-    fn bez(t: f32, a: f32, b: f32) -> f32 {
-        let u = 1.0 - t;
-        3.0 * u * u * t * a + 3.0 * u * t * t * b + t * t * t
-    }
-    if x <= 0.0 {
-        return 0.0;
-    }
-    if x >= 1.0 {
-        return 1.0;
-    }
-    let (mut lo, mut hi) = (0.0_f32, 1.0_f32);
-    for _ in 0..24 {
-        let mid = (lo + hi) / 2.0;
-        if bez(mid, x1, x2) < x {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-    }
-    bez((lo + hi) / 2.0, y1, y2)
-}
-
-/// Положение одного слоя: сдвиг по X (пиксели) и прозрачность.
+/// Положение одного слоя: сдвиг вдоль оси перехода (пиксели; `dx` и для вертикальных переходов) и прозрачность.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct LayerPose {
     dx: f32,
@@ -116,10 +90,7 @@ fn poses(raw: f32, dir: f32, width: f32) -> (LayerPose, LayerPose) {
     // Приходящий: быстро выезжает и долго «садится» на место, проявляется мягче, чем едет.
     let t_pos = ((raw - IN_START) / (1.0 - IN_START)).clamp(0.0, 1.0);
     let t_fade = ((raw - IN_START) / IN_FADE_SPAN).clamp(0.0, 1.0);
-    let inc = LayerPose {
-        dx: dir * slide * (1.0 - cubic_bezier(EMPHASIZED_DECELERATE, t_pos)),
-        alpha: cubic_bezier(STANDARD, t_fade),
-    };
+    let inc = LayerPose { dx: dir * slide * (1.0 - cubic_bezier(EMPHASIZED_DECELERATE, t_pos)), alpha: cubic_bezier(STANDARD, t_fade) };
     (out, inc)
 }
 
@@ -179,7 +150,7 @@ fn host(ui: &mut Ui, transition: Option<ViewTransition>, view: View, bleed: Blee
     layer(ui, tr.to, rect, bleed, in_pose, vertical, draw);
 }
 
-/// Один слой: экран, сдвинутый по X и с заданной прозрачностью, обрезанный по `rect`.
+/// Один слой: экран, сдвинутый вдоль оси перехода и с заданной прозрачностью, обрезанный по `rect`.
 fn layer(ui: &mut Ui, view: View, rect: Rect, bleed: Bleed, pose: LayerPose, vertical: bool, draw: &mut dyn FnMut(&mut Ui, View)) {
     // Слой прозрачнее одного шага 8-битного канала не виден: не тратим на него кадр.
     // Но номер в нумерации id занимаем (см. комментарий в `host`).
@@ -207,7 +178,7 @@ impl McrateApp {
     /// Вызывать раз в кадр до отрисовки: запоминает время кадра основного контекста и двигает
     /// анимацию. Основная работа по замечанию смены экрана всё равно делается в `view_host`
     /// (в раскладке с боковой панелью клик по меню случается уже после этого вызова).
-    pub fn update_transition(&mut self, ctx: &egui::Context) {
+    pub(crate) fn update_transition(&mut self, ctx: &egui::Context) {
         let now = ctx.input(|i| i.time);
         self.frame_time = now; // view_host берёт время отсюда (см. поле `frame_time`)
         sync(&mut self.transition, &mut self.shown_view, self.view, now);
@@ -219,7 +190,7 @@ impl McrateApp {
     /// часами), поэтому здесь нельзя полагаться на `ui.input(|i| i.time)`: время берётся из
     /// `frame_time` основного контекста. Повторный вызов в том же кадре безопасен: `sync` с тем же
     /// временем ничего не двигает.
-    pub fn view_host(&mut self, ui: &mut Ui, theme: &Theme) {
+    pub(crate) fn view_host(&mut self, ui: &mut Ui, theme: &Theme) {
         // Смену экрана замечаем ЗДЕСЬ: клик по меню мог произойти только что, в этом же кадре.
         sync(&mut self.transition, &mut self.shown_view, self.view, self.frame_time);
 
@@ -237,10 +208,12 @@ mod tests {
 
     /// Один кадр egui без окна и видеокарты.
     fn frame(ctx: &Context, time: f64, events: Vec<Event>, body: impl FnMut(&mut Ui)) {
-        let mut input = RawInput::default();
-        input.time = Some(time);
-        input.events = events;
-        input.screen_rect = Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0)));
+        let input = RawInput {
+            time: Some(time),
+            events,
+            screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0))),
+            ..Default::default()
+        };
         let mut out = ctx.run_ui(input, body);
         out.textures_delta.clear(); // иначе egui в режиме отладки паникует из-за неприменённых текстур
     }
@@ -248,20 +221,6 @@ mod tests {
     /// `View` не реализует `Debug`, поэтому в сообщениях тестов сравниваем номера экранов.
     fn orders(drawn: &RefCell<Vec<View>>) -> Vec<u8> {
         drawn.borrow().iter().map(|v| v.order()).collect()
-    }
-
-    #[test]
-    fn curves_start_and_end_cleanly() {
-        for curve in [STANDARD, STANDARD_ACCELERATE, EMPHASIZED_DECELERATE] {
-            assert!(cubic_bezier(curve, 0.0).abs() < 1e-3);
-            assert!((cubic_bezier(curve, 1.0) - 1.0).abs() < 1e-3);
-            let mut prev = 0.0;
-            for i in 0..=100 {
-                let y = cubic_bezier(curve, i as f32 / 100.0);
-                assert!(y + 1e-4 >= prev, "кривая не должна идти назад");
-                prev = y;
-            }
-        }
     }
 
     #[test]
@@ -383,7 +342,12 @@ mod tests {
     /// экрана исчезает), а кнопка уходящего никогда.
     #[test]
     fn clicks_work_at_every_moment_of_the_transition() {
-        let press = |p: egui::Pos2, down: bool| Event::PointerButton { pos: p, button: PointerButton::Primary, pressed: down, modifiers: Modifiers::NONE };
+        let press = |p: egui::Pos2, down: bool| Event::PointerButton {
+            pos: p,
+            button: PointerButton::Primary,
+            pressed: down,
+            modifiers: Modifiers::NONE,
+        };
 
         for (name, target) in [("новый", true), ("уходящий", false)] {
             for warm in 1..=30_usize {

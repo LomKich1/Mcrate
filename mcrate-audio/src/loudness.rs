@@ -114,15 +114,8 @@ impl KWeighting {
         let fc = 38.135_470_876_139_82;
         let k = (std::f64::consts::PI * fc / sample_rate).tan();
         let a0 = 1.0 + k / q + k * k;
-        let high_pass = Biquad {
-            b0: 1.0,
-            b1: -2.0,
-            b2: 1.0,
-            a1: 2.0 * (k * k - 1.0) / a0,
-            a2: (1.0 - k / q + k * k) / a0,
-            z1: 0.0,
-            z2: 0.0,
-        };
+        let high_pass =
+            Biquad { b0: 1.0, b1: -2.0, b2: 1.0, a1: 2.0 * (k * k - 1.0) / a0, a2: (1.0 - k / q + k * k) / a0, z1: 0.0, z2: 0.0 };
         Self { shelf, high_pass }
     }
 
@@ -214,10 +207,7 @@ impl LoudnessMeter {
         let mean_all = above_absolute.iter().sum::<f64>() / above_absolute.len() as f64;
         let relative = energy_of(lufs_of(mean_all) - RELATIVE_GATE_LU);
 
-        let (sum, count) = above_absolute
-            .iter()
-            .filter(|&&e| e > relative)
-            .fold((0.0, 0usize), |(s, n), &e| (s + e, n + 1));
+        let (sum, count) = above_absolute.iter().filter(|&&e| e > relative).fold((0.0, 0usize), |(s, n), &e| (s + e, n + 1));
         // Блоки, прошедшие относительный гейт, есть всегда (самый громкий выше среднего), но на всякий случай
         if count == 0 {
             return None;

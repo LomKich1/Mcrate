@@ -45,11 +45,30 @@ impl Icon {
     const COUNT: usize = 24;
 
     const ALL: [Self; Self::COUNT] = [
-        Self::Play, Self::Pause, Self::Next, Self::Prev, Self::Shuffle, Self::Repeat,
-        Self::RepeatOne, Self::Volume, Self::VolumeMute, Self::Note, Self::Queue,
-        Self::Settings, Self::Plus, Self::Folder, Self::Home, Self::Cloud, Self::Search,
-        Self::Library, Self::ChevronBack, Self::ChevronForward, Self::ChevronDown,
-        Self::ChevronUp, Self::Checkmark, Self::Close,
+        Self::Play,
+        Self::Pause,
+        Self::Next,
+        Self::Prev,
+        Self::Shuffle,
+        Self::Repeat,
+        Self::RepeatOne,
+        Self::Volume,
+        Self::VolumeMute,
+        Self::Note,
+        Self::Queue,
+        Self::Settings,
+        Self::Plus,
+        Self::Folder,
+        Self::Home,
+        Self::Cloud,
+        Self::Search,
+        Self::Library,
+        Self::ChevronBack,
+        Self::ChevronForward,
+        Self::ChevronDown,
+        Self::ChevronUp,
+        Self::Checkmark,
+        Self::Close,
     ];
 
     fn material_glyph(self) -> MaterialIcon {
@@ -151,10 +170,7 @@ pub fn add_to_definitions(fonts: &mut egui::FontDefinitions) {
     let fallback_fonts: Vec<String> = fonts.font_data.keys().cloned().collect();
     for asset in iconflow::fonts() {
         let name = asset.family.to_owned();
-        fonts.font_data.insert(
-            name.clone(),
-            std::sync::Arc::new(egui::FontData::from_static(asset.bytes)),
-        );
+        fonts.font_data.insert(name.clone(), std::sync::Arc::new(egui::FontData::from_static(asset.bytes)));
         let family = FontFamily::Name(asset.family.into());
         let family_fonts = fonts.families.entry(family).or_default();
         if !family_fonts.contains(&name) {
@@ -186,13 +202,7 @@ pub fn paint(theme: &Theme, painter: &Painter, icon: Icon, center: Pos2, size: f
     } else {
         let glyph = icon.material_glyph();
         let shift_up = (0.05 + icon.material_nudge_up()) * size;
-        painter.text(
-            center - vec2(0.0, shift_up),
-            Align2::CENTER_CENTER,
-            glyph.codepoint,
-            FontId::new(size, glyph.font_family()),
-            color,
-        );
+        painter.text(center - vec2(0.0, shift_up), Align2::CENTER_CENTER, glyph.codepoint, FontId::new(size, glyph.font_family()), color);
     }
 }
 
@@ -205,10 +215,7 @@ pub fn paint_equalizer(painter: &Painter, center: Pos2, size: f32, color: Color3
         let phase = if animate { ((t * 5.0 + i as f64 * 1.7).sin() * 0.5 + 0.5) as f32 } else { 0.5 };
         let h = size * (0.3 + 0.7 * phase);
         let x = center.x + (i as f32 - 1.0) * (w + gap);
-        let rect = Rect::from_min_max(
-            pos2(x - w / 2.0, center.y + size / 2.0 - h),
-            pos2(x + w / 2.0, center.y + size / 2.0),
-        );
+        let rect = Rect::from_min_max(pos2(x - w / 2.0, center.y + size / 2.0 - h), pos2(x + w / 2.0, center.y + size / 2.0));
         painter.rect_filled(rect, w / 2.0, color);
     }
 }
@@ -239,10 +246,11 @@ mod tests {
                             FontId::new(24.0, FontFamily::Name(glyph.family.into())),
                             Color32::WHITE,
                         );
-                        assert!(galley.size().x >= 1.0 && galley.size().y >= 1.0,
-                            "{icon:?}: Lucide glyph did not render");
-                        assert!(galley.mesh_bounds.width() > 0.0 && galley.mesh_bounds.height() > 0.0,
-                            "{icon:?}: Lucide glyph has no visible mesh bounds");
+                        assert!(galley.size().x >= 1.0 && galley.size().y >= 1.0, "{icon:?}: Lucide glyph did not render");
+                        assert!(
+                            galley.mesh_bounds.width() > 0.0 && galley.mesh_bounds.height() > 0.0,
+                            "{icon:?}: Lucide glyph has no visible mesh bounds"
+                        );
                     }
                 }
             });

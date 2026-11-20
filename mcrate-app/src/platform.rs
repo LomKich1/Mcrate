@@ -50,10 +50,8 @@ pub fn wgpu_configuration() -> eframe::egui_wgpu::WgpuConfiguration {
 fn economize_memory(setup: &mut eframe::egui_wgpu::WgpuSetupCreateNew) {
     use eframe::egui_wgpu::wgpu;
     let base = setup.device_descriptor.clone();
-    setup.device_descriptor = std::sync::Arc::new(move |adapter| wgpu::DeviceDescriptor {
-        memory_hints: wgpu::MemoryHints::MemoryUsage,
-        ..base(adapter)
-    });
+    setup.device_descriptor =
+        std::sync::Arc::new(move |adapter| wgpu::DeviceDescriptor { memory_hints: wgpu::MemoryHints::MemoryUsage, ..base(adapter) });
 }
 
 /// Применить материал окна. На сборках Windows старше 22621 вызов просто не даст эффекта.

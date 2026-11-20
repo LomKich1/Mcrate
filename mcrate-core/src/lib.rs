@@ -2,8 +2,8 @@
 //! (`//!` это комментарий-документация для всего файла)
 
 use async_trait::async_trait; // макрос, который разрешает async fn в трейте
-use thiserror::Error;         // макрос для удобного описания ошибок
-use std::path::PathBuf; // PathBuf = путь к файлу (владеющий, как String для текста)
+use std::path::PathBuf;
+use thiserror::Error; // макрос для удобного описания ошибок // PathBuf = путь к файлу (владеющий, как String для текста)
 pub mod secrets; // подключает файл secrets.rs как часть крейта
 
 /// Какой это сервис.
@@ -22,20 +22,20 @@ pub enum ProviderKind {
 /// Один трек. `pub` значит «виден из других крейтов».
 #[derive(Debug, Clone)]
 pub struct Track {
-    pub id: String,              // id трека внутри сервиса
-    pub provider: ProviderKind,  // откуда трек
+    pub id: String,             // id трека внутри сервиса
+    pub provider: ProviderKind, // откуда трек
     pub title: String,
-    pub artists: Vec<String>,    // Vec = список (динамический массив)
-    pub duration_secs: u32,      // длительность в секундах, u32 = целое без знака
+    pub artists: Vec<String>, // Vec = список (динамический массив)
+    pub duration_secs: u32,   // длительность в секундах, u32 = целое без знака
 }
 
 /// Откуда брать звук. У сервисов это отличается:
 /// Yandex отдаёт подписанную ссылку на файл, VK отдаёт HLS (нарезанный на куски поток).
 #[derive(Debug, Clone)]
 pub enum StreamSource {
-    DirectUrl(String),    // прямая ссылка на аудиофайл
-    HlsPlaylist(String),  // ссылка на HLS-плейлист (.m3u8)
-    LocalFile(PathBuf), // локальный файл, играем прямо с диска
+    DirectUrl(String),   // прямая ссылка на аудиофайл
+    HlsPlaylist(String), // ссылка на HLS-плейлист (.m3u8)
+    LocalFile(PathBuf),  // локальный файл, играем прямо с диска
 }
 
 /// Ошибки провайдеров. `#[error("...")]` задаёт текст ошибки.
@@ -43,7 +43,7 @@ pub enum StreamSource {
 pub enum ProviderError {
     #[error("сервис не подключён или токен недействителен")]
     NotAuthorized,
-    #[error("ошибка сети: {0}")]               // {0} подставит строку из скобок ниже
+    #[error("ошибка сети: {0}")] // {0} подставит строку из скобок ниже
     Network(String),
     #[error("неожиданный ответ сервиса (возможно, API изменился): {0}")]
     UnexpectedResponse(String),

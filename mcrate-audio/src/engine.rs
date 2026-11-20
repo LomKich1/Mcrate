@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex}; // mpsc = канал сообщений между потоками
+use std::sync::{Arc, Mutex, mpsc}; // mpsc = канал сообщений между потоками
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -34,7 +34,7 @@ use mcrate_net::{DownloadProgress, StreamDownloader};
 use crate::crossfade::fit as fit_crossfade;
 use crate::loudness::{self, Loudness, Measured};
 use crate::normalize::{Normalizer, PlaybackSettings, TrackKey};
-use crate::stream_cache::{part_path, StreamCache};
+use crate::stream_cache::{StreamCache, part_path};
 use crate::visualizer::{VisualizerFeed, VisualizerFrame};
 use crate::{AudioError, AudioPlayer, PlayQueue, RepeatMode};
 
@@ -54,7 +54,10 @@ const SEEK_MARGIN: Duration = Duration::from_secs(3);
 
 /// Команды от UI к движку (внутренние, UI вызывает методы ниже).
 enum Command {
-    PlayQueue { items: Vec<Track>, start: usize },
+    PlayQueue {
+        items: Vec<Track>,
+        start: usize,
+    },
     AddToQueue(Track),
     TogglePause,
     Next,
@@ -68,19 +71,36 @@ enum Command {
     Shutdown,
     /// Внутренняя: фоновая загрузка закончилась. `request` = номер запроса, на который это ответ.
     /// Эту команду шлёт сам движок (из фоновой задачи), UI её не видит.
-    LoadFinished { request: u64, result: Result<PathBuf, String> },
+    LoadFinished {
+        request: u64,
+        result: Result<PathBuf, String>,
+    },
     /// Внутренняя: файл ещё докачивается, но уже скачан запас: можно начинать играть.
     /// `part` = имя растущего файла, `dest` = итоговое имя (после докачки `part` переименуют в `dest`).
-    StreamReady { request: u64, part: PathBuf, dest: PathBuf, progress: DownloadProgress },
+    StreamReady {
+        request: u64,
+        part: PathBuf,
+        dest: PathBuf,
+        progress: DownloadProgress,
+    },
     /// Внутренняя: трек, игравший во время докачки, докачан и лежит целиком по пути `path`
     /// (теперь его можно измерить).
-    StreamComplete { request: u64, path: PathBuf },
+    StreamComplete {
+        request: u64,
+        path: PathBuf,
+    },
     /// Внутренняя: фоновый замер громкости закончился. `None` = измерить нечего (тишина).
     /// Привязан к треку, а не к запросу: замер целого файла верен, даже если трек уже сменили.
-    LoudnessReady { key: TrackKey, loudness: Option<Loudness> },
+    LoudnessReady {
+        key: TrackKey,
+        loudness: Option<Loudness>,
+    },
     /// Внутренняя: фоновая предзагрузка следующего трека закончилась (файл целиком готов).
     /// `request` = номер запроса предзагрузки (свой счётчик, не путать с `request` текущего трека).
-    PreloadFinished { request: u64, result: Result<PathBuf, String> },
+    PreloadFinished {
+        request: u64,
+        result: Result<PathBuf, String>,
+    },
 }
 
 /// События от движка к UI: только дискретные изменения.
@@ -91,9 +111,17 @@ pub enum PlaybackEvent {
     Loading(Track),
     TrackChanged(Option<Track>), // None = ничего не играет
     PauseChanged(bool),          // true = на паузе
-    ModeChanged { shuffle: bool, repeat: RepeatMode },
-    QueueChanged { len: usize },
-    TrackFailed { track: Track, reason: String }, // трек пропущен
+    ModeChanged {
+        shuffle: bool,
+        repeat: RepeatMode,
+    },
+    QueueChanged {
+        len: usize,
+    },
+    TrackFailed {
+        track: Track,
+        reason: String,
+    }, // трек пропущен
     QueueEnded,
     Error(String), // нефатальная ошибка (например, не удалась перемотка)
 }
@@ -165,10 +193,7 @@ impl PlaybackEngine {
     }
 
     /// То же, что `new`, но папку кэша скачанных треков задаёшь сам (нужно тестам и примерам).
-    pub fn with_stream_cache(
-        providers: Vec<Arc<dyn MusicProvider>>,
-        cache_dir: PathBuf,
-    ) -> Result<Self, AudioError> {
+    pub fn with_stream_cache(providers: Vec<Arc<dyn MusicProvider>>, cache_dir: PathBuf) -> Result<Self, AudioError> {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (evt_tx, evt_rx) = mpsc::channel();
         let (init_tx, init_rx) = mpsc::channel::<Result<(), String>>();
@@ -252,18 +277,40 @@ impl PlaybackEngine {
         let _ = self.commands.send(command); // `let _ =` = игнорируем ошибку (движок уже остановлен)
     }
 
-    pub fn play_queue(&self, items: Vec<Track>, start: usize) { self.send(Command::PlayQueue { items, start }); }
-    pub fn add_to_queue(&self, track: Track) { self.send(Command::AddToQueue(track)); }
-    pub fn toggle_pause(&self) { self.send(Command::TogglePause); }
-    pub fn next(&self) { self.send(Command::Next); }
-    pub fn prev(&self) { self.send(Command::Prev); }
-    pub fn seek(&self, pos: Duration) { self.send(Command::Seek(pos)); }
-    pub fn set_volume(&self, volume: f32) { self.send(Command::SetVolume(volume)); }
+    pub fn play_queue(&self, items: Vec<Track>, start: usize) {
+        self.send(Command::PlayQueue { items, start });
+    }
+    pub fn add_to_queue(&self, track: Track) {
+        self.send(Command::AddToQueue(track));
+    }
+    pub fn toggle_pause(&self) {
+        self.send(Command::TogglePause);
+    }
+    pub fn next(&self) {
+        self.send(Command::Next);
+    }
+    pub fn prev(&self) {
+        self.send(Command::Prev);
+    }
+    pub fn seek(&self, pos: Duration) {
+        self.send(Command::Seek(pos));
+    }
+    pub fn set_volume(&self, volume: f32) {
+        self.send(Command::SetVolume(volume));
+    }
     /// Настройки воспроизведения (сейчас: нормализация громкости). Можно менять на ходу.
-    pub fn set_settings(&self, settings: PlaybackSettings) { self.send(Command::SetSettings(settings)); }
-    pub fn set_shuffle(&self, on: bool) { self.send(Command::SetShuffle(on)); }
-    pub fn cycle_repeat(&self) { self.send(Command::CycleRepeat); }
-    pub fn stop(&self) { self.send(Command::Stop); }
+    pub fn set_settings(&self, settings: PlaybackSettings) {
+        self.send(Command::SetSettings(settings));
+    }
+    pub fn set_shuffle(&self, on: bool) {
+        self.send(Command::SetShuffle(on));
+    }
+    pub fn cycle_repeat(&self) {
+        self.send(Command::CycleRepeat);
+    }
+    pub fn stop(&self) {
+        self.send(Command::Stop);
+    }
 
     /// Забрать все накопившиеся события (не ждёт, можно звать каждый кадр).
     pub fn poll_events(&self) -> Vec<PlaybackEvent> {
@@ -404,24 +451,24 @@ struct Worker {
     state: Arc<Mutex<PlaybackState>>,
     events: mpsc::Sender<PlaybackEvent>,
     volume: f32,
-    loaded: bool,               // true, пока какой-то трек загружен в плеер (играет или на паузе)
-    duration: Option<Duration>, // длина загруженного (или грузящегося) трека
-    loading: bool,              // true, пока идёт фоновая загрузка
-    loading_track: Option<Track>, // какой именно трек сейчас грузится
-    load_task: Option<tokio::task::JoinHandle<()>>, // ручка фоновой задачи, чтобы её отменить
-    request: u64,               // номер текущего запроса; растёт при каждом запуске и отмене
-    start_paused: bool,         // пользователь нажал паузу во время загрузки: стартуем на паузе
-    fail_streak: usize,         // сколько треков подряд не запустилось (защита от бесконечного цикла)
-    stream_progress: Option<DownloadProgress>, // Some = играет трек, который ещё мог докачиваться
-    stream_error_reported: bool, // про обрыв докачки уже сообщили UI (чтобы не повторять каждые 100 мс)
-    normalizer: Normalizer,      // замеры громкости и текущее усиление
-    analysis: Option<Arc<AtomicBool>>, // Some = идёт замер текущего трека; внутри флаг отмены
-    playing_file: Option<PathBuf>, // целый файл текущего трека, когда он известен (иначе замерить нельзя)
-    last_gain_tick: Instant,     // когда в последний раз двигали усиление
-    preload: Option<Preload>,    // Some = следующий трек запрошен (грузится, готов или не удался)
-    preload_request: u64,        // номер запроса предзагрузки; растёт при каждом запуске и сбросе
+    loaded: bool,                                      // true, пока какой-то трек загружен в плеер (играет или на паузе)
+    duration: Option<Duration>,                        // длина загруженного (или грузящегося) трека
+    loading: bool,                                     // true, пока идёт фоновая загрузка
+    loading_track: Option<Track>,                      // какой именно трек сейчас грузится
+    load_task: Option<tokio::task::JoinHandle<()>>,    // ручка фоновой задачи, чтобы её отменить
+    request: u64,                                      // номер текущего запроса; растёт при каждом запуске и отмене
+    start_paused: bool,                                // пользователь нажал паузу во время загрузки: стартуем на паузе
+    fail_streak: usize,                                // сколько треков подряд не запустилось (защита от бесконечного цикла)
+    stream_progress: Option<DownloadProgress>,         // Some = играет трек, который ещё мог докачиваться
+    stream_error_reported: bool,                       // про обрыв докачки уже сообщили UI (чтобы не повторять каждые 100 мс)
+    normalizer: Normalizer,                            // замеры громкости и текущее усиление
+    analysis: Option<Arc<AtomicBool>>,                 // Some = идёт замер текущего трека; внутри флаг отмены
+    playing_file: Option<PathBuf>,                     // целый файл текущего трека, когда он известен (иначе замерить нельзя)
+    last_gain_tick: Instant,                           // когда в последний раз двигали усиление
+    preload: Option<Preload>,                          // Some = следующий трек запрошен (грузится, готов или не удался)
+    preload_request: u64,                              // номер запроса предзагрузки; растёт при каждом запуске и сбросе
     preload_task: Option<tokio::task::JoinHandle<()>>, // ручка фоновой загрузки следующего трека
-    preload_analysis: Option<Arc<AtomicBool>>, // Some = идёт замер следующего трека; внутри флаг отмены
+    preload_analysis: Option<Arc<AtomicBool>>,         // Some = идёт замер следующего трека; внутри флаг отмены
 }
 
 impl Worker {
@@ -463,10 +510,7 @@ impl Worker {
     }
 
     fn emit_modes(&self) {
-        self.emit(PlaybackEvent::ModeChanged {
-            shuffle: self.queue.shuffle(),
-            repeat: self.queue.repeat(),
-        });
+        self.emit(PlaybackEvent::ModeChanged { shuffle: self.queue.shuffle(), repeat: self.queue.repeat() });
     }
 
     fn handle(&mut self, cmd: Command) {
@@ -544,9 +588,7 @@ impl Worker {
             }
             Command::Stop => self.set_idle(),
             Command::LoadFinished { request, result } => self.on_load_finished(request, result),
-            Command::StreamReady { request, part, dest, progress } => {
-                self.on_stream_ready(request, part, dest, progress)
-            }
+            Command::StreamReady { request, part, dest, progress } => self.on_stream_ready(request, part, dest, progress),
             Command::StreamComplete { request, path } => self.on_stream_complete(request, path),
             Command::LoudnessReady { key, loudness } => self.on_loudness_ready(key, loudness),
             Command::PreloadFinished { request, result } => self.on_preload_finished(request, result),
@@ -918,12 +960,8 @@ impl Worker {
         // Перемотка MP4 может пересобрать очередь активной деки и убрать gapless-трек.
         // Во второй деке наличие предзагрузки проверяется отдельно.
         let preload_lost = match &self.preload {
-            Some(Preload { kind: PreloadKind::Gapless, state: PreloadState::Ready { .. }, .. }) => {
-                !self.player.has_queued()
-            }
-            Some(Preload { kind: PreloadKind::Crossfade, state: PreloadState::Ready { .. }, .. }) => {
-                !self.player.has_preloaded()
-            }
+            Some(Preload { kind: PreloadKind::Gapless, state: PreloadState::Ready { .. }, .. }) => !self.player.has_queued(),
+            Some(Preload { kind: PreloadKind::Crossfade, state: PreloadState::Ready { .. }, .. }) => !self.player.has_preloaded(),
             _ => false,
         };
         if preload_lost {
@@ -937,9 +975,7 @@ impl Worker {
             None
         };
         let wanted_key = wanted.as_ref().map(key_of);
-        let preload_matches = self.preload.as_ref().is_some_and(|p| {
-            Some(&p.key) == wanted_key.as_ref() && Some(p.kind) == kind
-        });
+        let preload_matches = self.preload.as_ref().is_some_and(|p| Some(&p.key) == wanted_key.as_ref() && Some(p.kind) == kind);
         if preload_matches || (self.preload.is_none() && wanted_key.is_none()) {
             return; // уже готовим нужный трек или сейчас предзагрузка не требуется
         }
@@ -959,12 +995,12 @@ impl Worker {
             cancel.store(true, Ordering::Relaxed);
         }
         self.preload_request += 1; // поздние ответы этой предзагрузки станут устаревшими
-        if let Some(preload) = self.preload.take() {
-            if matches!(&preload.state, PreloadState::Ready { .. }) {
-                match preload.kind {
-                    PreloadKind::Gapless => self.player.cancel_queued(),
-                    PreloadKind::Crossfade => self.player.discard_preloaded(),
-                }
+        if let Some(preload) = self.preload.take()
+            && matches!(&preload.state, PreloadState::Ready { .. })
+        {
+            match preload.kind {
+                PreloadKind::Gapless => self.player.cancel_queued(),
+                PreloadKind::Crossfade => self.player.discard_preloaded(),
             }
         }
     }
@@ -1025,9 +1061,7 @@ impl Worker {
             return; // следующий трек уже другой
         }
         self.preload_task = None;
-        let Some(kind) = self.preload.as_ref().and_then(|p| {
-            matches!(&p.state, PreloadState::Loading).then_some(p.kind)
-        }) else {
+        let Some(kind) = self.preload.as_ref().and_then(|p| matches!(&p.state, PreloadState::Loading).then_some(p.kind)) else {
             return;
         };
         let state = match result {
@@ -1045,10 +1079,7 @@ impl Worker {
         self.apply_volume();
         let Some(Preload { key, state: PreloadState::Ready { path, .. }, .. }) = &self.preload else { return };
         // Если это тот же трек, что играет (повтор одного), его уже меряет обычный замер.
-        if self.preload_analysis.is_some()
-            || !self.normalizer.wants_measure(key)
-            || self.normalizer.current() == Some(key)
-        {
+        if self.preload_analysis.is_some() || !self.normalizer.wants_measure(key) || self.normalizer.current() == Some(key) {
             return;
         }
         let (path, key) = (path.clone(), key.clone());
@@ -1076,7 +1107,10 @@ impl Worker {
         let key = key_of(&track);
         let ready = match self.preload.take() {
             Some(Preload { key: preload_key, kind, state: PreloadState::Ready { path, duration } })
-                if preload_key == key && kind == expected_kind => Some((path, duration)),
+                if preload_key == key && kind == expected_kind =>
+            {
+                Some((path, duration))
+            }
             _ => None,
         };
         let Some((path, duration)) = ready else {
@@ -1120,9 +1154,7 @@ impl Worker {
         let Some(next) = self.queue.peek_next().cloned() else { return };
         let next_key = key_of(&next);
         let ready = self.preload.as_ref().is_some_and(|preload| {
-            preload.key == next_key
-                && preload.kind == PreloadKind::Crossfade
-                && matches!(&preload.state, PreloadState::Ready { .. })
+            preload.key == next_key && preload.kind == PreloadKind::Crossfade && matches!(&preload.state, PreloadState::Ready { .. })
         });
         if !ready {
             return;
@@ -1166,11 +1198,7 @@ impl Worker {
             repeat: self.queue.repeat(),
             queue_index: self.queue.index(),
             queue_len: self.queue.len(),
-            download_progress: self
-                .stream_progress
-                .as_ref()
-                .filter(|p| !p.is_finished())
-                .and_then(|p| p.fraction()),
+            download_progress: self.stream_progress.as_ref().filter(|p| !p.is_finished()).and_then(|p| p.fraction()),
             normalization_gain: self.player.gain(), // то, что реально применено к звуку
         };
         *self.state.lock().unwrap() = snapshot; // lock() = взять замок, чтобы записать безопасно
@@ -1207,13 +1235,7 @@ impl Drop for DownloadGuard {
 }
 
 /// Задача фоновой загрузки: запускает `load_online` и отвечает движку (трек или предзагрузка).
-async fn run_load(
-    provider: Arc<dyn MusicProvider>,
-    downloader: Arc<StreamDownloader>,
-    cache: StreamCache,
-    track: Track,
-    guard: LoadGuard,
-) {
+async fn run_load(provider: Arc<dyn MusicProvider>, downloader: Arc<StreamDownloader>, cache: StreamCache, track: Track, guard: LoadGuard) {
     match load_online(provider, downloader, cache, track, &guard).await {
         Ok(Loaded::File(path)) => guard.finish(Ok(path)),
         Ok(Loaded::Streamed(path)) => guard.stream_complete(path), // StreamReady уже ушёл; теперь файл целый
@@ -1639,7 +1661,10 @@ mod tests {
                 thread::spawn(move || {
                     let mut request = [0u8; 2048];
                     let _ = stream.read(&mut request);
-                    let head = format!("HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
                     // Ошибки записи игнорируем: клиент мог отменить загрузку
                     let _ = stream.write_all(head.as_bytes());
                     let _ = stream.write_all(&body[..first]);
@@ -1708,11 +1733,7 @@ mod tests {
         assert!(wait_gain(&mut fx, 6000, is_attenuated));
 
         fx.engine.set_settings(PlaybackSettings::default()); // выключили на ходу
-        assert!(
-            wait_gain(&mut fx, 6000, |g| g > 0.999),
-            "усиление не вернулось к 1.0: {}",
-            fx.engine.state().normalization_gain
-        );
+        assert!(wait_gain(&mut fx, 6000, |g| g > 0.999), "усиление не вернулось к 1.0: {}", fx.engine.state().normalization_gain);
     }
 
     #[test]
@@ -1800,11 +1821,7 @@ mod tests {
         let Some(mut fx) = Fixture::new("pre-crossfade", &[("a", 300), ("b", 300)]) else { return };
         let fake = Arc::clone(&fx.fake);
 
-        fx.engine.set_settings(PlaybackSettings {
-            crossfade_secs: 3,
-            gapless: false,
-            ..PlaybackSettings::default()
-        });
+        fx.engine.set_settings(PlaybackSettings { crossfade_secs: 3, gapless: false, ..PlaybackSettings::default() });
         play_queue_paused(&mut fx, &["a", "b"]);
         assert!(wait_calls(&mut fx, &fake.calls, 2, 3000), "следующий трек не подготовлен для кроссфейда");
         fx.idle(800); // загрузка завершилась, вторая дека должна оставаться готовой и на паузе
@@ -1877,7 +1894,11 @@ mod tests {
         fx.idle(800); // «b» «скачивается» 300 мс и дописывается в очередь
 
         fx.engine.toggle_pause(); // «a» играет и скоро доиграет сам
-        assert!(fx.wait_for(5000, |e| matches!(e, PlaybackEvent::TrackChanged(Some(t)) if t.id == "b")), "«b» не заиграл (события: {:?})", fx.log);
+        assert!(
+            fx.wait_for(5000, |e| matches!(e, PlaybackEvent::TrackChanged(Some(t)) if t.id == "b")),
+            "«b» не заиграл (события: {:?})",
+            fx.log
+        );
         assert!(
             !fx.log.iter().any(|e| matches!(e, PlaybackEvent::Loading(t) if t.id == "b")),
             "предзагруженный трек прошёл через загрузку (события: {:?})",
@@ -1912,11 +1933,7 @@ mod tests {
         fx.engine.toggle_pause(); // «a» доигрывает, начинается «b»
         assert!(fx.wait_for(5000, |e| matches!(e, PlaybackEvent::TrackChanged(Some(t)) if t.id == "b")));
         // Без заблаговременного замера усиление стартовало бы с 1.0 и ползло бы к цели секунды (6 дБ/с)
-        assert!(
-            wait_gain(&mut fx, 400, |g| g > 3.0),
-            "«b» стартовал без своего усиления: {}",
-            fx.engine.state().normalization_gain
-        );
+        assert!(wait_gain(&mut fx, 400, |g| g > 3.0), "«b» стартовал без своего усиления: {}", fx.engine.state().normalization_gain);
         let _ = (fs::remove_file(&loud), fs::remove_file(&quiet));
     }
 }

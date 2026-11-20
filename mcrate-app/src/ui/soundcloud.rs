@@ -7,25 +7,35 @@
 //!
 //! Вход в аккаунт (токен) появится позже; пока экран работает без него.
 
-use egui::{Align, Key, Layout, RichText, ScrollArea, Sense, Ui, Vec2};
+use egui::{Align, Key, Layout, RichText, ScrollArea, Ui};
 
-use super::home::{title_search_row, tracks_word};
-use super::layout::{bleed_clip, centered_column, pane_scroll, scroll_end_padding, TRACK_LIST_MAX_WIDTH};
-use super::widgets::{error_banner, glide_begin, glide_end, loading_indicator, track_row};
 use crate::app::McrateApp;
-use crate::icons::{self, Icon};
-use crate::theme::{Theme, with_alpha};
+use crate::icons::Icon;
+use crate::theme::Theme;
+use crate::ui::components::{TitleRow, empty_state, title_search_row, track_list};
+use crate::ui::format::tracks_word;
+use crate::ui::layout::{TRACK_LIST_MAX_WIDTH, bleed_clip, centered_column, pane_scroll, scroll_end_padding};
+use crate::ui::widgets::{error_banner, loading_indicator};
+use mcrate_core::Track;
 
 /// Размер индикатора загрузки по умолчанию в M3: 48 dp.
 const LOADING_SIZE: f32 = 48.0;
 
 impl McrateApp {
-    pub fn soundcloud_view(&mut self, ui: &mut Ui, theme: &Theme) {
+    pub(crate) fn soundcloud_view(&mut self, ui: &mut Ui, theme: &Theme) {
         centered_column(ui, f32::INFINITY, |ui| {
             let p = &theme.palette;
 
             // Шапка как на главной: заголовок с подписью слева, поиск справа.
-            let (search, _) = title_search_row(ui, theme, "SoundCloud", "Поиск музыки по сервису", false, &mut self.sc_input, "Поиск по SoundCloud", 0.0, &mut |_| {}, true);
+            let header = TitleRow {
+                title: "SoundCloud",
+                subtitle: "Поиск музыки по сервису",
+                back: false,
+                hint: "Поиск по SoundCloud",
+                trailing_w: 0.0,
+                centered_search: true,
+            };
+            let (search, _) = title_search_row(ui, theme, &header, &mut self.sc_input, &mut |_| {});
             if search.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) && !self.sc_input.trim().is_empty() {
                 let query = self.sc_input.clone();
                 self.ctl.sc_search(&query);
@@ -34,11 +44,8 @@ impl McrateApp {
             // Высоту видимой области берём ДО ScrollArea: внутри неё доступная высота не ограничена,
             // а она нужна, чтобы поставить пустое состояние примерно по центру.
             let view_height = ui.available_height();
-            pane_scroll(
-                ui,
-                self.bleed.below_header(),
-                ScrollArea::vertical().auto_shrink([false, false]),
-                |area, ui| area.show(ui, |ui| {
+            pane_scroll(ui, self.bleed.below_header(), ScrollArea::vertical().auto_shrink([false, false]), |area, ui| {
+                area.show(ui, |ui| {
                     bleed_clip(ui, self.bleed.below_header());
                     centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
                         // ---------- состояние: поиск, загрузка, ошибки ----------
@@ -92,9 +99,7 @@ impl McrateApp {
                                 ui.label(RichText::new(format!("Результаты по «{}»", self.ctl.sc.query)).size(18.0).strong());
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                     ui.label(
-                                        RichText::new(format!("{count} {}", tracks_word(count)))
-                                            .size(13.0)
-                                            .color(p.on_surface_variant),
+                                        RichText::new(format!("{count} {}", tracks_word(count))).size(13.0).color(p.on_surface_variant),
                                     );
                                 });
                             });
@@ -102,21 +107,10 @@ impl McrateApp {
 
                             let current = self.ctl.now.as_ref().map(|t| (t.id.clone(), t.provider));
                             let playing = self.ctl.is_playing();
-                            let time = ui.input(|i| i.time);
-                            let glide_slot = glide_begin(ui);
-                            let mut hovered = None;
-                            let mut clicked: Option<usize> = None;
-                            for (i, track) in self.ctl.sc.results.iter().enumerate() {
-                                let is_current = current.as_ref().is_some_and(|(id, kind)| *id == track.id && *kind == track.provider);
-                                let resp = track_row(ui, theme, i, track, is_current, is_current && playing, time);
-                                if resp.hovered() {
-                                    hovered = Some((egui::Id::unique(&track.id).value(), resp.rect));
-                                }
-                                if resp.clicked() {
-                                    clicked = Some(i);
-                                }
-                            }
-                            glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_soundcloud"), hovered, 18.0);
+                            let is_current =
+                                |track: &Track| current.as_ref().is_some_and(|(id, kind)| *id == track.id && *kind == track.provider);
+                            let rows = self.ctl.sc.results.iter().enumerate();
+                            let clicked = track_list(ui, theme, rows, is_current, playing, "glide_soundcloud");
 
                             if let Some(i) = clicked {
                                 // Очередь = все найденные треки, старт с выбранного (как в «Ваших загрузках»).
@@ -126,27 +120,8 @@ impl McrateApp {
                         }
                         scroll_end_padding(ui, self.bottom_inset);
                     });
-                }),
-            );
+                })
+            });
         });
     }
-}
-
-/// Пустое состояние по центру: круглая иконка, заголовок и пояснение (как на экране «Ваши загрузки»).
-fn empty_state(ui: &mut Ui, theme: &Theme, top_space: f32, icon: Icon, headline: &str, text: &str) {
-    let p = &theme.palette;
-    ui.vertical_centered(|ui| {
-        ui.add_space(top_space);
-        let (rect, _) = ui.allocate_exact_size(Vec2::splat(88.0), Sense::hover());
-        if theme.glass_active() {
-            ui.painter().circle_stroke(rect.center(), 42.0, egui::Stroke::new(0.9, with_alpha(p.on_surface, 46)));
-            icons::paint(theme, ui.painter(), icon, rect.center(), 40.0, p.on_surface);
-        } else {
-            ui.painter().circle_filled(rect.center(), 44.0, theme.tonal_fill());
-            icons::paint(theme, ui.painter(), icon, rect.center(), 40.0, theme.on_tonal());
-        }
-        ui.add_space(14.0);
-        ui.label(RichText::new(headline).size(20.0).strong());
-        ui.label(RichText::new(text).size(14.0).color(p.on_surface_variant));
-    });
 }

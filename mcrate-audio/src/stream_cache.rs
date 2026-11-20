@@ -110,10 +110,7 @@ pub(crate) fn part_path(dest: &Path) -> PathBuf {
 
 fn touch(path: &Path) {
     // Открываем на запись и ставим время изменения «сейчас». Ошибки не важны.
-    let _ = fs::OpenOptions::new()
-        .write(true)
-        .open(path)
-        .and_then(|f| f.set_modified(SystemTime::now()));
+    let _ = fs::OpenOptions::new().write(true).open(path).and_then(|f| f.set_modified(SystemTime::now()));
 }
 
 fn provider_name(kind: ProviderKind) -> &'static str {
@@ -130,16 +127,8 @@ fn provider_name(kind: ProviderKind) -> &'static str {
 /// Если что-то пришлось заменить, добавляет хэш исходного id, чтобы разные id
 /// (`a/b` и `a_b`) не получили одно и то же имя и не подменили друг друга.
 fn sanitize_id(id: &str) -> String {
-    let clean: String = id
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
-        .take(80)
-        .collect();
-    if clean == id {
-        clean
-    } else {
-        format!("{clean}-{:08x}", fnv1a(id))
-    }
+    let clean: String = id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).take(80).collect();
+    if clean == id { clean } else { format!("{clean}-{:08x}", fnv1a(id)) }
 }
 
 /// Простой хэш FNV-1a (32 бита): одинаковый на любом запуске, чего нельзя сказать про HashMap.

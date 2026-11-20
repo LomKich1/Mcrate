@@ -29,16 +29,13 @@ pub struct PlayQueue<T> {
     pos: usize,        // где мы сейчас внутри order
     repeat: RepeatMode,
     shuffle: bool,
-    rng_state: u64,    // состояние генератора случайных чисел
+    rng_state: u64, // состояние генератора случайных чисел
 }
 
 impl<T> PlayQueue<T> {
     /// Новая очередь; генератор засеивается текущим временем.
     pub fn new() -> Self {
-        let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(1);
+        let seed = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1);
         Self::with_seed(seed)
     }
 
@@ -77,10 +74,10 @@ impl<T> PlayQueue<T> {
                 self.order.swap(i, j);
             }
             // Играющий трек ставим первым, чтобы включение shuffle не прерывало его
-            if let Some(cur) = current_item {
-                if let Some(p) = self.order.iter().position(|&x| x == cur) {
-                    self.order.swap(0, p);
-                }
+            if let Some(cur) = current_item
+                && let Some(p) = self.order.iter().position(|&x| x == cur)
+            {
+                self.order.swap(0, p);
             }
             self.pos = 0;
         } else {
@@ -108,9 +105,15 @@ impl<T> PlayQueue<T> {
         self.pos = 0;
     }
 
-    pub fn len(&self) -> usize { self.items.len() }
-    pub fn index(&self) -> usize { self.pos }
-    pub fn is_empty(&self) -> bool { self.items.is_empty() }
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+    pub fn index(&self) -> usize {
+        self.pos
+    }
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
 
     /// Что играет сейчас.
     pub fn current(&self) -> Option<&T> {
@@ -119,6 +122,8 @@ impl<T> PlayQueue<T> {
     }
 
     /// Пользователь нажал «следующий». В конце очереди при повторе Off возвращает None.
+    // Это не `Iterator::next`: метод двигает позицию очереди, а не отдаёт элементы по одному.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<&T> {
         if self.order.is_empty() {
             return None;
@@ -149,11 +154,7 @@ impl<T> PlayQueue<T> {
 
     /// Трек доиграл сам. При повторе One играем его снова, иначе идём дальше.
     pub fn track_finished(&mut self) -> Option<&T> {
-        if self.repeat == RepeatMode::One {
-            self.current()
-        } else {
-            self.next()
-        }
+        if self.repeat == RepeatMode::One { self.current() } else { self.next() }
     }
 
     /// Что сыграет ПОСЛЕ естественного конца текущего трека, не двигая очередь.
@@ -178,9 +179,15 @@ impl<T> PlayQueue<T> {
         self.order.get(next_pos).and_then(|&i| self.items.get(i))
     }
 
-    pub fn repeat(&self) -> RepeatMode { self.repeat }
-    pub fn set_repeat(&mut self, mode: RepeatMode) { self.repeat = mode; }
-    pub fn shuffle(&self) -> bool { self.shuffle }
+    pub fn repeat(&self) -> RepeatMode {
+        self.repeat
+    }
+    pub fn set_repeat(&mut self, mode: RepeatMode) {
+        self.repeat = mode;
+    }
+    pub fn shuffle(&self) -> bool {
+        self.shuffle
+    }
 
     /// Включить или выключить перемешивание. Играющий сейчас трек не меняется.
     pub fn set_shuffle(&mut self, on: bool) {
@@ -216,7 +223,7 @@ mod tests {
         assert_eq!(q.current(), Some(&1));
         assert_eq!(q.next(), Some(&2));
         assert_eq!(q.next(), Some(&3));
-        assert_eq!(q.next(), None);        // конец очереди
+        assert_eq!(q.next(), None); // конец очереди
         assert_eq!(q.current(), Some(&3)); // остались на последнем
     }
 
@@ -234,7 +241,7 @@ mod tests {
         let mut q = queue_of(3);
         q.set_repeat(RepeatMode::One);
         assert_eq!(q.track_finished(), Some(&1)); // доиграл: снова первый
-        assert_eq!(q.next(), Some(&2));           // кнопка «следующий» работает
+        assert_eq!(q.next(), Some(&2)); // кнопка «следующий» работает
     }
 
     #[test]
@@ -266,7 +273,7 @@ mod tests {
         let cur = *q.current().unwrap();
         q.set_shuffle(false);
         assert_eq!(q.current(), Some(&cur));
-        assert_eq!(q.next(), Some(&(cur + 1)).filter(|_| cur < 5)); // следом идёт соседний по номеру
+        assert_eq!(q.next(), (cur < 5).then_some(&(cur + 1))); // следом идёт соседний по номеру
     }
 
     #[test]

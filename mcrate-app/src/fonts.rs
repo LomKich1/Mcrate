@@ -12,9 +12,7 @@ pub fn definitions() -> egui::FontDefinitions {
     let mut fonts = egui::FontDefinitions::default();
     for path in [r"C:\Windows\Fonts\segoeui.ttf", r"C:\Windows\Fonts\SegoeUI.ttf"] {
         if let Ok(bytes) = std::fs::read(path) {
-            fonts
-                .font_data
-                .insert("segoe-ui".to_owned(), Arc::new(egui::FontData::from_owned(bytes)));
+            fonts.font_data.insert("segoe-ui".to_owned(), Arc::new(egui::FontData::from_owned(bytes)));
             // insert(0, ..) = ставим первым в списке «Proportional», остальные остаются запасными
             if let Some(list) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
                 list.insert(0, "segoe-ui".to_owned());

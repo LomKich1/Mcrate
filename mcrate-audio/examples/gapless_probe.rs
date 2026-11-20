@@ -7,8 +7,8 @@
 
 use std::num::NonZero;
 
-use rodio::buffer::SamplesBuffer;
 use rodio::Player;
+use rodio::buffer::SamplesBuffer;
 
 const RATE: u32 = 44_100;
 const SECONDS: usize = 1;
@@ -34,7 +34,11 @@ fn main() {
         let first: Vec<f32> = out.by_ref().take(TRACK_SAMPLES).collect();
         let second: Vec<f32> = out.by_ref().take(TRACK_SAMPLES).collect();
         let zeros = first.iter().chain(&second).filter(|v| **v == 0.0).count();
-        println!("E1 стык в одной очереди: тишины между треками {zeros} сэмплов; конец 1-го = {}, начало 2-го = {}", first[TRACK_SAMPLES - 1], second[0]);
+        println!(
+            "E1 стык в одной очереди: тишины между треками {zeros} сэмплов; конец 1-го = {}, начало 2-го = {}",
+            first[TRACK_SAMPLES - 1],
+            second[0]
+        );
         println!("   все сэмплы 1-го на месте: {}, 2-го: {}", first.iter().all(|v| *v == 0.5), second.iter().all(|v| *v == 0.25));
     }
 
@@ -48,7 +52,10 @@ fn main() {
         player.set_volume(0.5); // «у нового трека своё усиление»
         let head: Vec<f32> = out.by_ref().take(TRACK_SAMPLES / 2).collect();
         let stale = head.iter().take_while(|v| **v == 1.0).count();
-        println!("E2 громкость, смена ровно на стыке (лучший случай): {stale} сэмплов ({:.1} мс) нового трека со старой громкостью", ms(stale));
+        println!(
+            "E2 громкость, смена ровно на стыке (лучший случай): {stale} сэмплов ({:.1} мс) нового трека со старой громкостью",
+            ms(stale)
+        );
         // Промах движка на один опрос: стык уже прошёл, а громкость меняем только сейчас
         let (player, mut out) = Player::new();
         player.append(constant_track(1.0));
@@ -82,7 +89,10 @@ fn main() {
         let start = all.iter().position(|v| (*v - 0.5).abs() < 0.01).unwrap();
         let boundary = start + all[start..].iter().position(|v| (*v - 0.5).abs() > 0.01).unwrap();
         let zeros = all[start..boundary + 400].iter().filter(|v| **v == 0.0).count();
-        println!("E5 разная частота и каналы: прогрев микшера {start} сэмплов, 1-й трек {} сэмплов (ждали {TRACK_SAMPLES}), нулей на стыке {zeros}", boundary - start);
+        println!(
+            "E5 разная частота и каналы: прогрев микшера {start} сэмплов, 1-й трек {} сэмплов (ждали {TRACK_SAMPLES}), нулей на стыке {zeros}",
+            boundary - start
+        );
         println!("   значения вокруг стыка: {:?}", &all[boundary - 3..boundary + 9]);
     }
 

@@ -6,12 +6,13 @@
 use egui::{Color32, ScrollArea, Ui};
 use egui_material_icons::icons as mi;
 
-use super::layout::{bleed_clip, centered_column, pane_scroll, responsive_column, scroll_end_padding};
-use super::settings_view::{design_card, glass_options, settings_header};
-use super::settings_widgets::{Choice, Chip, Row, Trailing, accent_picker, group_label, hint_text, settings_card, settings_group};
+use super::controls::{Chip, Choice, Row, Trailing, accent_picker, group_label, hint_text, settings_card, settings_group};
+use super::glass::{design_card, glass_options};
 use crate::app::{McrateApp, View};
 use crate::settings::{CROSSFADE_OPTIONS, Design, StreamQuality, TextSize, ThemePreset, WaveQuality};
 use crate::theme::Theme;
+use crate::ui::components::back_header;
+use crate::ui::layout::{bleed_clip, centered_column, pane_scroll, responsive_column, scroll_end_padding};
 
 /// Цвета акцента после «монохрома» (первый кружок). Остальное в палитре строит `ThemePreset::Custom`.
 const ACCENTS: [[u8; 3]; 7] = [
@@ -26,7 +27,7 @@ const ACCENTS: [[u8; 3]; 7] = [
 
 impl McrateApp {
     /// «Оформление» из главного экрана настроек: в Liquid Glass прежний экран, в Material 3 новая «Персонализация».
-    pub fn settings_appearance_view(&mut self, ui: &mut Ui, theme: &Theme) {
+    pub(crate) fn settings_appearance_view(&mut self, ui: &mut Ui, theme: &Theme) {
         if theme.glass_active() {
             self.settings_appearance_glass(ui, theme);
         } else {
@@ -38,18 +39,14 @@ impl McrateApp {
     fn settings_personalization_m3(&mut self, ui: &mut Ui, theme: &Theme) {
         centered_column(ui, f32::INFINITY, |ui| {
             responsive_column(ui, |ui| {
-                if settings_header(ui, theme, "Персонализация") {
+                if back_header(ui, theme, "Персонализация") {
                     self.view = View::Settings;
                 }
             });
-            pane_scroll(
-                ui,
-                self.bleed.below_header(),
-                ScrollArea::vertical().auto_shrink([false, false]),
-                |area, ui| area.show(ui, |ui| {
+            pane_scroll(ui, self.bleed.below_header(), ScrollArea::vertical().auto_shrink([false, false]), |area, ui| {
+                area.show(ui, |ui| {
                     bleed_clip(ui, self.bleed.below_header());
                     responsive_column(ui, |ui| {
-
                         // ---------- акцент ----------
                         group_label(ui, theme, "Акцент");
                         let mut swatches = vec![Color32::from_gray(235)];
@@ -76,11 +73,18 @@ impl McrateApp {
                         let mut dark_idx = if self.settings.is_dark() { 0 } else { 1 };
                         let was = dark_idx;
                         let chips = vec![Chip::new("Тёмная"), Chip::new("Светлая")];
-                        settings_group(ui, theme, "dark_light", vec![Row::plain("", Trailing::Choice(Choice { chips, selected: &mut dark_idx, stretch: true }))]);
+                        settings_group(
+                            ui,
+                            theme,
+                            "dark_light",
+                            vec![Row::plain("", Trailing::Choice(Choice { chips, selected: &mut dark_idx, stretch: true }))],
+                        );
                         if dark_idx != was {
                             let dark = dark_idx == 0;
                             match self.settings.theme {
-                                ThemePreset::Amoled | ThemePreset::Light => self.settings.theme = if dark { ThemePreset::Amoled } else { ThemePreset::Light },
+                                ThemePreset::Amoled | ThemePreset::Light => {
+                                    self.settings.theme = if dark { ThemePreset::Amoled } else { ThemePreset::Light }
+                                }
                                 _ => {
                                     self.settings.theme = ThemePreset::Custom;
                                     self.settings.dark = dark;
@@ -92,7 +96,12 @@ impl McrateApp {
                         group_label(ui, theme, "Размер текста");
                         let mut size_idx = TextSize::ALL.iter().position(|s| *s == self.prefs.text_size).unwrap_or(1);
                         let chips = TextSize::ALL.iter().map(|s| Chip::new(s.label())).collect();
-                        settings_group(ui, theme, "text_size", vec![Row::plain("", Trailing::Choice(Choice { chips, selected: &mut size_idx, stretch: true }))]);
+                        settings_group(
+                            ui,
+                            theme,
+                            "text_size",
+                            vec![Row::plain("", Trailing::Choice(Choice { chips, selected: &mut size_idx, stretch: true }))],
+                        );
                         self.prefs.text_size = TextSize::ALL[size_idx];
 
                         // ---------- эффекты ----------
@@ -106,7 +115,11 @@ impl McrateApp {
                                 .subtitle("Движение волны и визуализатора. Выключите, чтобы оставить спокойную статичную картинку."),
                             Row::new(mi::ICON_IMAGE, "Морфинг обложки", Trailing::Switch(&mut self.prefs.cover_morph))
                                 .subtitle("Мгновенная подмена обложки между мини-плеером и плеером. Без плавного полёта изображения."),
-                            Row::new(mi::ICON_GRAPHIC_EQ, "Качество волны", Trailing::Choice(Choice { chips: wave_chips, selected: &mut wave_idx, stretch: true })),
+                            Row::new(
+                                mi::ICON_GRAPHIC_EQ,
+                                "Качество волны",
+                                Trailing::Choice(Choice { chips: wave_chips, selected: &mut wave_idx, stretch: true }),
+                            ),
                         ];
                         settings_group(ui, theme, "effects", rows);
                         self.settings.reduce_motion = !animations;
@@ -127,30 +140,30 @@ impl McrateApp {
                             glass_options(ui, theme, &mut self.settings);
                         }
 
-                        hint_text(ui, theme, "Размер текста меняет масштаб всего интерфейса. Материал окна и графический API: раздел «Производительность».");
+                        hint_text(
+                            ui,
+                            theme,
+                            "Размер текста меняет масштаб всего интерфейса. Материал окна и графический API: раздел «Производительность».",
+                        );
                     });
                     scroll_end_padding(ui, self.bottom_inset);
-                }),
-            );
+                })
+            });
         });
     }
 
     /// «Воспроизведение»: качество стриминга, переходы между треками, прочее.
-    pub fn settings_playback_view(&mut self, ui: &mut Ui, theme: &Theme) {
+    pub(crate) fn settings_playback_view(&mut self, ui: &mut Ui, theme: &Theme) {
         centered_column(ui, f32::INFINITY, |ui| {
             responsive_column(ui, |ui| {
-                if settings_header(ui, theme, "Воспроизведение") {
+                if back_header(ui, theme, "Воспроизведение") {
                     self.view = View::Settings;
                 }
             });
-            pane_scroll(
-                ui,
-                self.bleed.below_header(),
-                ScrollArea::vertical().auto_shrink([false, false]),
-                |area, ui| area.show(ui, |ui| {
+            pane_scroll(ui, self.bleed.below_header(), ScrollArea::vertical().auto_shrink([false, false]), |area, ui| {
+                area.show(ui, |ui| {
                     bleed_clip(ui, self.bleed.below_header());
                     responsive_column(ui, |ui| {
-
                         // ---------- качество звука ----------
                         group_label(ui, theme, "Качество звука");
                         // Lossless пока недоступен (замок): выбрать его нельзя.
@@ -164,14 +177,18 @@ impl McrateApp {
                             ui,
                             theme,
                             "stream_quality",
-                            vec![Row::plain("Качество стриминга", Trailing::Choice(Choice { chips, selected: &mut quality_idx, stretch: false }))],
+                            vec![Row::plain(
+                                "Качество стриминга",
+                                Trailing::Choice(Choice { chips, selected: &mut quality_idx, stretch: false }),
+                            )],
                         );
                         self.prefs.stream_quality = [StreamQuality::Low, StreamQuality::Medium, StreamQuality::High][quality_idx.min(2)];
 
                         // ---------- переходы ----------
                         group_label(ui, theme, "Переходы");
                         let mut fade_idx = CROSSFADE_OPTIONS.iter().position(|s| *s == self.prefs.crossfade_secs).unwrap_or(2);
-                        let fade_labels: Vec<String> = CROSSFADE_OPTIONS.iter().map(|s| if *s == 0 { "Выкл".to_string() } else { format!("{s}s") }).collect();
+                        let fade_labels: Vec<String> =
+                            CROSSFADE_OPTIONS.iter().map(|s| if *s == 0 { "Выкл".to_string() } else { format!("{s}s") }).collect();
                         let chips = fade_labels.iter().map(|l| Chip::new(l)).collect();
                         let rows = vec![
                             Row::plain("Кроссфейд", Trailing::Choice(Choice { chips, selected: &mut fade_idx, stretch: false })),
@@ -192,47 +209,50 @@ impl McrateApp {
                         hint_text(ui, theme, "Эти настройки сохраняются, но движок воспроизведения пока их не использует.");
                     });
                     scroll_end_padding(ui, self.bottom_inset);
-                }),
-            );
+                })
+            });
         });
     }
 
     /// «Приватность»: профиль и данные. Сервера и аккаунтов нет, поэтому это только сохраняемые переключатели.
-    pub fn settings_privacy_view(&mut self, ui: &mut Ui, theme: &Theme) {
+    pub(crate) fn settings_privacy_view(&mut self, ui: &mut Ui, theme: &Theme) {
         centered_column(ui, f32::INFINITY, |ui| {
             responsive_column(ui, |ui| {
-                if settings_header(ui, theme, "Приватность") {
+                if back_header(ui, theme, "Приватность") {
                     self.view = View::Settings;
                 }
             });
-            pane_scroll(
-                ui,
-                self.bleed.below_header(),
-                ScrollArea::vertical().auto_shrink([false, false]),
-                |area, ui| area.show(ui, |ui| {
+            pane_scroll(ui, self.bleed.below_header(), ScrollArea::vertical().auto_shrink([false, false]), |area, ui| {
+                area.show(ui, |ui| {
                     bleed_clip(ui, self.bleed.below_header());
                     responsive_column(ui, |ui| {
-
                         group_label(ui, theme, "Профиль");
                         let rows = vec![
-                            Row::plain("Публичный профиль", Trailing::Switch(&mut self.prefs.public_profile)).subtitle("Другие пользователи смогут находить этот аккаунт."),
-                            Row::plain("Показывать, что я слушаю", Trailing::Switch(&mut self.prefs.show_listening)).subtitle("Текущий трек будет виден друзьям."),
+                            Row::plain("Публичный профиль", Trailing::Switch(&mut self.prefs.public_profile))
+                                .subtitle("Другие пользователи смогут находить этот аккаунт."),
+                            Row::plain("Показывать, что я слушаю", Trailing::Switch(&mut self.prefs.show_listening))
+                                .subtitle("Текущий трек будет виден друзьям."),
                         ];
                         settings_group(ui, theme, "privacy_profile", rows);
 
                         group_label(ui, theme, "Данные");
                         let rows = vec![
-                            Row::plain("Делиться статистикой", Trailing::Switch(&mut self.prefs.share_stats)).subtitle("Помогает делать рекомендации точнее."),
+                            Row::plain("Делиться статистикой", Trailing::Switch(&mut self.prefs.share_stats))
+                                .subtitle("Помогает делать рекомендации точнее."),
                             Row::plain("Персональные рекомендации", Trailing::Switch(&mut self.prefs.personal_recs)),
                             Row::plain("Отключить аналитику", Trailing::Switch(&mut self.prefs.disable_analytics)),
                         ];
                         settings_group(ui, theme, "privacy_data", rows);
 
-                        hint_text(ui, theme, "Аккаунтов и сервера в Mcrate пока нет: приложение ничего не отправляет, переключатели только сохраняются.");
+                        hint_text(
+                            ui,
+                            theme,
+                            "Аккаунтов и сервера в Mcrate пока нет: приложение ничего не отправляет, переключатели только сохраняются.",
+                        );
                     });
                     scroll_end_padding(ui, self.bottom_inset);
-                }),
-            );
+                })
+            });
         });
     }
 }

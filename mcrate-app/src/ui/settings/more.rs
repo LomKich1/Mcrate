@@ -8,18 +8,18 @@ use egui::{ScrollArea, Ui, vec2};
 use egui_material_icons::MaterialIcon;
 use egui_material_icons::icons as mi;
 
-use super::layout::{bleed_clip, centered_column, pane_scroll, responsive_column, scroll_end_padding};
-use super::settings_view::settings_header;
-use super::settings_widgets::{Choice, Chip, Row, Trailing, group_label, hint_text, paint_symbol, settings_card, settings_group};
-use super::widgets::error_banner;
+use super::controls::{Chip, Choice, Row, Trailing, group_label, hint_text, paint_symbol, settings_card, settings_group};
 use crate::app::{McrateApp, View};
 use crate::platform;
 use crate::settings::{GlassQuality, Language, WindowBackdrop};
 use crate::theme::{TextRole, Theme};
+use crate::ui::components::back_header;
+use crate::ui::layout::{bleed_clip, centered_column, pane_scroll, responsive_column, scroll_end_padding};
+use crate::ui::widgets::error_banner;
 
 /// Какой экран-«скоро» показать.
 #[derive(Clone, Copy)]
-pub enum SoonKind {
+pub(crate) enum SoonKind {
     Profile,
     AiMemory,
     Sessions,
@@ -77,40 +77,42 @@ impl McrateApp {
     fn settings_page(&mut self, ui: &mut Ui, theme: &Theme, title: &str, body: impl FnOnce(&mut Self, &mut Ui)) {
         centered_column(ui, f32::INFINITY, |ui| {
             responsive_column(ui, |ui| {
-                if settings_header(ui, theme, title) {
+                if back_header(ui, theme, title) {
                     self.view = View::Settings;
                 }
             });
-            pane_scroll(
-                ui,
-                self.bleed.below_header(),
-                ScrollArea::vertical().auto_shrink([false, false]),
-                |area, ui| area.show(ui, |ui| {
+            pane_scroll(ui, self.bleed.below_header(), ScrollArea::vertical().auto_shrink([false, false]), |area, ui| {
+                area.show(ui, |ui| {
                     bleed_clip(ui, self.bleed.below_header());
                     responsive_column(ui, |ui| {
                         body(self, ui);
                         scroll_end_padding(ui, self.bottom_inset);
                     });
-                }),
-            );
+                })
+            });
         });
     }
 
     /// «Язык»: выбор сохраняется, но переводов строк в приложении нет.
-    pub fn settings_language_view(&mut self, ui: &mut Ui, theme: &Theme) {
+    pub(crate) fn settings_language_view(&mut self, ui: &mut Ui, theme: &Theme) {
         self.settings_page(ui, theme, "Язык", |app, ui| {
             group_label(ui, theme, "Язык интерфейса");
             let langs = [Language::Russian, Language::English];
             let mut idx = langs.iter().position(|l| *l == app.prefs.language).unwrap_or(0);
             let chips = langs.iter().map(|l| Chip::new(l.label())).collect();
-            settings_group(ui, theme, "language", vec![Row::plain("", Trailing::Choice(Choice { chips, selected: &mut idx, stretch: true }))]);
+            settings_group(
+                ui,
+                theme,
+                "language",
+                vec![Row::plain("", Trailing::Choice(Choice { chips, selected: &mut idx, stretch: true }))],
+            );
             app.prefs.language = langs[idx];
             hint_text(ui, theme, "Переводов строк в приложении пока нет: выбор сохраняется, а тексты экранов остаются русскими.");
         });
     }
 
     /// «Производительность»: материал окна, качество стекла, графический API.
-    pub fn settings_performance_view(&mut self, ui: &mut Ui, theme: &Theme) {
+    pub(crate) fn settings_performance_view(&mut self, ui: &mut Ui, theme: &Theme) {
         self.settings_page(ui, theme, "Производительность", |app, ui| {
             group_label(ui, theme, "Окно");
             let backdrops = [(WindowBackdrop::Off, "Выкл"), (WindowBackdrop::Mica, "Mica"), (WindowBackdrop::Acrylic, "Acrylic")];
@@ -162,7 +164,7 @@ impl McrateApp {
     }
 
     /// «Интеграции»: какие источники музыки доступны.
-    pub fn settings_integrations_view(&mut self, ui: &mut Ui, theme: &Theme) {
+    pub(crate) fn settings_integrations_view(&mut self, ui: &mut Ui, theme: &Theme) {
         self.settings_page(ui, theme, "Интеграции", |_, ui| {
             group_label(ui, theme, "Источники музыки");
             let rows = vec![
@@ -178,7 +180,7 @@ impl McrateApp {
 
     /// «Хранилище и кеш»: где лежит кэш онлайн-треков и сколько он занимает. Очистки пока нет:
     /// движок не даёт для неё метода, а UI по правилам дорожки B движок не правит.
-    pub fn settings_storage_view(&mut self, ui: &mut Ui, theme: &Theme) {
+    pub(crate) fn settings_storage_view(&mut self, ui: &mut Ui, theme: &Theme) {
         self.settings_page(ui, theme, "Хранилище и кеш", |_, ui| {
             let (dir, bytes, files) = cache_stats();
             group_label(ui, theme, "Кэш потока");
@@ -192,7 +194,7 @@ impl McrateApp {
     }
 
     /// «О приложении»: в Liquid Glass прежний экран, в Material 3 новый.
-    pub fn settings_about_view(&mut self, ui: &mut Ui, theme: &Theme) {
+    pub(crate) fn settings_about_view(&mut self, ui: &mut Ui, theme: &Theme) {
         if theme.glass_active() {
             self.settings_about_glass(ui, theme);
             return;
@@ -210,7 +212,7 @@ impl McrateApp {
     }
 
     /// «Поддержка»: канала поддержки нет, показываем сведения, которые пригодятся при сообщении об ошибке.
-    pub fn settings_support_view(&mut self, ui: &mut Ui, theme: &Theme) {
+    pub(crate) fn settings_support_view(&mut self, ui: &mut Ui, theme: &Theme) {
         self.settings_page(ui, theme, "Поддержка", |app, ui| {
             group_label(ui, theme, "Сведения для сообщения об ошибке");
             let rows = vec![
@@ -224,7 +226,7 @@ impl McrateApp {
     }
 
     /// Экран-«скоро»: крупная иконка, пояснение. Логики нет, нужен сервер.
-    pub fn settings_soon_view(&mut self, ui: &mut Ui, theme: &Theme, title: &str, kind: SoonKind) {
+    pub(crate) fn settings_soon_view(&mut self, ui: &mut Ui, theme: &Theme, title: &str, kind: SoonKind) {
         let p = &theme.palette;
         self.settings_page(ui, theme, title, |_, ui| {
             ui.add_space(24.0);

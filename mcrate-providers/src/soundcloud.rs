@@ -48,8 +48,8 @@ struct CachedTrack {
 pub struct SoundCloudProvider {
     client: reqwest::Client,
     format: StreamFormat,
-    client_id: Mutex<Option<String>>,         // добытый client_id (None = ещё не добывали)
-    client_id_file: Option<PathBuf>,          // где хранить client_id между запусками (None = не хранить)
+    client_id: Mutex<Option<String>>,           // добытый client_id (None = ещё не добывали)
+    client_id_file: Option<PathBuf>,            // где хранить client_id между запусками (None = не хранить)
     cache: Mutex<HashMap<String, CachedTrack>>, // id трека -> данные о потоках из последнего поиска
 }
 
@@ -59,13 +59,7 @@ impl SoundCloudProvider {
     }
 
     pub fn with_format(format: StreamFormat) -> ProviderResult<Self> {
-        Ok(Self {
-            client: build_client()?,
-            format,
-            client_id: Mutex::new(None),
-            client_id_file: None,
-            cache: Mutex::new(HashMap::new()),
-        })
+        Ok(Self { client: build_client()?, format, client_id: Mutex::new(None), client_id_file: None, cache: Mutex::new(HashMap::new()) })
     }
 
     /// Включает хранение client_id в файле. Добыча client_id с сайта долгая (качаются большие скрипты:
@@ -134,8 +128,7 @@ impl SoundCloudProvider {
             let mut all: Vec<(&str, &str)> = params.to_vec(); // копия списка параметров
             all.push(("client_id", id.as_str()));
             // parse_with_params сам кодирует русские буквы и пробелы
-            let url = Url::parse_with_params(base, &all)
-                .map_err(|e| ProviderError::UnexpectedResponse(format!("плохой адрес: {e}")))?;
+            let url = Url::parse_with_params(base, &all).map_err(|e| ProviderError::UnexpectedResponse(format!("плохой адрес: {e}")))?;
 
             let resp = self.client.get(url).send().await.map_err(net_err)?;
             let status = resp.status();
@@ -147,8 +140,7 @@ impl SoundCloudProvider {
             if !status.is_success() {
                 return Err(ProviderError::Network(format!("код {status}: {}", short(&body, 150))));
             }
-            return serde_json::from_str(&body)
-                .map_err(|e| ProviderError::UnexpectedResponse(format!("ответ не похож на JSON: {e}")));
+            return serde_json::from_str(&body).map_err(|e| ProviderError::UnexpectedResponse(format!("ответ не похож на JSON: {e}")));
         }
         Err(ProviderError::NotAuthorized) // сюда не доходим, но Rust требует «выход» после цикла
     }
@@ -186,19 +178,19 @@ impl MusicProvider for SoundCloudProvider {
     async fn get_stream(&self, track: &Track) -> ProviderResult<StreamSource> {
         // Данные о потоках берём из запомненного при поиске. Если трека там нет (например, он из старой
         // сессии), нужен новый поиск. Запрос трека по id мы пока не делаем: он не проверен.
-        let cached = self.cache.lock().unwrap().get(&track.id).cloned().ok_or_else(|| {
-            ProviderError::UnexpectedResponse("трека нет в памяти провайдера: найди его поиском ещё раз".to_string())
-        })?;
-        let chosen = pick_transcoding(&cached.transcodings, self.format).ok_or_else(|| {
-            ProviderError::UnexpectedResponse("у трека нет подходящего потока (aac_160k, aac_96k, mp3)".to_string())
-        })?;
+        let cached = self
+            .cache
+            .lock()
+            .unwrap()
+            .get(&track.id)
+            .cloned()
+            .ok_or_else(|| ProviderError::UnexpectedResponse("трека нет в памяти провайдера: найди его поиском ещё раз".to_string()))?;
+        let chosen = pick_transcoding(&cached.transcodings, self.format)
+            .ok_or_else(|| ProviderError::UnexpectedResponse("у трека нет подходящего потока (aac_160k, aac_96k, mp3)".to_string()))?;
 
         // Спрашиваем настоящую (подписанную, временную) ссылку на звук
         let json = self.get_json(&chosen.url, &[("track_authorization", cached.authorization.as_str())]).await?;
-        let url = json["url"]
-            .as_str()
-            .ok_or_else(|| ProviderError::UnexpectedResponse("в ответе нет поля url".to_string()))?
-            .to_string();
+        let url = json["url"].as_str().ok_or_else(|| ProviderError::UnexpectedResponse("в ответе нет поля url".to_string()))?.to_string();
         Ok(if chosen.protocol == "hls" { StreamSource::HlsPlaylist(url) } else { StreamSource::DirectUrl(url) })
     }
 
@@ -267,12 +259,11 @@ fn pick_transcoding(list: &[Transcoding], format: StreamFormat) -> Option<&Trans
 /// None = не получилось ни разу.
 async fn get_text_retry(client: &reqwest::Client, url: &str) -> Option<String> {
     for _ in 0..2 {
-        if let Ok(resp) = client.get(url).send().await {
-            if resp.status().is_success() {
-                if let Ok(text) = resp.text().await {
-                    return Some(text);
-                }
-            }
+        if let Ok(resp) = client.get(url).send().await
+            && resp.status().is_success()
+            && let Ok(text) = resp.text().await
+        {
+            return Some(text);
         }
     }
     None
@@ -280,14 +271,7 @@ async fn get_text_retry(client: &reqwest::Client, url: &str) -> Option<String> {
 
 /// Добывает client_id: открывает главную страницу, находит её скрипты и ищет в них client_id.
 async fn fetch_client_id(client: &reqwest::Client) -> ProviderResult<String> {
-    let html = client
-        .get("https://soundcloud.com/")
-        .send()
-        .await
-        .map_err(net_err)?
-        .text()
-        .await
-        .map_err(net_err)?;
+    let html = client.get("https://soundcloud.com/").send().await.map_err(net_err)?.text().await.map_err(net_err)?;
     let scripts = find_script_urls(&html);
     let mut failed = 0; // сколько скриптов не скачалось
     // rev() = с конца: client_id обычно лежит в последних скриптах
@@ -312,7 +296,7 @@ fn find_script_urls(html: &str) -> Vec<String> {
     let mut urls: Vec<String> = Vec::new();
     for (start, _) in html.match_indices(prefix) {
         let rest = &html[start..];
-        let end = rest.find(|c: char| matches!(c, '"' | '\'' | ' ' | '<' | '>')).unwrap_or(rest.len());
+        let end = rest.find(['"', '\'', ' ', '<', '>']).unwrap_or(rest.len());
         let url = &rest[..end];
         if url.ends_with(".js") && !urls.iter().any(|u| u == url) {
             urls.push(url.to_string());

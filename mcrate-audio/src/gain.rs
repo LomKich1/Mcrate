@@ -6,8 +6,8 @@
 //! живёт в самом источнике: у каждого трека свой `TrackGain`, а громкость `Player` остаётся
 //! ползунком пользователя.
 
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use rodio::Source;
@@ -97,8 +97,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rodio::buffer::SamplesBuffer;
     use rodio::Player;
+    use rodio::buffer::SamplesBuffer;
     use std::num::NonZero;
 
     const RATE: u32 = 8000;

@@ -2,7 +2,7 @@ use mcrate_audio::PlaybackEngine;
 use mcrate_core::MusicProvider;
 use mcrate_providers::LocalProvider;
 use std::path::Path;
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
@@ -65,7 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Раз в 2 секунды печатаем позицию из снимка
         ticks += 1;
-        if ticks % 20 == 0 {
+        if ticks.is_multiple_of(20) {
             let st = engine.state();
             println!("позиция {:?} из {:?}", st.position, st.duration);
         }

@@ -39,7 +39,7 @@ pub fn extract_audio(data: &[u8]) -> Result<(Vec<u8>, TsAudio), String> {
     let mut out: Vec<u8> = Vec::new();
     let mut in_pes = false; // идёт ли сейчас посылка звука (чтобы не брать «хвосты» чужих)
 
-    for packet in data.chunks_exact(PACKET) {
+    for packet in data.as_chunks::<PACKET>().0 {
         if packet[0] != SYNC {
             return Err("потерян синхробайт TS (повреждённые данные)".to_string());
         }
@@ -68,14 +68,14 @@ pub fn extract_audio(data: &[u8]) -> Result<(Vec<u8>, TsAudio), String> {
             if audio.is_none() && payload_start {
                 audio = parse_pmt(payload)?;
             }
-        } else if let Some((audio_pid, _)) = audio {
-            if pid == audio_pid {
-                if payload_start {
-                    out.extend_from_slice(pes_payload(payload)?);
-                    in_pes = true;
-                } else if in_pes {
-                    out.extend_from_slice(payload); // продолжение той же посылки
-                }
+        } else if let Some((audio_pid, _)) = audio
+            && pid == audio_pid
+        {
+            if payload_start {
+                out.extend_from_slice(pes_payload(payload)?);
+                in_pes = true;
+            } else if in_pes {
+                out.extend_from_slice(payload); // продолжение той же посылки
             }
         }
     }
@@ -169,7 +169,7 @@ mod tests {
             p.push((pad - 1) as u8); // длина доп. поля
             if pad > 1 {
                 p.push(0x00); // флаги
-                p.extend(std::iter::repeat(0xFF).take(pad - 2)); // заполнитель
+                p.extend(std::iter::repeat_n(0xFF, pad - 2)); // заполнитель
             }
         }
         p.extend_from_slice(data);
@@ -195,7 +195,7 @@ mod tests {
     /// Заголовок PES с `extra` байтами доп. полей (например, метка времени) и звуком `audio`.
     fn pes(audio: &[u8], extra: usize) -> Vec<u8> {
         let mut v = vec![0, 0, 1, 0xC0, 0, 0, 0x80, 0x80, extra as u8];
-        v.extend(std::iter::repeat(0xAA).take(extra));
+        v.extend(std::iter::repeat_n(0xAA, extra));
         v.extend_from_slice(audio);
         v
     }

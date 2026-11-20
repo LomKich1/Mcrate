@@ -418,11 +418,7 @@ fn amoled() -> Palette {
 
 fn custom_dark(seed: [u8; 3]) -> Palette {
     let (h, s, _) = to_hsl(Color32::from_rgb(seed[0], seed[1], seed[2]));
-    dark_scheme_from(
-        hsl(h, s.clamp(0.35, 0.90), 0.78),
-        hsl(h, 0.14, 0.12),
-        hsl(h, 0.12, 0.16),
-    )
+    dark_scheme_from(hsl(h, s.clamp(0.35, 0.90), 0.78), hsl(h, 0.14, 0.12), hsl(h, 0.12, 0.16))
 }
 
 /// Совместимый светлый custom для Liquid Glass. И раньше он уже использовал MCU Spec2025.
@@ -594,8 +590,11 @@ mod tests {
                     (p.tertiary_fixed, p.on_tertiary_fixed, "on_tertiary_fixed"),
                     (p.tertiary_fixed, p.on_tertiary_fixed_variant, "on_tertiary_fixed_variant"),
                 ] {
-                    assert!(contrast_ratio(background, foreground) >= 4.5,
-                        "{preset:?} {role}: {}:1", contrast_ratio(background, foreground));
+                    assert!(
+                        contrast_ratio(background, foreground) >= 4.5,
+                        "{preset:?} {role}: {}:1",
+                        contrast_ratio(background, foreground)
+                    );
                 }
             }
         }

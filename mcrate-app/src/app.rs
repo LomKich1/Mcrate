@@ -5,44 +5,23 @@
 
 use std::time::Duration;
 
-use eframe::egui::{self, Frame, Margin, Rect, Sense, UiBuilder, pos2};
+use eframe::egui::{self, Frame, Margin, Rect, Sense, UiBuilder};
 use mcrate_audio::PlaybackSettings;
 use mcrate_core::Track;
 
 use crate::controller::Controller;
 use crate::icons;
-use crate::ui::layout::{Bleed, Breakpoint};
-use crate::ui::now_playing::NowPlayingState;
-use crate::ui::settings_more::SoonKind;
-use crate::ui::transition::ViewTransition;
 use crate::settings::{Design, GraphicsSettings, PREFS_KEY, Preferences, STORAGE_KEY, ThemePreset, WindowBackdrop};
 use crate::theme::{Surface, Theme, glass, with_alpha};
+use crate::ui::layout::{Bleed, Breakpoint};
+use crate::ui::now_playing::NowPlayingState;
+use crate::ui::settings::SoonKind;
+use crate::ui::transition::ViewTransition;
+use crate::ui::window_layout::{
+    EDGE, GLASS_PAGE_PAD, M3_CONTENT_INSET, PANE_HALF_GAP, RAIL_COMPACT_BELOW, bottom_inset, content_pane_rect, glass_page_rect,
+    glass_rail_rect, mini_bar_rect,
+};
 use crate::{fonts, platform};
-
-/// Высота плавающей панели плеера в Liquid Glass: содержимое 80 (52+4+24) + отступы 12 сверху и снизу.
-const GLASS_BAR_H: f32 = 104.0;
-/// Внешний отступ плавающих панелей от края окна.
-const EDGE: f32 = 12.0;
-/// Боковой отступ плеера от краёв центральной контентной области.
-const GLASS_BAR_SIDE_INSET: f32 = 16.0;
-/// Расстояние от нижнего края ОКНА до нижнего края плеера (Liquid Glass). Было EDGE (12):
-/// тогда низ плеера совпадал с низом рейки. Больше число = плеер выше.
-const GLASS_BAR_BOTTOM_GAP: f32 = 28.0;
-/// Отступ содержимого страницы от краёв контентной панели (Liquid Glass). Содержимое
-/// прокрутки при этом уходит под край панели, а не режется в этих 20 px (см. `Bleed`).
-const GLASS_PAGE_PAD: f32 = 20.0;
-
-/// Мини-плеер в 1,5 раза уже прежнего и по центру контентной области. Нижняя граница по ширине:
-/// 640 px (меньше колонки плеера вырождаются), а в узком окне плеер занимает всю прежнюю ширину.
-fn mini_bar_rect(content_pane: Rect, bottom: f32) -> Rect {
-    let full_w = content_pane.width() - GLASS_BAR_SIDE_INSET * 2.0;
-    let w = (full_w / 1.5).max(640.0_f32.min(full_w));
-    let cx = content_pane.center().x;
-    Rect::from_min_max(
-        pos2(cx - w * 0.5, bottom - GLASS_BAR_BOTTOM_GAP - GLASS_BAR_H),
-        pos2(cx + w * 0.5, bottom - GLASS_BAR_BOTTOM_GAP),
-    )
-}
 
 /// Какой экран открыт.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -153,7 +132,7 @@ pub struct McrateApp {
     pub settings: GraphicsSettings,
     /// Общие настройки (язык, уведомления, качество звука...). Не влияют на тему.
     pub prefs: Preferences,
-    applied: Option<GraphicsSettings>, // какие настройки уже применены к egui
+    applied: Option<GraphicsSettings>,          // какие настройки уже применены к egui
     applied_playback: Option<PlaybackSettings>, // какие настройки воспроизведения уже отправлены движку
     pub theme: Theme,
     glass: egui_glass::GlassContext, // стекло: обои + живой фон (преломляет то, что лежит под панелями)
@@ -196,20 +175,11 @@ pub struct McrateApp {
 impl McrateApp {
     pub fn new(cc: &eframe::CreationContext<'_>, open_paths: Vec<std::path::PathBuf>) -> Self {
         // Сохранённые настройки (если есть) или значения по умолчанию.
-        let settings: GraphicsSettings = cc
-            .storage
-            .and_then(|s| eframe::get_value(s, STORAGE_KEY))
-            .unwrap_or_default();
+        let settings: GraphicsSettings = cc.storage.and_then(|s| eframe::get_value(s, STORAGE_KEY)).unwrap_or_default();
 
-        let prefs: Preferences = cc
-            .storage
-            .and_then(|s| eframe::get_value(s, PREFS_KEY))
-            .unwrap_or_default();
+        let prefs: Preferences = cc.storage.and_then(|s| eframe::get_value(s, PREFS_KEY)).unwrap_or_default();
 
-        let render_state = cc
-            .wgpu_render_state
-            .clone()
-            .expect("нужен рендерер wgpu (Renderer::Wgpu)");
+        let render_state = cc.wgpu_render_state.clone().expect("нужен рендерер wgpu (Renderer::Wgpu)");
         let gpu_backend = format!("{:?}", render_state.adapter.get_info().backend);
         // GlassContext = egui_glass::init + LiveBackdrop одним вызовом (1 = без MSAA, как у eframe).
         let glass = egui_glass::GlassContext::new(&cc.egui_ctx, &render_state, 1).expect("не удалось запустить egui_glass");
@@ -335,20 +305,17 @@ impl McrateApp {
 
         // Центральная поверхность заканчивается на том же нижнем inset, что и в Liquid Glass;
         // плеер лежит поверх неё отдельной карточкой.
-        let content_pane = Rect::from_min_max(
-            pos2(full.left() + rail_width + 4.0, full.top() + 12.0),
-            pos2(full.right() - 12.0, full.bottom() - 12.0),
-        );
+        let content_pane = content_pane_rect(full, rail_width);
         let bar = mini_bar_rect(content_pane, full.bottom());
         // Мини-плеер лежит поверх контентной поверхности, а не обрезает её.
         // Поэтому viewport продолжается до нижнего края Surface::Content (где меняется фон),
         // а прокручиваемые экраны получают нижний отступ на высоту перекрытия плеером.
         // Так последний элемент можно прокрутить выше плеера, не обрывая область экрана на его верхней границе.
-        self.bottom_inset = content_pane.bottom() - bar.top() + 4.0;
+        self.bottom_inset = bottom_inset(content_pane, bar);
 
         // Порядок важен: сначала боковая навигация, затем контентная поверхность.
         egui::Panel::left("rail")
-            .frame(Frame::NONE.inner_margin(Margin { left: 12, right: 4, top: 12, bottom: 12 }))
+            .frame(Frame::NONE.inner_margin(Margin { left: EDGE as i8, right: PANE_HALF_GAP as i8, top: EDGE as i8, bottom: EDGE as i8 }))
             .resizable(false)
             .show_separator_line(false)
             .exact_size(rail_width)
@@ -357,18 +324,20 @@ impl McrateApp {
             });
 
         egui::CentralPanel::default()
-            .frame(Frame::NONE.inner_margin(Margin { left: 4, right: 12, top: 12, bottom: 12 }))
+            .frame(Frame::NONE.inner_margin(Margin { left: PANE_HALF_GAP as i8, right: EDGE as i8, top: EDGE as i8, bottom: EDGE as i8 }))
             .show(ui, |ui| {
                 theme.surface(ui, Surface::Content, |ui| self.screen(ui, theme));
             });
 
-        // Плавающая карточка: 16 px бокового inset и 28 px от нижнего края окна,
-        // как у Liquid Glass. Внутренние отступы Surface::PlayerBar оставляют 80 px
-        // под органы управления (52 + 4 + 24).
-        // Прозрачный «щит» (как в Liquid Glass): без него клики и прокрутка проваливались бы
-        // сквозь карточку плеера в список под ней. Он идёт до содержимого плеера, поэтому кнопки выше него.
+        self.floating_player_bar(ui, theme, bar, "bar_shield_m3");
+    }
+
+    /// Плавающая карточка мини-плеера (одинаковая в обеих раскладках; геометрия в `window_layout`).
+    /// Прозрачный «щит» идёт до содержимого плеера: без него клики и прокрутка проваливались бы сквозь
+    /// карточку в список под ней, а кнопки плеера лежат выше щита. Id щита у раскладок разные, как и раньше.
+    fn floating_player_bar(&mut self, ui: &mut egui::Ui, theme: &Theme, bar: Rect, shield_id: &'static str) {
         ui.scope_builder(UiBuilder::new().max_rect(bar), |ui| {
-            ui.interact(bar, egui::Id::unique("bar_shield_m3"), Sense::click_and_drag());
+            ui.interact(bar, egui::Id::unique(shield_id), Sense::click_and_drag());
             theme.surface(ui, Surface::PlayerBar, |ui| self.player_bar(ui, theme));
         });
     }
@@ -380,30 +349,16 @@ impl McrateApp {
     /// размещаются стеклянные контролы. Между рейкой и контентом оставлен просвет,
     /// чтобы поверхности не сливались в одну большую плиту.
     fn glass_layout(&mut self, ui: &mut egui::Ui, theme: &Theme, full: Rect, rail_width: f32, compact: bool) {
-        // Геометрия: навигация слева, плотная контентная панель справа, а плеер
-        // плавает только внутри центральной области — не заходит под сайдбар.
-        let pane = full.shrink(EDGE);
-        let rail = Rect::from_min_max(
-            pos2(pane.left(), pane.top()),
-            // Рейка остаётся плавающей и сохраняет одинаковый внешний отступ EDGE
-            // сверху, слева и снизу независимо от положения нижнего плеера.
-            pos2(full.left() + rail_width - 4.0, pane.bottom()),
-        );
-        // Внутренние отступы контента задаются отдельно через `inner`.
-        // Контентная панель плавает так же, как рейка: тот же отступ EDGE сверху, справа и снизу,
-        // поэтому по высоте она совпадает с рейкой (верх и низ на одной линии).
-        let content_pane = Rect::from_min_max(pos2(rail.right() + 8.0, pane.top()), pane.right_bottom());
-        // Плеер отступает на одинаковое расстояние от левого и правого краёв
-        // центральной области. Его центр совпадает с центром контента, а не всего окна.
+        // Рейка плавает слева, плотная контентная панель справа, а плеер плавает только внутри
+        // центральной области: не заходит под рейку и по центру совпадает с центром контента.
+        let rail = glass_rail_rect(full, rail_width);
+        let content_pane = content_pane_rect(full, rail_width);
         let bar = mini_bar_rect(content_pane, full.bottom());
-        let inner = Rect::from_min_max(
-            pos2(content_pane.left() + GLASS_PAGE_PAD, content_pane.top() + GLASS_PAGE_PAD),
-            pos2(content_pane.right() - GLASS_PAGE_PAD, content_pane.bottom()),
-        );
+        let inner = glass_page_rect(content_pane);
         // Снизу отступа нет: страница доходит до низа панели, а над ней лежит плеер.
         self.bleed = Bleed { left: GLASS_PAGE_PAD, top: GLASS_PAGE_PAD, right: GLASS_PAGE_PAD, bottom: 0.0 };
         // Плеер лежит над панелью: закрытая им часть считается от низа ПАНЕЛИ, а не окна.
-        self.bottom_inset = content_pane.bottom() - bar.top() + 4.0;
+        self.bottom_inset = bottom_inset(content_pane, bar);
 
         // Раскладку карточек «Сейчас играет» заново пишет страница ниже (в обоих её проходах).
         self.np.layout = None;
@@ -433,10 +388,7 @@ impl McrateApp {
             ui.interact(rail, egui::Id::unique("rail_shield"), Sense::click_and_drag());
             theme.surface(ui, Surface::Rail, |ui| self.rail_view(ui, theme, compact));
         });
-        ui.scope_builder(UiBuilder::new().max_rect(bar), |ui| {
-            ui.interact(bar, egui::Id::unique("bar_shield"), Sense::click_and_drag());
-            theme.surface(ui, Surface::PlayerBar, |ui| self.player_bar(ui, theme));
-        });
+        self.floating_player_bar(ui, theme, bar, "bar_shield");
     }
 
     /// Текущий экран (или два экрана во время анимации перехода, см. ui/transition.rs).
@@ -520,13 +472,13 @@ impl eframe::App for McrateApp {
         let bp = Breakpoint::from_width(full.width());
         let rail_width = ctx.animate_value_with_time(egui::Id::unique("navigation_width"), bp.rail_width(), 0.18);
         // Подписи проявляются ближе к окончанию раскрытия панели, когда для них уже есть место.
-        let compact = rail_width < 208.0;
+        let compact = rail_width < RAIL_COMPACT_BELOW;
 
         if theme.glass_active() {
             self.glass_layout(ui, &theme, full, rail_width, compact);
         } else {
             // Рамка Surface::Content (material3.rs) даёт 20 px со всех сторон.
-            self.bleed = Bleed::same(20.0);
+            self.bleed = Bleed::same(M3_CONTENT_INSET);
             self.panel_layout(ui, &theme, full, rail_width, compact);
         }
 
@@ -543,11 +495,7 @@ impl eframe::App for McrateApp {
         // egui обновляет волну с частотой рендеринга окна. В остальных состояниях
         // сохраняем редкий опрос движка, чтобы не тратить CPU впустую.
         if self.ctl.needs_repaint() {
-            if self.view == View::NowPlaying
-                && self.ctl.is_playing()
-                && !self.ctl.is_loading()
-                && !theme.settings.reduce_motion
-            {
+            if self.view == View::NowPlaying && self.ctl.is_playing() && !self.ctl.is_loading() && !theme.settings.reduce_motion {
                 ctx.request_repaint();
             } else {
                 ctx.request_repaint_after(Duration::from_millis(100));

@@ -141,11 +141,8 @@ pub struct Controller {
 
 impl Controller {
     pub fn new() -> Self {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .expect("не удалось создать tokio runtime");
+        let rt =
+            tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("не удалось создать tokio runtime");
 
         // Библиотека сохраняется между запусками. Если папку приложения определить не удалось,
         // работаем только в памяти (как раньше).
@@ -318,10 +315,7 @@ impl Controller {
             return;
         }
         let Some(engine) = &self.engine else {
-            self.status = Some(format!(
-                "Нет звукового устройства: {}",
-                self.audio_error.clone().unwrap_or_default()
-            ));
+            self.status = Some(format!("Нет звукового устройства: {}", self.audio_error.clone().unwrap_or_default()));
             return;
         };
         engine.play_queue(items, start);
@@ -398,12 +392,7 @@ impl Controller {
         self.download_progress = state.download_progress;
         self.visualizer = engine.visualizer();
         // Громкость не копируем: её хозяин Controller (ползунок двигается плавно, а снимок отстаёт на кадр).
-        self.queue = QueueView {
-            shuffle: state.shuffle,
-            repeat: state.repeat,
-            len: state.queue_len,
-            index: state.queue_index,
-        };
+        self.queue = QueueView { shuffle: state.shuffle, repeat: state.repeat, len: state.queue_len, index: state.queue_index };
     }
 
     /// Играет ли сейчас музыка. Пока онлайн-трек грузится, считаем, что «играет»

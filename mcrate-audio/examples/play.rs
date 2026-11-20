@@ -1,7 +1,7 @@
 use mcrate_audio::AudioPlayer;
 use std::path::Path;
-use std::time::Duration;
-use std::thread::sleep; // sleep = «подождать указанное время»
+use std::thread::sleep;
+use std::time::Duration; // sleep = «подождать указанное время»
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // args() = аргументы командной строки; nth(1) = первый после имени программы

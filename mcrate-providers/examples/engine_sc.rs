@@ -39,13 +39,8 @@ async fn run() -> Result<(), Box<dyn Error>> {
     let query = std::env::args().nth(1).unwrap_or_else(|| "Кино Группа крови".to_string());
 
     // ПРОВАЙДЕР-НАЧАЛО: подготовка SoundCloud и поиск
-    let dir = std::env::var_os("APPDATA")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join("Mcrate");
-    let sc = Arc::new(
-        mcrate_providers::SoundCloudProvider::new()?.with_client_id_file(dir.join("soundcloud_client_id.txt")),
-    );
+    let dir = std::env::var_os("APPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir).join("Mcrate");
+    let sc = Arc::new(mcrate_providers::SoundCloudProvider::new()?.with_client_id_file(dir.join("soundcloud_client_id.txt")));
     println!("== Подготовка (client_id; первый раз ~30 с на медленном интернете)");
     sc.prepare().await?;
     println!("== Поиск «{query}»");
@@ -98,7 +93,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
     if !w.wait(Duration::from_secs(600), started(&tracks[0].id))? {
         return Err("1-й трек так и не начал играть за 10 минут (смотри события выше)".into());
     }
-    println!("   1-й трек пошёл через {:.1} с после старта. СЛУШАЙ: звук есть, громкость примерно вдвое тише", started_at.elapsed().as_secs_f32());
+    println!(
+        "   1-й трек пошёл через {:.1} с после старта. СЛУШАЙ: звук есть, громкость примерно вдвое тише",
+        started_at.elapsed().as_secs_f32()
+    );
     w.sleep(Duration::from_secs(6))?;
     if tracks[0].duration_secs > 60 {
         engine.seek(Duration::from_secs(30));

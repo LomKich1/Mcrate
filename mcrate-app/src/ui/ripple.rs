@@ -15,6 +15,7 @@
 use egui::{Color32, Id, Painter, Pos2, Rect, Response, Shape, Ui, Vec2, layers::ShapeIdx, pos2};
 use std::f32::consts::{FRAC_PI_2, TAU};
 
+use super::anim::spring_step;
 use crate::theme::{Theme, with_alpha};
 
 /// Число сторон у многоугольника, которым приближается круг.
@@ -150,17 +151,9 @@ fn radial_disc_in_rect(rect: Rect, corner: f32, center: Pos2, radius: f32, color
     };
 
     let mut mesh = egui::Mesh::default();
-    mesh.vertices.push(egui::epaint::Vertex {
-        pos: centroid,
-        uv: egui::epaint::WHITE_UV,
-        color: with_alpha(color, alpha_at(centroid)),
-    });
+    mesh.vertices.push(egui::epaint::Vertex { pos: centroid, uv: egui::epaint::WHITE_UV, color: with_alpha(color, alpha_at(centroid)) });
     for &p in &poly {
-        mesh.vertices.push(egui::epaint::Vertex {
-            pos: p,
-            uv: egui::epaint::WHITE_UV,
-            color: with_alpha(color, alpha_at(p)),
-        });
+        mesh.vertices.push(egui::epaint::Vertex { pos: p, uv: egui::epaint::WHITE_UV, color: with_alpha(color, alpha_at(p)) });
     }
     for i in 0..poly.len() {
         let next = (i + 1) % poly.len();
@@ -291,28 +284,24 @@ fn pointer_pos(ui: &Ui) -> Option<Pos2> {
 ///
 /// * `rect`: фактический (уже сжатый `squish`) прямоугольник элемента, `corner`: радиус его углов
 ///   (для круглой кнопки половина стороны).
-/// * `hover_alpha`/`press_alpha`: 0..255 (M3: 8% ≈ 20 и 12% ≈ 31).
-pub fn state_layer(ui: &Ui, theme: &Theme, painter: &Painter, resp: &Response, rect: Rect, corner: f32, _color: Color32, _hover_alpha: u8, _press_alpha: u8) {
-    // Обычный слой M3 использует единый цвет on_surface с alpha=20 (8%).
-    state_layer_colored(
-        ui, theme, painter, resp, rect, corner,
-        theme.palette.on_surface, STATE_LAYER_HOVER_ALPHA, STATE_LAYER_PRESS_ALPHA,
-    );
+///
+/// Цвет и плотность единые для всего приложения: on_surface, 8% при наведении и 12% при нажатии.
+pub(crate) fn state_layer(ui: &Ui, theme: &Theme, painter: &Painter, resp: &Response, rect: Rect, corner: f32) {
+    let tint = StateTint { color: theme.palette.on_surface, hover_alpha: STATE_LAYER_HOVER_ALPHA, press_alpha: STATE_LAYER_PRESS_ALPHA };
+    state_layer_colored(ui, theme, painter, resp, rect, corner, tint);
+}
+
+/// Цвет слоя состояния и его плотность (0..255) при наведении и нажатии.
+#[derive(Clone, Copy)]
+pub(crate) struct StateTint {
+    pub(crate) color: Color32,
+    pub(crate) hover_alpha: u8,
+    pub(crate) press_alpha: u8,
 }
 
 /// Вариант слоя состояния с заданным цветом. Нужен для элементов на инверсных поверхностях
 /// (например, кнопка закрытия M3 snackbar), где on_surface не обеспечивает нужный контраст.
-pub fn state_layer_colored(
-    ui: &Ui,
-    theme: &Theme,
-    painter: &Painter,
-    resp: &Response,
-    rect: Rect,
-    corner: f32,
-    color: Color32,
-    hover_alpha: u8,
-    press_alpha: u8,
-) {
+pub(crate) fn state_layer_colored(ui: &Ui, theme: &Theme, painter: &Painter, resp: &Response, rect: Rect, corner: f32, tint: StateTint) {
     let id: Id = resp.id.with("m3_ripple");
     let pressed = resp.is_pointer_button_down_on();
     let hovered = resp.hovered() || pressed;
@@ -331,39 +320,15 @@ pub fn state_layer_colored(
     // Фокус с клавиатуры: плотность как при нажатии (M3: focus = 12%) и сразу весь элемент.
     let dense = pressed || focus_only;
     let moving = l.step(dt, active, dense, pointer, rect, reduce);
-    if l.live {
-        if let Some(shape) = l.shape(corner, color, hover_alpha, press_alpha, false) {
-            painter.add(shape);
-        }
+    if l.live
+        && let Some(shape) = l.shape(corner, tint.color, tint.hover_alpha, tint.press_alpha, false)
+    {
+        painter.add(shape);
     }
     if moving {
         ui.ctx().request_repaint();
     }
     ui.ctx().data_mut(|d| d.insert_temp(id, l));
-}
-
-/// Параметры той же физической пружины, которая используется для glide-подложки в Mcrate.
-/// F = -k * (x - target) - c * velocity.
-const GLIDE_SPRING_STIFFNESS: f32 = 500.0;
-const GLIDE_SPRING_DAMPING: f32 = 34.0;
-const GLIDE_SPRING_EPSILON: f32 = 0.05;
-
-/// Один шаг пружины. Скорость не сбрасывается при смене цели: новый импульс
-/// разворачивает текущее движение, поэтому выделение не телепортируется.
-fn glide_spring_step(value: &mut f32, velocity: &mut f32, target: f32, dt: f32) -> bool {
-    if dt > 0.0 {
-        let force = -GLIDE_SPRING_STIFFNESS * (*value - target) - GLIDE_SPRING_DAMPING * *velocity;
-        *velocity += force * dt;
-        *value += *velocity * dt;
-    }
-
-    if (*value - target).abs() < GLIDE_SPRING_EPSILON && (*velocity).abs() < GLIDE_SPRING_EPSILON {
-        *value = target;
-        *velocity = 0.0;
-        false
-    } else {
-        true
-    }
 }
 
 /// Сколько гаснущих кружков держим одновременно (при быстром движении курсора по строкам).
@@ -404,17 +369,7 @@ impl Default for GlideRipple {
 /// Подсветка одна на список (как `glide_end`): общий прямоугольник пружинно скользит между
 /// строками и карточками, а радиальный кружок остаётся привязан к курсору.
 /// После выхода из всей группы прежний кружок гаснет; фигуры кладутся в слот `glide_begin`.
-pub fn glide_ripple(
-    ui: &Ui,
-    theme: &Theme,
-    slot: ShapeIdx,
-    salt: Id,
-    target: Option<(u64, Rect)>,
-    corner: f32,
-    _color: Color32,
-    _hover_alpha: u8,
-    _press_alpha: u8,
-) {
+pub(crate) fn glide_ripple(ui: &Ui, theme: &Theme, slot: ShapeIdx, salt: Id, target: Option<(u64, Rect)>, corner: f32) {
     // Цвет и базовая плотность совпадают с настройками: p.on_surface, alpha=20 (8%).
     // При нажатии используется тот же цвет с M3-плотностью 12% (alpha=30).
     let color = theme.palette.on_surface;
@@ -431,12 +386,12 @@ pub fn glide_ripple(
         if !st.was_active || !st.cur.is_some_and(|l| l.live) {
             // Новая сессия после выхода курсора: подложка появляется сразу под элементом.
             // Переход между соседними элементами ниже меняет только цель пружины.
-            if let Some(old) = st.cur.take() {
-                if old.live {
-                    st.fading.push(old);
-                    if st.fading.len() > MAX_FADING {
-                        st.fading.remove(0);
-                    }
+            if let Some(old) = st.cur.take()
+                && old.live
+            {
+                st.fading.push(old);
+                if st.fading.len() > MAX_FADING {
+                    st.fading.remove(0);
                 }
             }
             st.cur = Some(Layer::new(key, rect, pointer.unwrap_or_else(|| rect.center())));
@@ -465,19 +420,15 @@ pub fn glide_ripple(
             st.velocity_min = Vec2::ZERO;
             st.velocity_max = Vec2::ZERO;
         } else {
-            moving |= glide_spring_step(&mut st.rect.min.x, &mut st.velocity_min.x, st.rect_target.min.x, dt);
-            moving |= glide_spring_step(&mut st.rect.min.y, &mut st.velocity_min.y, st.rect_target.min.y, dt);
-            moving |= glide_spring_step(&mut st.rect.max.x, &mut st.velocity_max.x, st.rect_target.max.x, dt);
-            moving |= glide_spring_step(&mut st.rect.max.y, &mut st.velocity_max.y, st.rect_target.max.y, dt);
+            moving |= spring_step(&mut st.rect.min.x, &mut st.velocity_min.x, st.rect_target.min.x, dt);
+            moving |= spring_step(&mut st.rect.min.y, &mut st.velocity_min.y, st.rect_target.min.y, dt);
+            moving |= spring_step(&mut st.rect.max.x, &mut st.velocity_max.x, st.rect_target.max.x, dt);
+            moving |= spring_step(&mut st.rect.max.y, &mut st.velocity_max.y, st.rect_target.max.y, dt);
         }
     }
 
     if let Some(l) = st.cur.as_mut() {
-        let rect = if st.rect_initialized {
-            st.rect
-        } else {
-            target.map(|(_, r)| r).unwrap_or(l.rect)
-        };
+        let rect = if st.rect_initialized { st.rect } else { target.map(|(_, r)| r).unwrap_or(l.rect) };
         moving |= l.step(dt, active, pressed, pointer, rect, reduce);
         if !l.live {
             st.cur = None;
@@ -547,5 +498,4 @@ mod tests {
         let round = clip_convex(disc_polygon(pos2(2.0, 2.0), 60.0), &rounded_rect_polygon(rect, 24.0));
         assert!(area(&round) < area(&sharp) - 10.0);
     }
-
 }

@@ -5,10 +5,7 @@ use std::thread;
 use std::time::Duration;
 
 /// Запустить трек, который сейчас выбран в очереди.
-fn play_current(
-    player: &AudioPlayer,
-    queue: &PlayQueue<PathBuf>,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn play_current(player: &AudioPlayer, queue: &PlayQueue<PathBuf>) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(path) = queue.current() {
         let total = player.play_file(path)?;
         println!("> {} ({:?})", path.display(), total);
@@ -66,7 +63,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     play_current(&player, &queue)?;
                 }
                 "t" => {
-                    if player.is_paused() { player.resume(); } else { player.pause(); }
+                    if player.is_paused() {
+                        player.resume();
+                    } else {
+                        player.pause();
+                    }
                 }
                 "s" => {
                     queue.set_shuffle(!queue.shuffle());

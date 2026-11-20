@@ -27,3 +27,6 @@ config.local.*
 /*.tar
 /*.tar.gz
 /*.tgz
+
+# Граф Graphify (строится в песочнице Claude, в репозиторий не кладём)
+graphify-out/

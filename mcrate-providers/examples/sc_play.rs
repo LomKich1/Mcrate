@@ -39,7 +39,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!("== Подготовка (client_id)");
     let started = Instant::now();
     provider.prepare().await?;
-    println!("готово за {:.1} с (первый раз долго: client_id берётся с сайта; потом из файла почти мгновенно)", started.elapsed().as_secs_f32());
+    println!(
+        "готово за {:.1} с (первый раз долго: client_id берётся с сайта; потом из файла почти мгновенно)",
+        started.elapsed().as_secs_f32()
+    );
 
     println!("\n== Поиск «{query}»");
     let started = Instant::now();
@@ -87,7 +90,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) => println!("перемотка на 30 с: ОШИБКА ({e})"),
             }
         }
-        if seconds % 3 == 0 {
+        if seconds.is_multiple_of(3) {
             println!("  позиция: {:.1} с", player.position().as_secs_f32());
         }
         if !full && seconds >= 20 {

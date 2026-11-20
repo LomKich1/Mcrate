@@ -9,7 +9,6 @@ use egui_glass::{Glass, GlassStyle, LiveBackdropQuality};
 use super::{Palette, Surface, Theme, material3, with_alpha};
 use crate::settings::GlassQuality;
 
-
 /// Стиль настоящего GPU Liquid Glass для отдельных интерактивных контролов в контенте.
 /// Используется только вне уже стеклянной поверхности: GlassButton не должен наслаиваться
 /// поверх Glass-рейки или PlayerBar. blur/refraction следуют настройкам активной темы.
@@ -94,12 +93,7 @@ pub fn paint_pane(theme: &Theme, painter: &Painter, rect: Rect) {
     let fill_alpha = if p.dark { 188 } else { 204 };
     let outline_alpha = if p.dark { 34 } else { 48 };
     painter.rect_filled(rect, corners, with_alpha(p.surface_container_low, fill_alpha));
-    painter.rect_stroke(
-        rect,
-        corners,
-        Stroke::new(1.0, with_alpha(p.outline_variant, outline_alpha)),
-        StrokeKind::Inside,
-    );
+    painter.rect_stroke(rect, corners, Stroke::new(1.0, with_alpha(p.outline_variant, outline_alpha)), StrokeKind::Inside);
 }
 
 const W: usize = 512;

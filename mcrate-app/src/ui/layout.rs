@@ -7,7 +7,7 @@ use egui::{Align, Event, Layout, Margin, MouseWheelUnit, Rect, ScrollArea, Ui, U
 
 /// Размерный класс окна (в Material 3 это называется window size class).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Breakpoint {
+pub(crate) enum Breakpoint {
     /// Узкое окно: навигация сворачивается в одни иконки.
     Compact,
     /// Обычное окно (стартовый размер 1180 px попадает сюда).
@@ -17,7 +17,7 @@ pub enum Breakpoint {
 }
 
 impl Breakpoint {
-    pub fn from_width(window_width: f32) -> Self {
+    pub(crate) fn from_width(window_width: f32) -> Self {
         if window_width < 1000.0 {
             Self::Compact
         } else if window_width < 1400.0 {
@@ -28,7 +28,7 @@ impl Breakpoint {
     }
 
     /// Ширина левой панели навигации (вместе с отступами).
-    pub fn rail_width(self) -> f32 {
+    pub(crate) fn rail_width(self) -> f32 {
         match self {
             Self::Compact => 88.0,
             Self::Medium => 232.0,
@@ -39,7 +39,7 @@ impl Breakpoint {
 
 /// Ширины колонок нижней панели плеера.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BarColumns {
+pub(crate) struct BarColumns {
     /// Ширина левой и правой колонки (они всегда равны).
     pub side: f32,
     /// Ширина центральной колонки с кнопками и перемоткой.
@@ -49,7 +49,7 @@ pub struct BarColumns {
 /// Центр занимает половину панели, но не уже 360 и не шире 720 px (на широком экране кнопки
 /// не должны разъезжаться по всей панели). Боковые колонки делят остаток поровну, поэтому
 /// центр всегда точно посередине плавающего плеера.
-pub fn bar_columns(total: f32, gap: f32) -> BarColumns {
+pub(crate) fn bar_columns(total: f32, gap: f32) -> BarColumns {
     let center = (total * 0.5).clamp(360.0, 720.0);
     let side = ((total - center - gap * 2.0) / 2.0).max(0.0);
     BarColumns { side, center }
@@ -57,7 +57,7 @@ pub fn bar_columns(total: f32, gap: f32) -> BarColumns {
 
 /// Сторона обложки на экране «Сейчас играет». В компактной высоте допускаем меньшую обложку,
 /// чтобы название и метаданные оставались видны без прокрутки.
-pub fn cover_side(avail_w: f32, avail_h: f32, compact_height: bool) -> f32 {
+pub(crate) fn cover_side(avail_w: f32, avail_h: f32, compact_height: bool) -> f32 {
     let minimum = if compact_height { 112.0 } else { 160.0 };
     let preferred = if compact_height { 0.44 } else { 0.50 };
     (avail_h * preferred).min(avail_w * 0.5).clamp(minimum, 440.0)
@@ -65,7 +65,7 @@ pub fn cover_side(avail_w: f32, avail_h: f32, compact_height: bool) -> f32 {
 
 /// Создаёт колонку с ограниченной максимальной шириной и центрирует её в доступной области.
 /// Используется для списков, настроек и текстовых страниц на широких окнах.
-pub fn centered_column<R>(ui: &mut Ui, max_width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+pub(crate) fn centered_column<R>(ui: &mut Ui, max_width: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
     let available = ui.available_rect_before_wrap();
     let width = available.width().min(max_width.max(1.0));
     let rect = Rect::from_min_size(pos2(available.center().x - width * 0.5, available.top()), vec2(width, available.height()));
@@ -74,19 +74,22 @@ pub fn centered_column<R>(ui: &mut Ui, max_width: f32, add: impl FnOnce(&mut Ui)
 
 /// Максимальная ширина элементов на экранах настроек. Сама панель и область прокрутки
 /// остаются полноширинными; ограничивается только содержимое внутри них.
-pub const SETTINGS_CONTENT_MAX_WIDTH: f32 = 700.0;
+pub(crate) const SETTINGS_CONTENT_MAX_WIDTH: f32 = 700.0;
+
+/// То же для экранов настроек в Liquid Glass (там карточки шире, чем в Material 3).
+pub(crate) const GLASS_SETTINGS_MAX_WIDTH: f32 = 760.0;
 
 /// Максимальная ширина списков треков. Это сохраняет плотную читаемую колонку на широких окнах.
-pub const TRACK_LIST_MAX_WIDTH: f32 = 920.0;
+pub(crate) const TRACK_LIST_MAX_WIDTH: f32 = 920.0;
 
 /// Множитель прокрутки обычного колеса мыши для основных страниц.
 /// 1.0 — стандарт egui, 1.5 — в полтора раза быстрее, 2.0 — вдвое быстрее.
-pub const WHEEL_SCROLL_MULTIPLIER: f32 = 1.5;
+pub(crate) const WHEEL_SCROLL_MULTIPLIER: f32 = 1.5;
 
 /// Колонка элементов настроек. Ограничивается только содержимое: родительская панель
 /// и её ScrollArea остаются полноширинными. На узком окне centered_column автоматически
 /// использует всю доступную ширину, а на широком центрирует контент с заданным максимумом.
-pub fn responsive_column<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+pub(crate) fn responsive_column<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     centered_column(ui, SETTINGS_CONTENT_MAX_WIDTH, add)
 }
 
@@ -97,7 +100,7 @@ pub fn responsive_column<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 /// Здесь хранится, сколько отступа лежит с каждой стороны. Liquid Glass: снизу 0 (панель
 /// заканчивается там, где плеер), M3: 20 со всех сторон (поля рамки `Surface::Content`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Bleed {
+pub(crate) struct Bleed {
     pub left: f32,
     pub top: f32,
     pub right: f32,
@@ -105,23 +108,23 @@ pub struct Bleed {
 }
 
 impl Bleed {
-    pub const fn same(v: f32) -> Self {
+    pub(crate) const fn same(v: f32) -> Self {
         Self { left: v, top: v, right: v, bottom: v }
     }
 
     /// Только левая и правая сторона: для экранов, у которых заголовок лежит НАД прокруткой
     /// (иначе прокручиваемое содержимое наезжало бы на заголовок).
-    pub fn sides(self) -> Self {
+    pub(crate) fn sides(self) -> Self {
         Self { top: 0.0, bottom: 0.0, ..self }
     }
 
     /// Без верхней стороны: заголовок лежит над прокруткой, но снизу и по бокам вылет нужен.
-    pub fn below_header(self) -> Self {
+    pub(crate) fn below_header(self) -> Self {
         Self { top: 0.0, ..self }
     }
 
     /// Прямоугольник, расширенный на вылет.
-    pub fn expand(self, r: Rect) -> Rect {
+    pub(crate) fn expand(self, r: Rect) -> Rect {
         Rect::from_min_max(r.min - vec2(self.left, self.top), r.max + vec2(self.right, self.bottom))
     }
 }
@@ -129,7 +132,7 @@ impl Bleed {
 /// Расширяет область отсечения (clip rect) до краёв панели. Нужно для содержимого, которое
 /// не лежит прямо в `pane_scroll` (например, горизонтальная полка внутри страницы): раскладка
 /// остаётся прежней, меняется только то, докуда доходит рисование и наведение мыши.
-pub fn bleed_clip(ui: &mut Ui, bleed: Bleed) {
+pub(crate) fn bleed_clip(ui: &mut Ui, bleed: Bleed) {
     let c = ui.clip_rect();
     ui.set_clip_rect(bleed.expand(c));
 }
@@ -139,12 +142,7 @@ pub fn bleed_clip(ui: &mut Ui, bleed: Bleed) {
 /// намеренно не маскируются и не меняют длину дорожки скроллбара.
 fn pane_scroll_geometry(page: Rect, bleed: Bleed) -> (Rect, Margin) {
     let scroll_rect = bleed.expand(page);
-    let margin = Margin {
-        left: bleed.left.max(0.0) as i8,
-        right: bleed.right.max(0.0) as i8,
-        top: bleed.top.max(0.0) as i8,
-        bottom: 0,
-    };
+    let margin = Margin { left: bleed.left.max(0.0) as i8, right: bleed.right.max(0.0) as i8, top: bleed.top.max(0.0) as i8, bottom: 0 };
     (scroll_rect, margin)
 }
 
@@ -209,7 +207,7 @@ fn wheel_delta_y(ui: &Ui) -> f32 {
 /// Колесо мыши обрабатываем сами: каждый кадр смещение приближается к цели по экспоненте от реального
 /// времени кадра. Встроенное сглаживание egui шло с постоянной формой по кадрам и на высокой частоте
 /// обновления (300 Гц) выглядело ступенчатым. Ползунок и остальные способы прокрутки работают как раньше.
-pub fn pane_scroll<T>(
+pub(crate) fn pane_scroll<T>(
     ui: &mut Ui,
     bleed: Bleed,
     area: ScrollArea,
@@ -250,7 +248,10 @@ pub fn pane_scroll<T>(
             }
         }
 
-        let mut area = area.scroll_source(ScrollSource { mouse_wheel: false, ..ScrollSource::default() }).content_margin(margin).scroll_bar_rect(scroll_bar_rect(scroll_rect));
+        let mut area = area
+            .scroll_source(ScrollSource { mouse_wheel: false, ..ScrollSource::default() })
+            .content_margin(margin)
+            .scroll_bar_rect(scroll_bar_rect(scroll_rect));
         if let Some(offset) = forced {
             area = area.vertical_scroll_offset(offset);
         }
@@ -265,7 +266,7 @@ pub fn pane_scroll<T>(
 
 /// Единый запас в конце прокручиваемых страниц. В Material 3 это небольшой край,
 /// в Liquid Glass к нему добавляется область, перекрываемая плавающим плеером.
-pub fn scroll_end_padding(ui: &mut Ui, bottom_inset: f32) {
+pub(crate) fn scroll_end_padding(ui: &mut Ui, bottom_inset: f32) {
     ui.add_space(16.0 + bottom_inset.max(0.0));
 }
 

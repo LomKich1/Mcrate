@@ -12,7 +12,7 @@ use std::io::Write;
 use std::path::Path;
 
 use aes::Aes128;
-use cbc::cipher::{block_padding::Pkcs7, BlockModeDecrypt, KeyIvInit};
+use cbc::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
 use mcrate_core::{ProviderError, ProviderResult, StreamSource};
 use reqwest::Url; // Url = разобранный веб-адрес
 
@@ -107,10 +107,10 @@ fn parse_key(attrs: &str, base: &Url) -> Result<Option<HlsKey>, String> {
     match method.as_str() {
         "NONE" => Ok(None),
         "AES-128" => {
-            if let Some(format) = attr_value(attrs, "KEYFORMAT") {
-                if format != "identity" {
-                    return Err(format!("шифрование с KEYFORMAT={format} не поддержано"));
-                }
+            if let Some(format) = attr_value(attrs, "KEYFORMAT")
+                && format != "identity"
+            {
+                return Err(format!("шифрование с KEYFORMAT={format} не поддержано"));
             }
             let uri = attr_value(attrs, "URI").ok_or("в #EXT-X-KEY нет URI")?;
             let uri = base.join(&uri).map_err(|e| e.to_string())?;
@@ -181,7 +181,7 @@ pub fn parse_hls(text: &str, base: &Url) -> Result<HlsPlan, String> {
 
 /// Расшифровывает один кусок: AES-128 в режиме CBC, добавка PKCS7 (так делает стандарт HLS).
 pub fn decrypt_segment(data: &[u8], key: &[u8; 16], iv: &[u8; 16]) -> Result<Vec<u8>, String> {
-    if data.is_empty() || data.len() % 16 != 0 {
+    if data.is_empty() || !data.len().is_multiple_of(16) {
         return Err(format!("размер зашифрованного куска ({} байт) не кратен 16", data.len()));
     }
     let mut buffer = data.to_vec(); // расшифровываем «на месте», поэтому нужна своя копия
@@ -211,9 +211,7 @@ impl StreamDownloader {
         match source {
             StreamSource::DirectUrl(url) => self.get_bytes(url).await,
             StreamSource::HlsPlaylist(url) => self.download_hls(url).await,
-            StreamSource::LocalFile(path) => {
-                std::fs::read(path).map_err(|e| ProviderError::LocalFile(format!("{}: {e}", path.display())))
-            }
+            StreamSource::LocalFile(path) => std::fs::read(path).map_err(|e| ProviderError::LocalFile(format!("{}: {e}", path.display()))),
         }
     }
 
@@ -240,10 +238,8 @@ impl StreamDownloader {
         total: usize,
         keys: &mut HashMap<String, [u8; 16]>,
     ) -> ProviderResult<Vec<u8>> {
-        let mut bytes = self
-            .get_bytes(seg.url.as_str())
-            .await
-            .map_err(|e| ProviderError::Network(format!("кусок {} из {total}: {e}", i + 1)))?;
+        let mut bytes =
+            self.get_bytes(seg.url.as_str()).await.map_err(|e| ProviderError::Network(format!("кусок {} из {total}: {e}", i + 1)))?;
         if let Some(key) = &seg.key {
             let key_bytes = match keys.get(key.uri.as_str()) {
                 Some(known) => *known,
@@ -298,12 +294,7 @@ impl StreamDownloader {
     /// Особый случай: HLS с кусками в MPEG-TS (VK). Из TS звук вынимается только целиком
     /// (потоковый разбор пока не написан), поэтому такой трек копится в памяти и записывается
     /// в файл в самом конце, как раньше: игра по мере скачивания для него пока не работает.
-    pub async fn download_progressive(
-        &self,
-        source: &StreamSource,
-        dest: &Path,
-        progress: &DownloadProgress,
-    ) -> ProviderResult<()> {
+    pub async fn download_progressive(&self, source: &StreamSource, dest: &Path, progress: &DownloadProgress) -> ProviderResult<()> {
         let result = match source {
             StreamSource::DirectUrl(url) => self.progressive_direct(url, dest, progress).await,
             StreamSource::HlsPlaylist(url) => self.progressive_hls(url, dest, progress).await,
@@ -399,9 +390,8 @@ impl StreamDownloader {
     /// Скачивает ключ шифрования: ровно 16 байт (иначе это, скорее всего, страница с ошибкой).
     async fn get_key(&self, uri: &Url) -> ProviderResult<[u8; 16]> {
         let bytes = self.get_bytes(uri.as_str()).await.map_err(|e| ProviderError::Network(format!("ключ шифрования: {e}")))?;
-        <[u8; 16]>::try_from(bytes.as_slice()).map_err(|_| {
-            ProviderError::UnexpectedResponse(format!("ключ шифрования должен быть 16 байт, пришло {}", bytes.len()))
-        })
+        <[u8; 16]>::try_from(bytes.as_slice())
+            .map_err(|_| ProviderError::UnexpectedResponse(format!("ключ шифрования должен быть 16 байт, пришло {}", bytes.len())))
     }
 
     /// Один GET-запрос, ответ байтами. Любой код, кроме 2xx, считается ошибкой.

@@ -6,30 +6,29 @@
 //! - `m3_switch`: переключатель Material 3 (дорожка 52x32, бегунок растёт и получает галочку);
 //! - `settings_tiles`: плитки 2x2 с крупным бледным значком и градиентом;
 //! - `profile_card`: карточка профиля.
+//!
 //! Всё рисуется самим кодом по ролям палитры, поэтому подстраивается под любую из 12 тем.
 
 use egui::epaint::Mesh;
-use egui::{Align2, Color32, CursorIcon, FontFamily, FontId, Frame, Id, Margin, Painter, Pos2, Rect, Response, RichText, Sense, Shape, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
+use egui::{
+    Align2, Color32, CursorIcon, FontFamily, FontId, Frame, Id, Margin, Painter, Pos2, Rect, Response, RichText, Sense, Shape, Stroke,
+    StrokeKind, Ui, Vec2, pos2, vec2,
+};
 use egui_material_icons::MaterialIcon;
 use egui_material_icons::icons as mi;
 
-use super::widgets::{glide_begin, glide_end_flat, squish};
 use crate::theme::{ShapeRole, TextRole, Theme, with_alpha};
+use crate::ui::ripple::state_layer;
+use crate::ui::widgets::{glide_begin, glide_end, squish};
 
 /// Рисует глиф Material Symbols по центру точки. Поправка вверх на 5% размера нужна потому, что
 /// строка шрифта иконок центрируется по метрикам шрифта, а не по самому рисунку (так же в `icons::paint`).
-pub fn paint_symbol(painter: &Painter, icon: MaterialIcon, center: Pos2, size: f32, color: Color32) {
-    painter.text(
-        center - vec2(0.0, 0.05 * size),
-        Align2::CENTER_CENTER,
-        icon.codepoint,
-        FontId::new(size, icon.font_family()),
-        color,
-    );
+pub(crate) fn paint_symbol(painter: &Painter, icon: MaterialIcon, center: Pos2, size: f32, color: Color32) {
+    painter.text(center - vec2(0.0, 0.05 * size), Align2::CENTER_CENTER, icon.codepoint, FontId::new(size, icon.font_family()), color);
 }
 
 /// Подпись раздела над блоком строк: «ОФОРМЛЕНИЕ», «ПОДКЛЮЧЕНИЯ»... Мелкие заглавные с разрядкой.
-pub fn group_label(ui: &mut Ui, theme: &Theme, text: &str) {
+pub(crate) fn group_label(ui: &mut Ui, theme: &Theme, text: &str) {
     ui.add_space(22.0);
     ui.horizontal(|ui| {
         ui.add_space(18.0);
@@ -46,23 +45,23 @@ pub fn group_label(ui: &mut Ui, theme: &Theme, text: &str) {
 }
 
 /// Один чип выбора («Низкое», «3s»...). `locked` = недоступен (замок, нажатие игнорируется).
-pub struct Chip<'a> {
+pub(crate) struct Chip<'a> {
     pub label: &'a str,
     pub locked: bool,
 }
 
 impl<'a> Chip<'a> {
-    pub fn new(label: &'a str) -> Self {
+    pub(crate) fn new(label: &'a str) -> Self {
         Self { label, locked: false }
     }
 
-    pub fn locked(label: &'a str) -> Self {
+    pub(crate) fn locked(label: &'a str) -> Self {
         Self { label, locked: true }
     }
 }
 
 /// Выбор одного варианта из нескольких: ряд чипов под названием строки.
-pub struct Choice<'a> {
+pub(crate) struct Choice<'a> {
     pub chips: Vec<Chip<'a>>,
     /// Номер выбранного чипа; по нажатию меняется прямо здесь.
     pub selected: &'a mut usize,
@@ -71,7 +70,7 @@ pub struct Choice<'a> {
 }
 
 /// Что стоит справа в строке.
-pub enum Trailing<'a> {
+pub(crate) enum Trailing<'a> {
     /// Только шеврон «>» (переход на подэкран).
     Chevron,
     /// Текущее значение и шеврон («Русский >»).
@@ -85,7 +84,7 @@ pub enum Trailing<'a> {
 }
 
 /// Описание одной строки блока.
-pub struct Row<'a> {
+pub(crate) struct Row<'a> {
     pub icon: Option<MaterialIcon>,
     /// Пустое название = строка без заголовка (например, только сегменты).
     pub title: &'a str,
@@ -95,16 +94,16 @@ pub struct Row<'a> {
 }
 
 impl<'a> Row<'a> {
-    pub fn new(icon: MaterialIcon, title: &'a str, trailing: Trailing<'a>) -> Self {
+    pub(crate) fn new(icon: MaterialIcon, title: &'a str, trailing: Trailing<'a>) -> Self {
         Self { icon: Some(icon), title, subtitle: None, trailing }
     }
 
     /// Строка без иконки слева.
-    pub fn plain(title: &'a str, trailing: Trailing<'a>) -> Self {
+    pub(crate) fn plain(title: &'a str, trailing: Trailing<'a>) -> Self {
         Self { icon: None, title, subtitle: None, trailing }
     }
 
-    pub fn subtitle(mut self, text: &'a str) -> Self {
+    pub(crate) fn subtitle(mut self, text: &'a str) -> Self {
         self.subtitle = Some(text);
         self
     }
@@ -116,11 +115,14 @@ const ROW_H: f32 = 60.0;
 const ROW_ICON_TILE: f32 = 38.0;
 const CHIP_H: f32 = 40.0;
 const CHIP_GAP: f32 = 8.0;
+/// С такой ширины строки чипы не растягиваются на всю строку, а собираются в компактную группу не шире `CHIPS_GROUP_MAX_WIDTH`.
+const CHIPS_WIDE_MIN_WIDTH: f32 = 900.0;
+const CHIPS_GROUP_MAX_WIDTH: f32 = 560.0;
 
 /// Тональный блок со строками. Возвращает номер строки, на которую нажали (переключатели и чипы
 /// сами меняют своё значение и сюда не попадают). `id` отличает блоки друг от друга
 /// (подсветка при наведении скользит между строками ВНУТРИ блока, как в списках треков).
-pub fn settings_group(ui: &mut Ui, theme: &Theme, id: &str, rows: Vec<Row<'_>>) -> Option<usize> {
+pub(crate) fn settings_group(ui: &mut Ui, theme: &Theme, id: &str, rows: Vec<Row<'_>>) -> Option<usize> {
     let p = &theme.palette;
     let mut clicked = None;
     let radius = theme.shape_radius(ShapeRole::ExtraLarge);
@@ -147,15 +149,15 @@ pub fn settings_group(ui: &mut Ui, theme: &Theme, id: &str, rows: Vec<Row<'_>>) 
                         clicked = Some(i);
                     }
                 }
-                // Слой состояния M3: 8% цвета контента под курсором (alpha 20 из 255).
-                glide_end_flat(ui, theme, glide_slot, ui.scope_id().with(("settings_glide", id)), hovered, 20.0, (p.on_surface, 20));
+                // Слой состояния M3: 8% цвета контента под курсором.
+                glide_end(ui, theme, glide_slot, ui.scope_id().with(("settings_glide", id)), hovered, 20.0);
             });
     });
     clicked
 }
 
 /// Одиночный тональный блок под произвольное содержимое (например, ряд цветов акцента).
-pub fn settings_card<R>(ui: &mut Ui, theme: &Theme, add: impl FnOnce(&mut Ui) -> R) -> R {
+pub(crate) fn settings_card<R>(ui: &mut Ui, theme: &Theme, add: impl FnOnce(&mut Ui) -> R) -> R {
     Frame::new()
         .fill(theme.palette.surface_container_high)
         .corner_radius(theme.shape_radius(ShapeRole::ExtraLarge))
@@ -168,11 +170,16 @@ pub fn settings_card<R>(ui: &mut Ui, theme: &Theme, add: impl FnOnce(&mut Ui) ->
 }
 
 /// Серая поясняющая строка под блоком.
-pub fn hint_text(ui: &mut Ui, theme: &Theme, text: &str) {
+pub(crate) fn hint_text(ui: &mut Ui, theme: &Theme, text: &str) {
     ui.add_space(10.0);
     ui.horizontal(|ui| {
         ui.add_space(18.0);
-        ui.add(egui::Label::new(RichText::new(text).size(theme.text_size(TextRole::BodySmall)).color(with_alpha(theme.palette.on_surface_variant, 200))).wrap());
+        ui.add(
+            egui::Label::new(
+                RichText::new(text).size(theme.text_size(TextRole::BodySmall)).color(with_alpha(theme.palette.on_surface_variant, 200)),
+            )
+            .wrap(),
+        );
     });
 }
 
@@ -201,31 +208,10 @@ fn row_ui(ui: &mut Ui, theme: &Theme, group_id: &str, index: usize, mut row: Row
     let sub_h = sub_galley.as_ref().map_or(0.0, |g| g.size().y);
 
     // Для рядов чипов считаем расположение каждого чипа заранее (x, y, ширина) относительно начала ряда.
-    let mut chip_slots: Vec<(f32, f32, f32)> = Vec::new();
-    let mut chips_h = 0.0;
-    if let Trailing::Choice(choice) = &row.trailing {
-        let avail = (total_w - text_off - 14.0).max(60.0);
-        // На широком окне чипы не растягиваются на сотни пикселей каждый:
-        // оставляем компактную группу, а при узком окне используем всю доступную ширину.
-        let chip_width = if total_w >= 900.0 { avail.min(560.0) } else { avail };
-        let n = choice.chips.len().max(1) as f32;
-        let (mut x, mut y) = (0.0_f32, 0.0_f32);
-        for chip in &choice.chips {
-            let w = if choice.stretch {
-                (chip_width - CHIP_GAP * (n - 1.0)) / n
-            } else {
-                let tw = ui.painter().layout_no_wrap(chip.label.to_string(), FontId::proportional(theme.text_size(TextRole::LabelLarge)), p.on_surface).size().x;
-                tw + 36.0 + if chip.locked { 22.0 } else { 0.0 }
-            };
-            if x > 0.0 && x + w > avail + 0.5 {
-                x = 0.0;
-                y += CHIP_H + CHIP_GAP;
-            }
-            chip_slots.push((x, y, w));
-            x += w + CHIP_GAP;
-        }
-        chips_h = y + CHIP_H;
-    }
+    let (chip_slots, chips_h) = match &row.trailing {
+        Trailing::Choice(choice) => layout_chips(ui, theme, choice, total_w, text_off),
+        _ => (Vec::new(), 0.0),
+    };
     let is_choice = matches!(row.trailing, Trailing::Choice(_));
 
     // Высота строки.
@@ -287,7 +273,13 @@ fn row_ui(ui: &mut Ui, theme: &Theme, group_id: &str, index: usize, mut row: Row
             );
         }
         Trailing::Label(value) => {
-            painter.text(pos2(right - 4.0, cy), Align2::RIGHT_CENTER, value.as_str(), FontId::proportional(theme.text_size(TextRole::BodyMedium)), p.on_surface_variant);
+            painter.text(
+                pos2(right - 4.0, cy),
+                Align2::RIGHT_CENTER,
+                value.as_str(),
+                FontId::proportional(theme.text_size(TextRole::BodyMedium)),
+                p.on_surface_variant,
+            );
         }
         Trailing::Switch(on) => {
             if activated {
@@ -298,28 +290,59 @@ fn row_ui(ui: &mut Ui, theme: &Theme, group_id: &str, index: usize, mut row: Row
             let (label, on_now) = (row.title.to_string(), **on);
             resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on_now, label.clone()));
         }
-        Trailing::Choice(choice) => {
-            let origin = pos2(text_x, shown.top() + chips_top_rel);
-            for (i, (chip, &(dx, dy, w))) in choice.chips.iter().zip(chip_slots.iter()).enumerate() {
-                let chip_rect = Rect::from_min_size(origin + vec2(dx, dy), vec2(w, CHIP_H));
-                let sense = if chip.locked { Sense::hover() } else { Sense::click() };
-                let chip_resp = ui.interact(chip_rect, row_id.with(("chip", i)), sense);
-                let is_selected = *choice.selected == i;
-                paint_chip(ui, theme, chip_rect, &chip_resp, chip, is_selected);
-                let (label, locked) = (chip.label.to_string(), chip.locked);
-                chip_resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, !locked, is_selected, label.clone()));
-                let cursor = if chip.locked { CursorIcon::NotAllowed } else { CursorIcon::PointingHand };
-                if chip_resp.on_hover_cursor(cursor).clicked() && !chip.locked {
-                    *choice.selected = i;
-                }
-            }
-        }
+        Trailing::Choice(choice) => paint_choice(ui, theme, row_id, choice, &chip_slots, pos2(text_x, shown.top() + chips_top_rel)),
     }
 
-    if is_choice {
-        (resp, false, false)
-    } else {
-        (resp.on_hover_cursor(CursorIcon::PointingHand), activated, true)
+    if is_choice { (resp, false, false) } else { (resp.on_hover_cursor(CursorIcon::PointingHand), activated, true) }
+}
+
+/// Раскладка чипов ряда: положение каждого (x, y, ширина) относительно начала ряда и полная высота ряда чипов.
+fn layout_chips(ui: &Ui, theme: &Theme, choice: &Choice<'_>, total_w: f32, text_off: f32) -> (Vec<(f32, f32, f32)>, f32) {
+    let p = &theme.palette;
+    let mut chip_slots: Vec<(f32, f32, f32)> = Vec::new();
+    let avail = (total_w - text_off - 14.0).max(60.0);
+    // На широком окне чипы не растягиваются на сотни пикселей каждый:
+    // оставляем компактную группу, а при узком окне используем всю доступную ширину.
+    let chip_width = if total_w >= CHIPS_WIDE_MIN_WIDTH { avail.min(CHIPS_GROUP_MAX_WIDTH) } else { avail };
+    let n = choice.chips.len().max(1) as f32;
+    let (mut x, mut y) = (0.0_f32, 0.0_f32);
+    for chip in &choice.chips {
+        let w = if choice.stretch {
+            (chip_width - CHIP_GAP * (n - 1.0)) / n
+        } else {
+            let tw = ui
+                .painter()
+                .layout_no_wrap(chip.label.to_string(), FontId::proportional(theme.text_size(TextRole::LabelLarge)), p.on_surface)
+                .size()
+                .x;
+            tw + 36.0 + if chip.locked { 22.0 } else { 0.0 }
+        };
+        if x > 0.0 && x + w > avail + 0.5 {
+            x = 0.0;
+            y += CHIP_H + CHIP_GAP;
+        }
+        chip_slots.push((x, y, w));
+        x += w + CHIP_GAP;
+    }
+    let chips_h = y + CHIP_H;
+    (chip_slots, chips_h)
+}
+
+/// Рисует и обрабатывает чипы ряда: нажатие на доступный чип меняет `choice.selected`.
+/// `chip_slots` это раскладка из `layout_chips`, `origin` левый верхний угол ряда чипов.
+fn paint_choice(ui: &Ui, theme: &Theme, row_id: Id, choice: &mut Choice<'_>, chip_slots: &[(f32, f32, f32)], origin: Pos2) {
+    for (i, (chip, &(dx, dy, w))) in choice.chips.iter().zip(chip_slots.iter()).enumerate() {
+        let chip_rect = Rect::from_min_size(origin + vec2(dx, dy), vec2(w, CHIP_H));
+        let sense = if chip.locked { Sense::hover() } else { Sense::click() };
+        let chip_resp = ui.interact(chip_rect, row_id.with(("chip", i)), sense);
+        let is_selected = *choice.selected == i;
+        paint_chip(ui, theme, chip_rect, &chip_resp, chip, is_selected);
+        let (label, locked) = (chip.label.to_string(), chip.locked);
+        chip_resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::RadioButton, !locked, is_selected, label.clone()));
+        let cursor = if chip.locked { CursorIcon::NotAllowed } else { CursorIcon::PointingHand };
+        if chip_resp.on_hover_cursor(cursor).clicked() && !chip.locked {
+            *choice.selected = i;
+        }
     }
 }
 
@@ -333,7 +356,7 @@ fn paint_chip(ui: &Ui, theme: &Theme, rect: Rect, resp: &Response, chip: &Chip<'
     let fg = if chip.locked { with_alpha(fg, 130) } else { fg };
     if !chip.locked {
         // Слой состояния: кружок от курсора (ripple.rs).
-        super::ripple::state_layer(ui, theme, painter, resp, rect, radius, if selected { p.on_primary } else { p.on_surface }, 20, 30);
+        state_layer(ui, theme, painter, resp, rect, radius);
     }
     let font = FontId::proportional(theme.text_size(TextRole::LabelLarge));
     if chip.locked {
@@ -348,7 +371,7 @@ fn paint_chip(ui: &Ui, theme: &Theme, rect: Rect, resp: &Response, chip: &Chip<'
 
 /// Ряд цветных кружков для выбора акцента. Возвращает номер кружка, на который нажали.
 /// `selected` = номер выбранного (если ни один не подходит, `None`). Выбранный получает кольцо и галочку.
-pub fn accent_picker(ui: &mut Ui, theme: &Theme, id: &str, swatches: &[Color32], selected: Option<usize>) -> Option<usize> {
+pub(crate) fn accent_picker(ui: &mut Ui, theme: &Theme, id: &str, swatches: &[Color32], selected: Option<usize>) -> Option<usize> {
     const D: f32 = 48.0;
     const GAP: f32 = 18.0;
     let p = &theme.palette;
@@ -369,7 +392,7 @@ pub fn accent_picker(ui: &mut Ui, theme: &Theme, id: &str, swatches: &[Color32],
         let grow = if resp.hovered() { 1.0 } else { 0.0 };
         painter.circle_filled(center, D * 0.5 - 2.0 * t + grow, color);
         let ripple_rect = Rect::from_center_size(center, Vec2::splat(D));
-        super::ripple::state_layer(ui, theme, painter, &resp, ripple_rect, D * 0.5, p.on_surface, 20, 30);
+        state_layer(ui, theme, painter, &resp, ripple_rect, D * 0.5);
         if t > 0.01 {
             painter.circle_stroke(center, D * 0.5 + 3.0, Stroke::new(3.0 * t, with_alpha(p.on_surface, (t * 255.0) as u8)));
             // Галочка тёмная на светлом кружке и светлая на тёмном.
@@ -412,14 +435,14 @@ fn paint_switch(ui: &Ui, theme: &Theme, id: Id, center: Pos2, on: bool) {
 }
 
 /// Что рисовать крупным бледным значком на плитке.
-pub enum Glyph {
+pub(crate) enum Glyph {
     Symbol(MaterialIcon),
     /// Крупная надпись (например код языка «RU»).
     Text(&'static str),
 }
 
 /// Одна плитка 2x2.
-pub struct Tile {
+pub(crate) struct Tile {
     pub icon: MaterialIcon,
     pub title: &'static str,
     pub subtitle: Option<String>,
@@ -430,11 +453,19 @@ const TILE_H: f32 = 116.0;
 const TILE_GAP: f32 = 12.0;
 
 /// Адаптивная сетка плиток. Возвращает номер плитки, на которую нажали.
-pub fn settings_tiles(ui: &mut Ui, theme: &Theme, tiles: &[Tile]) -> Option<usize> {
+pub(crate) fn settings_tiles(ui: &mut Ui, theme: &Theme, tiles: &[Tile]) -> Option<usize> {
     let total_w = ui.available_width();
     // На узком окне оставляем одну колонку, затем постепенно добавляем ещё колонки,
     // чтобы плитки не становились чрезмерно растянутыми.
-    let columns = if total_w < 620.0 { 1 } else if total_w < 1000.0 { 2 } else if total_w < 1400.0 { 3 } else { 4 };
+    let columns = if total_w < 620.0 {
+        1
+    } else if total_w < 1000.0 {
+        2
+    } else if total_w < 1400.0 {
+        3
+    } else {
+        4
+    };
     let rows = tiles.len().div_ceil(columns);
     let tile_w = (total_w - TILE_GAP * (columns as f32 - 1.0)) / columns as f32;
     let total_h = rows as f32 * TILE_H + rows.saturating_sub(1) as f32 * TILE_GAP;
@@ -491,17 +522,35 @@ fn paint_tile(ui: &Ui, theme: &Theme, base: Rect, resp: &Response, tile: &Tile) 
     let x = rect.left() + 18.0;
     match &tile.subtitle {
         Some(subtitle) => {
-            painter.text(pos2(x, rect.bottom() - 36.0), Align2::LEFT_CENTER, tile.title, FontId::proportional(theme.text_size(TextRole::BodyLarge)), p.on_surface);
-            painter.text(pos2(x, rect.bottom() - 17.0), Align2::LEFT_CENTER, subtitle, FontId::proportional(theme.text_size(TextRole::BodySmall)), p.on_surface_variant);
+            painter.text(
+                pos2(x, rect.bottom() - 36.0),
+                Align2::LEFT_CENTER,
+                tile.title,
+                FontId::proportional(theme.text_size(TextRole::BodyLarge)),
+                p.on_surface,
+            );
+            painter.text(
+                pos2(x, rect.bottom() - 17.0),
+                Align2::LEFT_CENTER,
+                subtitle,
+                FontId::proportional(theme.text_size(TextRole::BodySmall)),
+                p.on_surface_variant,
+            );
         }
         None => {
-            painter.text(pos2(x, rect.bottom() - 24.0), Align2::LEFT_CENTER, tile.title, FontId::proportional(theme.text_size(TextRole::BodyLarge)), p.on_surface);
+            painter.text(
+                pos2(x, rect.bottom() - 24.0),
+                Align2::LEFT_CENTER,
+                tile.title,
+                FontId::proportional(theme.text_size(TextRole::BodyLarge)),
+                p.on_surface,
+            );
         }
     }
 
     // Контур и слой состояния (наведение 8%, нажатие 12%).
     painter.rect_stroke(rect, radius, Stroke::new(1.0, with_alpha(p.outline_variant, 110)), StrokeKind::Inside);
-    super::ripple::state_layer(ui, theme, painter, resp, rect, radius, p.on_surface, 20, 30);
+    state_layer(ui, theme, painter, resp, rect, radius);
 }
 
 /// Горизонтальный градиент внутри скруглённого прямоугольника. `color_at(t)` даёт цвет в точке
@@ -540,7 +589,7 @@ fn paint_gradient_x(painter: &Painter, rect: Rect, radius: f32, color_at: impl F
 }
 
 /// Карточка профиля: кружок с инициалом, имя, подпись и шеврон.
-pub fn profile_card(ui: &mut Ui, theme: &Theme, name: &str, subtitle: &str) -> Response {
+pub(crate) fn profile_card(ui: &mut Ui, theme: &Theme, name: &str, subtitle: &str) -> Response {
     let p = &theme.palette;
     let (base, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 88.0), Sense::click());
     let rect = squish(ui, resp.id, &resp, base, 0.012, 0.05);
@@ -563,10 +612,22 @@ pub fn profile_card(ui: &mut Ui, theme: &Theme, name: &str, subtitle: &str) -> R
     let x = avatar.x + avatar_radius + text_gap;
     let text_clip = Rect::from_min_max(pos2(x, rect.top()), pos2((rect.right() - 56.0).max(x), rect.bottom()));
     let text_painter = painter.with_clip_rect(text_clip);
-    text_painter.text(pos2(x, rect.center().y - 11.0), Align2::LEFT_CENTER, name, FontId::proportional(theme.text_size(TextRole::TitleMedium) + 1.0), p.on_surface);
-    text_painter.text(pos2(x, rect.center().y + 12.0), Align2::LEFT_CENTER, subtitle, FontId::proportional(theme.text_size(TextRole::BodySmall) + 0.5), p.on_surface_variant);
+    text_painter.text(
+        pos2(x, rect.center().y - 11.0),
+        Align2::LEFT_CENTER,
+        name,
+        FontId::proportional(theme.text_size(TextRole::TitleMedium) + 1.0),
+        p.on_surface,
+    );
+    text_painter.text(
+        pos2(x, rect.center().y + 12.0),
+        Align2::LEFT_CENTER,
+        subtitle,
+        FontId::proportional(theme.text_size(TextRole::BodySmall) + 0.5),
+        p.on_surface_variant,
+    );
     paint_symbol(painter, mi::ICON_CHEVRON_RIGHT, pos2(rect.right() - 26.0, rect.center().y), 24.0, p.on_surface_variant);
 
-    super::ripple::state_layer(ui, theme, painter, &resp, rect, radius, p.on_surface, 20, 30);
+    state_layer(ui, theme, painter, &resp, rect, radius);
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }

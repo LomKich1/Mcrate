@@ -112,9 +112,7 @@ impl DownloadProgress {
         let (state, _) = self
             .inner
             .changed
-            .wait_timeout_while(guard, timeout, |s| {
-                !(s.cancelled || s.written >= needed || s.error.is_some() || s.finished)
-            })
+            .wait_timeout_while(guard, timeout, |s| !(s.cancelled || s.written >= needed || s.error.is_some() || s.finished))
             .unwrap_or_else(|e| e.into_inner());
         if state.cancelled {
             Available::Cancelled

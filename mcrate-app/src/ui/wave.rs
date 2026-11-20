@@ -22,19 +22,21 @@ use mcrate_audio::VISUALIZER_POINTS;
 
 use crate::theme::with_alpha;
 
-pub const RIBBONS: usize = 3; // сколько лент
+pub(crate) const RIBBONS: usize = 3; // сколько лент
 const DOTS_PER_COL: usize = 12; // точек на ленту в одной колонке
-pub const COL_STEP_PX: f32 = 2.4; // шаг колонок по X, px
+pub(crate) const COL_STEP_PX: f32 = 2.4; // шаг колонок по X, px
 const MAX_PULSES: usize = 8; // одновременно живущих импульсов
 const PULSE_TTL: f32 = 3.0; // время жизни импульса, с
 const FRONT_SPEED: f32 = 520.0; // скорость фронта импульса вдоль лент, px/с
 const RING_SPEED: f32 = 420.0; // скорость кольца от клика, px/с
 const IDLE_SPEED: f32 = 0.12; // скорость фазы на паузе
 const PLAY_SPEED: f32 = 0.62; // скорость фазы при воспроизведении
+/// Скорость курсора, при которой реакция волны достигает максимума, px/с (быстрее обрезается).
+const POINTER_SPEED_MAX: f32 = 1100.0;
 const BASS_BANDS: usize = 12; // сколько нижних полос спектра считаем «басом» (45 Гц ... ~150 Гц)
 
 /// Что UI сообщает волне на этот кадр.
-pub struct WaveInput<'a> {
+pub(crate) struct WaveInput<'a> {
     /// Время кадра (с). Повторный вызов с тем же временем (второй проход стекла) ничего не меняет.
     pub now: f64,
     pub playing: bool,
@@ -65,7 +67,7 @@ struct Pulse {
 
 /// Состояние волны между кадрами (хранится в памяти egui).
 #[derive(Clone, Default)]
-pub struct WaveSim {
+pub(crate) struct WaveSim {
     t_prev: f64,
     started: bool,
     /// Накопленная фаза. Именно накопленная (+= скорость * dt), а не «время * скорость»:
@@ -119,12 +121,18 @@ impl WaveSim {
     }
 
     /// Нужна ли частая перерисовка (60 к/с). В покое хватает ~30 к/с дрейфа.
-    pub fn busy(&self) -> bool {
-        self.play > 0.02 || self.energy > 0.01 || self.flux.iter().any(|f| *f > 0.01) || self.excite > 0.01 || self.hover > 0.002 || self.press > 0.002 || !self.pulses.is_empty()
+    pub(crate) fn busy(&self) -> bool {
+        self.play > 0.02
+            || self.energy > 0.01
+            || self.flux.iter().any(|f| *f > 0.01)
+            || self.excite > 0.01
+            || self.hover > 0.002
+            || self.press > 0.002
+            || !self.pulses.is_empty()
     }
 
     /// Один шаг симуляции.
-    pub fn step(&mut self, inp: &WaveInput) {
+    pub(crate) fn step(&mut self, inp: &WaveInput) {
         if inp.reduce_motion {
             // Статичная картинка: без дрейфа, импульсов и реакции на курсор.
             *self = WaveSim { play: if inp.playing { 0.8 } else { 0.4 }, ..WaveSim::default() };
@@ -230,11 +238,12 @@ impl WaveSim {
         }
         let pressing = inp.pressed && inp.pointer.is_some();
         self.press += ((if pressing { 1.0 } else { 0.0 }) - self.press) * smooth(dt, 14.0);
-        if inp.pressed && !self.was_pressed {
-            if let Some(p) = inp.pointer {
-                self.push_pulse(p.x, p.y, 1.0); // клик: импульс из точки нажатия
-                self.excite = self.excite.max(0.75);
-            }
+        if inp.pressed
+            && !self.was_pressed
+            && let Some(p) = inp.pointer
+        {
+            self.push_pulse(p.x, p.y, 1.0); // клик: импульс из точки нажатия
+            self.excite = self.excite.max(0.75);
         }
         self.was_pressed = inp.pressed;
 
@@ -260,7 +269,7 @@ struct Dot {
     a: f32,  // «яркость» и размер точки, 0..1
 }
 
-pub struct WaveTable {
+pub(crate) struct WaveTable {
     cols: usize,
     dots: Vec<Dot>,
 }
@@ -275,7 +284,7 @@ fn hash01(seed: u64, i: u64) -> f64 {
 }
 
 impl WaveTable {
-    pub fn build(cols: usize) -> Self {
+    pub(crate) fn build(cols: usize) -> Self {
         let cols = cols.max(2);
         let mut dots = Vec::with_capacity(RIBBONS * cols * DOTS_PER_COL);
         for k in 0..RIBBONS {
@@ -294,12 +303,12 @@ impl WaveTable {
 }
 
 /// Таблица для `cols` колонок. Лежит в памяти egui; пересобирается только при смене `cols` (размера окна).
-pub fn wave_table(ctx: &egui::Context, cols: usize) -> Arc<WaveTable> {
+pub(crate) fn wave_table(ctx: &egui::Context, cols: usize) -> Arc<WaveTable> {
     let id = egui::Id::NULL.with("wave_table_v2");
-    if let Some(t) = ctx.data_mut(|d| d.get_temp::<Arc<WaveTable>>(id)) {
-        if t.cols == cols {
-            return t;
-        }
+    if let Some(t) = ctx.data_mut(|d| d.get_temp::<Arc<WaveTable>>(id))
+        && t.cols == cols
+    {
+        return t;
     }
     let t = Arc::new(WaveTable::build(cols));
     ctx.data_mut(|d| d.insert_temp(id, t.clone()));
@@ -408,7 +417,7 @@ struct Ring {
 }
 
 /// Рисует волну в `rect`. `step`: брать каждую `step`-ю точку (1 = все; в закадровом проходе стекла 3).
-pub fn paint(painter: &Painter, rect: Rect, sim: &WaveSim, table: &WaveTable, base: Color32, accent: Color32, step: usize) {
+pub(crate) fn paint(painter: &Painter, rect: Rect, sim: &WaveSim, table: &WaveTable, base: Color32, accent: Color32, step: usize) {
     let (w, h) = (rect.width(), rect.height());
     let cols = table.cols;
     // Размах: пауза спокойнее, игра и возбуждение выше. Верхняя граница держит ленты в холсте.
@@ -431,7 +440,7 @@ pub fn paint(painter: &Painter, rect: Rect, sim: &WaveSim, table: &WaveTable, ba
     let sigma = 62.0 + 40.0 * sim.press;
     let cur = sim.cursor;
     let vl = sim.vel.length();
-    let vn = (if vl > 1100.0 { sim.vel * (1100.0 / vl) } else { sim.vel }) / 1100.0; // скорость курсора, |vn| <= 1
+    let vn = (if vl > POINTER_SPEED_MAX { sim.vel * (POINTER_SPEED_MAX / vl) } else { sim.vel }) / POINTER_SPEED_MAX; // скорость курсора, |vn| <= 1
     let playhead_x = sim.progress * w;
     let col_w = w / (cols - 1) as f32;
     let size_base = if step == 1 { 1.15 } else { 2.4 }; // при step=3 точки крупнее, чтобы пятно не «рассыпалось»
@@ -498,7 +507,17 @@ mod tests {
     use super::*;
 
     fn input<'a>(now: f64, playing: bool, track: Option<&'a str>) -> WaveInput<'a> {
-        WaveInput { now, playing, track_id: track, progress: None, spectrum: None, reduce_motion: false, pointer: None, pressed: false, size: vec2(1000.0, 200.0) }
+        WaveInput {
+            now,
+            playing,
+            track_id: track,
+            progress: None,
+            spectrum: None,
+            reduce_motion: false,
+            pointer: None,
+            pressed: false,
+            size: vec2(1000.0, 200.0),
+        }
     }
 
     fn run(sim: &mut WaveSim, frames: usize, playing: bool) {

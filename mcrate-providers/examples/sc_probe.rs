@@ -25,7 +25,7 @@ fn find_script_urls(html: &str) -> Vec<String> {
     for (start, _) in html.match_indices(prefix) {
         let rest = &html[start..]; // кусок текста от начала адреса до конца страницы
         // адрес заканчивается на первом символе из этого набора (кавычка, пробел, скобка)
-        let end = rest.find(|c: char| matches!(c, '"' | '\'' | ' ' | '<' | '>')).unwrap_or(rest.len());
+        let end = rest.find(['"', '\'', ' ', '<', '>']).unwrap_or(rest.len());
         let url = &rest[..end];
         if url.ends_with(".js") && !urls.iter().any(|u| u == url) {
             urls.push(url.to_string()); // to_string делает копию, чтобы хранить её отдельно
@@ -215,10 +215,7 @@ async fn run() -> Result<(), AnyError> {
         .or_else(|| transcodings.iter().find(|tc| tc["format"]["protocol"] == "hls"))
         .or(transcodings.first())
         .ok_or("у трека нет ни одного потока (transcodings пуст)")?;
-    println!(
-        "выбран поток: preset={} protocol={} mime={}",
-        pick["preset"], pick["format"]["protocol"], pick["format"]["mime_type"]
-    );
+    println!("выбран поток: preset={} protocol={} mime={}", pick["preset"], pick["format"]["protocol"], pick["format"]["mime_type"]);
     let tc_url = pick["url"].as_str().ok_or("у потока нет url")?;
     let auth = track["track_authorization"].as_str().unwrap_or(""); // пропуск на этот трек, его выдал поиск
     let url = reqwest::Url::parse_with_params(tc_url, [("client_id", client_id.as_str()), ("track_authorization", auth)])?;
@@ -251,12 +248,12 @@ async fn run() -> Result<(), AnyError> {
 
     let base = reqwest::Url::parse(&stream_url)?; // базовый адрес: от него считаются относительные ссылки
     // Если есть #EXT-X-MAP:URI="...", это «заголовок» fMP4, его тоже стоит посмотреть
-    if let Some(map_line) = playlist.lines().find(|l| l.starts_with("#EXT-X-MAP")) {
-        if let Some(uri) = map_line.split("URI=\"").nth(1).and_then(|s| s.split('"').next()) {
-            let init = base.join(uri)?; // join склеивает базовый адрес и относительный
-            let (st, bytes) = get_bytes(&client, init.as_str()).await?;
-            println!("init-сегмент: код {st}, {} байт, начало: {} → {}", bytes.len(), hex_head(&bytes, 16), classify_segment(&bytes));
-        }
+    if let Some(map_line) = playlist.lines().find(|l| l.starts_with("#EXT-X-MAP"))
+        && let Some(uri) = map_line.split("URI=\"").nth(1).and_then(|s| s.split('"').next())
+    {
+        let init = base.join(uri)?; // join склеивает базовый адрес и относительный
+        let (st, bytes) = get_bytes(&client, init.as_str()).await?;
+        println!("init-сегмент: код {st}, {} байт, начало: {} → {}", bytes.len(), hex_head(&bytes, 16), classify_segment(&bytes));
     }
     if let Some(first) = segments.first() {
         let seg = base.join(first)?;
@@ -281,10 +278,7 @@ mod tests {
             <link href="https://a-v2.sndcdn.com/assets/style.css">
             <script src="https://a-v2.sndcdn.com/assets/0-abc.js"></script>"#;
         // .css отбрасывается, дубль не повторяется
-        assert_eq!(
-            find_script_urls(html),
-            vec!["https://a-v2.sndcdn.com/assets/0-abc.js", "https://a-v2.sndcdn.com/assets/1-def.js"]
-        );
+        assert_eq!(find_script_urls(html), vec!["https://a-v2.sndcdn.com/assets/0-abc.js", "https://a-v2.sndcdn.com/assets/1-def.js"]);
     }
 
     #[test]

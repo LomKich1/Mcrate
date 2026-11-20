@@ -6,17 +6,16 @@
 //! Между карточками стоит разделитель: его можно тянуть мышью, меняя ширину карточек друг относительно друга
 //! (двойной клик возвращает исходное соотношение). Минимумы: `LEFT_MIN` и `RIGHT_MIN`.
 
-use egui::{
-    Align, CursorIcon, Layout, Pos2, Rect, RichText, ScrollArea, Sense, Shape, Stroke, Ui,
-    pos2, vec2,
-};
+use egui::{Align, CursorIcon, Layout, Pos2, Rect, RichText, ScrollArea, Sense, Shape, Stroke, Ui, pos2, vec2};
 
-use super::widgets::{ButtonKind, artists_text, cover_tile, icon_button, spring_step};
+use super::anim::spring_step;
+use super::format::artists_text;
+use super::layout::cover_side;
+use super::widgets::{ButtonKind, cover_tile, icon_button};
 use crate::app::{McrateApp, View};
 use crate::controller::provider_label;
 use crate::icons::Icon;
 use crate::theme::{Surface, Theme, with_alpha};
-use super::layout::cover_side;
 
 const PANEL_GAP: f32 = 16.0;
 const LEFT_MIN: f32 = 280.0;
@@ -38,7 +37,7 @@ const SPRING_SCALE: f32 = 100.0;
 /// Страница считает их один раз, а рисует либо сама (обычные темы), либо стеклянный слой
 /// поверх страницы (Liquid Glass): стекло должно лежать НАД страницей, иначе ему нечего преломлять.
 #[derive(Clone, Copy, Debug)]
-pub struct NpLayout {
+pub(crate) struct NpLayout {
     /// Карточка трека (обложка, название). Её размер плавно меняется, когда уезжает текст.
     pub left: Rect,
     /// Карточка текста уже со сдвигом вправо. Её размер НЕ меняется: она целиком выезжает за окно.
@@ -55,7 +54,7 @@ pub struct NpLayout {
 /// Состояние экрана. Лежит в `McrateApp`, а не во временной памяти egui: страница в Liquid Glass
 /// рисуется дважды за кадр (на экран и за кадр), а стеклянный слой ещё и отдельно от неё.
 #[derive(Clone, Debug)]
-pub struct NowPlayingState {
+pub(crate) struct NowPlayingState {
     /// Хочет ли пользователь видеть панель текста (по умолчанию да).
     pub lyrics_open: bool,
     /// Положение панели на шкале 0..=`SPRING_SCALE` (0 спрятана, `SPRING_SCALE` показана).
@@ -120,17 +119,8 @@ fn np_layout(body: Rect, shown: f32, window_right: f32, split: f32) -> NpLayout 
         let t = shown.clamp(0.0, 1.0);
         body.top() + (final_lyrics.top() - body.top()) * t
     };
-    let toggle_center = pos2(
-        body.right() - TOGGLE_INSET_RIGHT - TOGGLE_SIZE / 2.0,
-        button_top + TOGGLE_INSET_TOP + TOGGLE_SIZE / 2.0,
-    );
-    NpLayout {
-        left,
-        lyrics,
-        lyrics_visible: lyrics.left() < window_right - 0.5 && lyrics.height() > 1.0,
-        toggle_center,
-        divider,
-    }
+    let toggle_center = pos2(body.right() - TOGGLE_INSET_RIGHT - TOGGLE_SIZE / 2.0, button_top + TOGGLE_INSET_TOP + TOGGLE_SIZE / 2.0);
+    NpLayout { left, lyrics, lyrics_visible: lyrics.left() < window_right - 0.5 && lyrics.height() > 1.0, toggle_center, divider }
 }
 
 impl McrateApp {
@@ -138,7 +128,7 @@ impl McrateApp {
     /// небольшой перелёт и остановка, а при повторном нажатии посреди пути скорость сохраняется.
     /// Вызывать РОВНО раз за кадр из `McrateApp::ui` (а не из страницы: её замыкание выполняется
     /// дважды за кадр, и время шло бы вдвое быстрее).
-    pub fn step_now_playing(&mut self, ctx: &egui::Context) {
+    pub(crate) fn step_now_playing(&mut self, ctx: &egui::Context) {
         let target = if self.np.lyrics_open { SPRING_SCALE } else { 0.0 };
         if self.theme.settings.reduce_motion {
             // «Уменьшить анимацию»: без пружины, сразу на месте.
@@ -156,7 +146,7 @@ impl McrateApp {
 
     /// Страница экрана: волна, заголовок и раскладка. Сами карточки она рисует
     /// только без Liquid Glass; в Liquid Glass их рисует `now_playing_glass_cards` поверх страницы.
-    pub fn now_playing_view(&mut self, ui: &mut Ui, theme: &Theme) {
+    pub(crate) fn now_playing_view(&mut self, ui: &mut Ui, theme: &Theme) {
         // Волна рисуется первой: все карточки и надписи останутся поверх неё.
         self.paint_background_wave(ui, theme);
 
@@ -195,22 +185,22 @@ impl McrateApp {
         let resp = ui.interact(divider, id, Sense::click_and_drag());
         let mut changed = false;
 
-        if resp.drag_started() {
-            if let Some(pos) = resp.interact_pointer_pos() {
-                ui.ctx().data_mut(|d| d.insert_temp(id.with("grab"), pos.x - divider.center().x));
-            }
+        if resp.drag_started()
+            && let Some(pos) = resp.interact_pointer_pos()
+        {
+            ui.ctx().data_mut(|d| d.insert_temp(id.with("grab"), pos.x - divider.center().x));
         }
-        if resp.dragged() {
-            if let Some(pos) = resp.interact_pointer_pos() {
-                let grab: f32 = ui.ctx().data_mut(|d| d.get_temp(id.with("grab"))).unwrap_or(0.0);
-                // Середина зазора стоит под курсором (с поправкой на захват): справа от неё ширина карточки текста.
-                let right = body.right() - (pos.x - grab) - PANEL_GAP / 2.0;
-                let (min_right, max_right) = right_bounds(body.width());
-                let split = right.clamp(min_right, max_right) / body.width();
-                if (split - self.np.split).abs() > 1e-4 {
-                    self.np.split = split;
-                    changed = true;
-                }
+        if resp.dragged()
+            && let Some(pos) = resp.interact_pointer_pos()
+        {
+            let grab: f32 = ui.ctx().data_mut(|d| d.get_temp(id.with("grab"))).unwrap_or(0.0);
+            // Середина зазора стоит под курсором (с поправкой на захват): справа от неё ширина карточки текста.
+            let right = body.right() - (pos.x - grab) - PANEL_GAP / 2.0;
+            let (min_right, max_right) = right_bounds(body.width());
+            let split = right.clamp(min_right, max_right) / body.width();
+            if (split - self.np.split).abs() > 1e-4 {
+                self.np.split = split;
+                changed = true;
             }
         }
         if resp.double_clicked() && (self.np.split - DEFAULT_SPLIT).abs() > 1e-4 {
@@ -236,14 +226,14 @@ impl McrateApp {
 
     /// Стеклянные карточки «Сейчас играет» (только Liquid Glass). Вызывается из `glass_layout`
     /// ПОСЛЕ страницы, как рейка и плеер: стекло берёт картинку страницы за собой.
-    pub fn now_playing_glass_cards(&mut self, ui: &mut Ui, theme: &Theme) {
+    pub(crate) fn now_playing_glass_cards(&mut self, ui: &mut Ui, theme: &Theme) {
         if self.view != View::NowPlaying {
             return;
         }
-        if let Some(layout) = self.np.layout {
-            if self.draw_np_cards(ui, theme, layout, true) {
-                self.toggle_lyrics(ui.ctx());
-            }
+        if let Some(layout) = self.np.layout
+            && self.draw_np_cards(ui, theme, layout, true)
+        {
+            self.toggle_lyrics(ui.ctx());
         }
     }
 
@@ -261,12 +251,8 @@ impl McrateApp {
         if shield {
             ui.interact(layout.left, egui::Id::unique("np_left_shield"), Sense::click_and_drag());
         }
-        let mut left_ui = ui.new_child(
-            egui::UiBuilder::new()
-                .id_salt("now-playing-left")
-                .max_rect(layout.left)
-                .layout(Layout::top_down(Align::Min)),
-        );
+        let mut left_ui =
+            ui.new_child(egui::UiBuilder::new().id_salt("now-playing-left").max_rect(layout.left).layout(Layout::top_down(Align::Min)));
         self.track_panel(&mut left_ui, theme, track.as_ref());
 
         if layout.lyrics_visible {
@@ -274,10 +260,7 @@ impl McrateApp {
                 ui.interact(layout.lyrics, egui::Id::unique("np_lyrics_shield"), Sense::click_and_drag());
             }
             let mut lyrics_ui = ui.new_child(
-                egui::UiBuilder::new()
-                    .id_salt("now-playing-lyrics")
-                    .max_rect(layout.lyrics)
-                    .layout(Layout::top_down(Align::Min)),
+                egui::UiBuilder::new().id_salt("now-playing-lyrics").max_rect(layout.lyrics).layout(Layout::top_down(Align::Min)),
             );
             self.lyrics_panel(&mut lyrics_ui, theme, track.as_ref());
         }
@@ -310,25 +293,17 @@ impl McrateApp {
                 if let Some(track) = track {
                     ui.vertical_centered(|ui| {
                         let compact = ui.available_height() < 560.0;
-                        let side = cover_side(ui.available_width(), ui.available_height(), compact)
-                            .min(340.0);
+                        let side = cover_side(ui.available_width(), ui.available_height(), compact).min(340.0);
                         let (cover, _) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
                         cover_tile(ui, theme, cover, &track.id, 28.0);
                         ui.add_space(18.0);
                         ui.label(RichText::new(&track.title).size(if compact { 21.0 } else { 25.0 }).strong());
                         ui.add_space(4.0);
-                        ui.label(
-                            RichText::new(artists_text(track))
-                                .size(15.0)
-                                .color(p.on_surface_variant),
-                        );
+                        ui.label(RichText::new(artists_text(track)).size(15.0).color(p.on_surface_variant));
                         ui.add_space(12.0);
                         let queue_count = self.ctl.queue.len();
                         let queue_position = if queue_count > 0 {
-                            format!(
-                                "В очереди · {} из {queue_count}",
-                                self.ctl.queue.index().saturating_add(1).min(queue_count)
-                            )
+                            format!("В очереди · {} из {queue_count}", self.ctl.queue.index().saturating_add(1).min(queue_count))
                         } else {
                             "Очередь пуста".to_owned()
                         };
@@ -391,8 +366,7 @@ impl McrateApp {
 
         let target = &self.ctl.visualizer().samples;
         let id = ui.make_persistent_id("now-playing-wave-smoothing");
-        let mut smooth = ui.ctx().data_mut(|d| d.get_temp::<Vec<f32>>(id))
-            .unwrap_or_else(|| vec![0.0; target.len()]);
+        let mut smooth = ui.ctx().data_mut(|d| d.get_temp::<Vec<f32>>(id)).unwrap_or_else(|| vec![0.0; target.len()]);
         if smooth.len() != target.len() {
             smooth.resize(target.len(), 0.0);
         }
@@ -433,9 +407,9 @@ impl McrateApp {
         painter.add(Shape::line(wave, Stroke::new(2.2, line)));
 
         ui.ctx().data_mut(|d| d.insert_temp(id, smooth));
-        if !theme.settings.reduce_motion && self.ctl.is_playing() && !self.ctl.is_loading() {
-            ui.ctx().request_repaint();
-        } else if moving && !theme.settings.reduce_motion {
+        // Перерисовываем, пока волна живёт (играет трек) или ещё догоняет цель.
+        let live = self.ctl.is_playing() && !self.ctl.is_loading();
+        if !theme.settings.reduce_motion && (live || moving) {
             ui.ctx().request_repaint();
         }
     }
@@ -537,4 +511,3 @@ mod tests {
         }
     }
 }
-

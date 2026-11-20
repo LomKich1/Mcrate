@@ -1,9 +1,9 @@
 //! Хранилище токенов сервисов в Windows Credential Manager (системное
 //! хранилище паролей Windows). Токены не попадают ни в код, ни в файлы проекта.
 
-use crate::ProviderKind;  // `crate::` значит «из этого же крейта (mcrate-core)»
-use keyring::Entry;       // Entry = одна запись в системном хранилище
-use thiserror::Error;     // макрос для описания ошибок
+use crate::ProviderKind; // `crate::` значит «из этого же крейта (mcrate-core)»
+use keyring::Entry; // Entry = одна запись в системном хранилище
+use thiserror::Error; // макрос для описания ошибок
 
 #[derive(Debug, Error)]
 pub enum SecretError {
@@ -31,7 +31,8 @@ impl TokenStore {
 
     /// Имя записи для сервиса: у каждого сервиса свой токен.
     fn key_name(kind: ProviderKind) -> &'static str {
-        match kind { // match = «выбери ветку по значению», как switch в C++
+        match kind {
+            // match = «выбери ветку по значению», как switch в C++
             ProviderKind::Yandex => "yandex-token",
             ProviderKind::Vk => "vk-token",
             ProviderKind::SoundCloud => "soundcloud-token",
@@ -88,7 +89,7 @@ mod tests {
         let store = TokenStore::with_service("mcrate-test");
         let kind = ProviderKind::SoundCloud;
 
-        store.delete(kind).unwrap();                 // чистим следы прошлых запусков
+        store.delete(kind).unwrap(); // чистим следы прошлых запусков
         assert_eq!(store.load(kind).unwrap(), None); // assert_eq! падает, если значения не равны
 
         store.save(kind, "fake-token-123").unwrap(); // unwrap() = «упади, если ошибка»

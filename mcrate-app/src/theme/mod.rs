@@ -84,8 +84,7 @@ pub enum Surface {
     Content,
     /// Плавающая панель плеера внизу.
     PlayerBar,
-    /// Диалоги и всплывающие окна (будущие экраны подключения сервисов).
-    #[allow(dead_code)]
+    /// Карточки экрана «Сейчас играет» (обложка и текст песни); те же поверхности пригодятся диалогам.
     Dialog,
 }
 
@@ -97,10 +96,7 @@ pub struct Theme {
 
 impl Theme {
     pub fn new(settings: &GraphicsSettings) -> Self {
-        Self {
-            settings: settings.clone(),
-            palette: Palette::from_settings(settings, settings.design),
-        }
+        Self { settings: settings.clone(), palette: Palette::from_settings(settings, settings.design) }
     }
 
     pub fn design(&self) -> Design {
@@ -128,9 +124,7 @@ impl Theme {
         SHAPE_TOKENS
             .iter()
             .find(|(candidate, _, _)| *candidate == role)
-            .map(|(_, material3, glass)| {
-                if self.design() == Design::Material3 { *material3 } else { *glass }
-            })
+            .map(|(_, material3, glass)| if self.design() == Design::Material3 { *material3 } else { *glass })
             .unwrap_or(0)
     }
 
@@ -141,9 +135,7 @@ impl Theme {
         TEXT_TOKENS
             .iter()
             .find(|(candidate, _, _)| *candidate == role)
-            .map(|(_, material3, glass)| {
-                if self.design() == Design::Material3 { *material3 } else { *glass }
-            })
+            .map(|(_, material3, glass)| if self.design() == Design::Material3 { *material3 } else { *glass })
             .unwrap_or(14.0)
     }
 
@@ -188,26 +180,6 @@ impl Theme {
         }
     }
 
-
-    /// Цвет и сила подсветки при наведении. В Liquid Glass она «загорается» изнутри:
-    /// светлая на тёмном материале и тёмная на светлом. В Material 3 оставляем прежнее затемнение.
-    pub fn hover_glide_color(&self) -> Color32 {
-        if self.glass_active() {
-            self.palette.on_surface
-        } else {
-            Color32::BLACK
-        }
-    }
-
-    pub fn hover_glide_alpha(&self) -> u8 {
-        match (self.design(), self.palette.dark) {
-            (Design::LiquidGlass, true) => 26,
-            (Design::LiquidGlass, false) => 32,
-            (_, true) => 84,
-            (_, false) => 40,
-        }
-    }
-
     /// Применить визуальный стиль к egui (цвета виджетов, шрифты, отступы).
     pub fn apply(&self, ctx: &Context) {
         let p = &self.palette;
@@ -240,11 +212,7 @@ impl Theme {
         let w = &mut v.widgets;
         w.noninteractive.bg_fill = if glass { Color32::TRANSPARENT } else { p.surface_container };
         w.noninteractive.fg_stroke = egui::Stroke::new(1.0, p.on_surface_variant);
-        w.noninteractive.bg_stroke = if glass {
-            egui::Stroke::NONE
-        } else {
-            egui::Stroke::new(1.0, p.outline_variant)
-        };
+        w.noninteractive.bg_stroke = if glass { egui::Stroke::NONE } else { egui::Stroke::new(1.0, p.outline_variant) };
         if glass {
             for (state, fill_alpha, edge_alpha) in [
                 (&mut w.inactive, if p.dark { 30 } else { 42 }, 30),
@@ -283,11 +251,7 @@ impl Theme {
             let small_size = if self.glass_active() { 12.0 } else { self.text_size(TextRole::BodySmall) };
             style.text_styles.insert(TextStyle::Small, FontId::new(small_size, Proportional));
             style.spacing.item_spacing = egui::vec2(10.0, 8.0);
-            style.spacing.button_padding = if self.glass_active() {
-                egui::vec2(14.0, 10.0)
-            } else {
-                egui::vec2(16.0, 8.0)
-            };
+            style.spacing.button_padding = if self.glass_active() { egui::vec2(14.0, 10.0) } else { egui::vec2(16.0, 8.0) };
             // Ближе к минимальной 44 pt зоне нажатия iOS, но без изменения геометрии
             // кастомных плеерных контролов и без влияния на Material 3.
             style.spacing.interact_size.y = if self.glass_active() { 44.0 } else { 40.0 };
@@ -332,7 +296,6 @@ impl Theme {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

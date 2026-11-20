@@ -8,8 +8,8 @@
 //! (`Player::len()`). Логика чистая, без звука, поэтому тестируется напрямую.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use rodio::{ChannelCount, SampleRate, Source};
@@ -178,8 +178,8 @@ where
 mod tests {
     use super::*;
     use crate::gain::GainSource;
-    use rodio::buffer::SamplesBuffer;
     use rodio::Player;
+    use rodio::buffer::SamplesBuffer;
     use std::num::NonZero;
 
     fn entry(stitch: &mut Stitch, value: f32) -> (TrackGain, Arc<AtomicBool>) {

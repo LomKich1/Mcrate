@@ -39,10 +39,7 @@ pub struct VisualizerFrame {
 
 impl Default for VisualizerFrame {
     fn default() -> Self {
-        Self {
-            samples: [0.0; VISUALIZER_POINTS],
-            sequence: 0,
-        }
+        Self { samples: [0.0; VISUALIZER_POINTS], sequence: 0 }
     }
 }
 
@@ -69,10 +66,7 @@ impl VisualizerFeed {
     /// Скопировать уровни без mutex и без ожидания аудиопотока.
     pub(crate) fn snapshot(&self) -> VisualizerFrame {
         let samples = std::array::from_fn(|i| f32::from_bits(self.shared.levels[i].load(Ordering::Relaxed)));
-        VisualizerFrame {
-            samples,
-            sequence: self.shared.sequence.load(Ordering::Acquire),
-        }
+        VisualizerFrame { samples, sequence: self.shared.sequence.load(Ordering::Acquire) }
     }
 
     pub(crate) fn clear(&self) {
@@ -113,8 +107,7 @@ impl Fft {
     fn run(&self, re: &mut [f32], im: &mut [f32]) {
         let n = re.len();
         // Шаг 1: переставляем элементы в «битово-обратном» порядке (так работает схема бабочек).
-        for i in 0..n {
-            let j = self.bit_reverse[i];
+        for (i, &j) in self.bit_reverse.iter().enumerate().take(n) {
             if j > i {
                 re.swap(i, j);
                 im.swap(i, j);
@@ -184,9 +177,7 @@ impl Spectrum {
             tilt_db: TILT_DB * i as f32 / (VISUALIZER_POINTS - 1) as f32,
         });
         // Окно Хэнна: плавно гасит края куска сигнала, иначе спектр «размазывается».
-        let window = (0..FFT_SIZE)
-            .map(|i| 0.5 - 0.5 * (2.0 * PI * i as f32 / FFT_SIZE as f32).cos())
-            .collect();
+        let window = (0..FFT_SIZE).map(|i| 0.5 - 0.5 * (2.0 * PI * i as f32 / FFT_SIZE as f32).cos()).collect();
         Self {
             fft: Fft::new(FFT_SIZE),
             window,
@@ -229,9 +220,7 @@ impl Spectrum {
                 magnitude(base) * (1.0 - frac) + magnitude((base + 1).min(FFT_SIZE / 2 - 1)) * frac
             } else {
                 // Широкая полоса: берём самый громкий бин внутри.
-                (band.lo.floor() as usize..=band.hi.ceil() as usize)
-                    .map(|bin| magnitude(bin.min(FFT_SIZE / 2 - 1)))
-                    .fold(0.0_f32, f32::max)
+                (band.lo.floor() as usize..=band.hi.ceil() as usize).map(|bin| magnitude(bin.min(FFT_SIZE / 2 - 1))).fold(0.0_f32, f32::max)
             };
             let db = 20.0 * (mag * scale + 1e-9).log10() + band.tilt_db;
             *level = ((db - DB_FLOOR) / (DB_CEIL - DB_FLOOR)).clamp(0.0, 1.0);
@@ -355,13 +344,7 @@ mod tests {
     use super::*;
 
     fn strongest_band(frame: &VisualizerFrame) -> usize {
-        frame
-            .samples
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.total_cmp(b.1))
-            .map(|(i, _)| i)
-            .unwrap()
+        frame.samples.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).map(|(i, _)| i).unwrap()
     }
 
     #[test]
@@ -404,8 +387,8 @@ mod tests {
     #[test]
     fn silence_gives_zero_levels() {
         let feed = VisualizerFeed::new();
-        let source = rodio::source::Zero::new(NonZero::new(1).unwrap(), NonZero::new(48_000).unwrap())
-            .take_duration(Duration::from_millis(100));
+        let source =
+            rodio::source::Zero::new(NonZero::new(1).unwrap(), NonZero::new(48_000).unwrap()).take_duration(Duration::from_millis(100));
         let mut analyzed = AnalyzedSource::new(source, feed.clone());
         while analyzed.next().is_some() {}
         assert!(feed.snapshot().samples.iter().all(|level| *level == 0.0));

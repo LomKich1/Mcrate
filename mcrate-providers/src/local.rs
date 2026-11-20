@@ -6,9 +6,7 @@ use std::sync::RwLock; // замок «много читают или один �
 use async_trait::async_trait;
 use lofty::file::{AudioFile, TaggedFileExt}; // AudioFile даёт properties() (длина), TaggedFileExt даёт primary_tag() и first_tag()
 use lofty::tag::{Accessor, ItemKey}; // Accessor даёт title(); ItemKey = «какое поле тега» (например, TrackArtist)
-use mcrate_core::{
-    MusicProvider, ProviderError, ProviderKind, ProviderResult, StreamSource, Track,
-};
+use mcrate_core::{MusicProvider, ProviderError, ProviderKind, ProviderResult, StreamSource, Track};
 
 /// Расширения, которые умеет проигрывать наш звуковой слой.
 /// Список проверим на практике, opus сейчас не включён.
@@ -121,8 +119,7 @@ impl LocalProvider {
         }
 
         // map_err превращает чужую ошибку lofty в нашу ProviderError::LocalFile
-        let tagged = lofty::read_from_path(path)
-            .map_err(|e| ProviderError::LocalFile(format!("{}: {e}", path.display())))?;
+        let tagged = lofty::read_from_path(path).map_err(|e| ProviderError::LocalFile(format!("{}: {e}", path.display())))?;
 
         let duration_secs = tagged.properties().duration().as_secs() as u32;
 
@@ -133,29 +130,14 @@ impl LocalProvider {
         let title = tag
             .and_then(|t| t.title().map(|s| s.trim().to_string())) // trim убирает пробелы по краям
             .filter(|s| !s.is_empty()) // пустое название считаем отсутствующим
-            .unwrap_or_else(|| {
-                path.file_stem()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "Без названия".to_string())
-            });
+            .unwrap_or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Без названия".to_string()));
 
         // artist() отдаёт только первого исполнителя, а get_strings(TrackArtist) всех (у дуэтов их несколько)
         let artists: Vec<String> = tag
-            .map(|t| {
-                t.get_strings(ItemKey::TrackArtist)
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            })
+            .map(|t| t.get_strings(ItemKey::TrackArtist).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
             .unwrap_or_default(); // нет тега = пустой список
 
-        let track = Track {
-            id,
-            provider: ProviderKind::Local,
-            title,
-            artists,
-            duration_secs,
-        };
+        let track = Track { id, provider: ProviderKind::Local, title, artists, duration_secs };
 
         // .write() = замок на запись
         self.entries
@@ -168,11 +150,11 @@ impl LocalProvider {
     /// Добавить все аудиофайлы из папки (без вложенных папок).
     /// Возвращает, сколько добавлено. Файлы с ошибками пропускаются.
     pub fn add_folder(&self, dir: &Path) -> ProviderResult<usize> {
-        let read_dir = std::fs::read_dir(dir)
-            .map_err(|e| ProviderError::LocalFile(format!("{}: {e}", dir.display())))?;
+        let read_dir = std::fs::read_dir(dir).map_err(|e| ProviderError::LocalFile(format!("{}: {e}", dir.display())))?;
 
         let mut added = 0;
-        for item in read_dir.flatten() { // flatten выбрасывает записи с ошибкой чтения
+        for item in read_dir.flatten() {
+            // flatten выбрасывает записи с ошибкой чтения
             let path = item.path();
             let is_audio = path
                 .extension() // расширение, например "mp3"
@@ -209,9 +191,7 @@ impl MusicProvider for LocalProvider {
         Ok(entries
             .iter()
             .filter(|e| {
-                q.is_empty()
-                    || e.track.title.to_lowercase().contains(&q)
-                    || e.track.artists.iter().any(|a| a.to_lowercase().contains(&q))
+                q.is_empty() || e.track.title.to_lowercase().contains(&q) || e.track.artists.iter().any(|a| a.to_lowercase().contains(&q))
             })
             .map(|e| e.track.clone())
             .collect())

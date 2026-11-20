@@ -10,11 +10,11 @@ mod gain; // усиление нормализации на уровне ист�
 mod growing_file; // чтение файла, который ещё докачивается (внутренний)
 mod loudness; // измерение громкости трека по EBU R128 (внутренний)
 mod normalize; // нормализация громкости: настройки, усиление, плавная смена
-pub use normalize::{PlaybackSettings, DEFAULT_TARGET_LUFS};
+pub use normalize::{DEFAULT_TARGET_LUFS, PlaybackSettings};
 mod stitch; // бесшовный стык: учёт треков, дописанных в очередь деки (внутренний)
 mod stream_cache; // кэш скачанных онлайн-треков (внутренний, наружу не торчит)
 mod visualizer; // неблокирующий анализатор аудио для визуализатора
-pub use visualizer::{VisualizerFrame, VISUALIZER_POINTS};
+pub use visualizer::{VISUALIZER_POINTS, VisualizerFrame};
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -200,13 +200,7 @@ impl AudioPlayer {
     }
 
     /// То же для файла, который ещё докачивается (подробности и про MP4 см. `play_stream`).
-    fn install_stream(
-        &self,
-        deck: &Deck,
-        part: &Path,
-        dest: &Path,
-        progress: &DownloadProgress,
-    ) -> Result<Option<Duration>, AudioError> {
+    fn install_stream(&self, deck: &Deck, part: &Path, dest: &Path, progress: &DownloadProgress) -> Result<Option<Duration>, AudioError> {
         // Подождать первые байты: по ним определяется формат
         match progress.wait_for_bytes(HEADER_LEN as u64, STREAM_START_TIMEOUT) {
             Available::Data(_) => {}
@@ -259,12 +253,7 @@ impl AudioPlayer {
     /// требует знать длину файла, читает его до самого конца и (в нашей версии rodio) паникует,
     /// если длины нет. Поэтому MP4 открываем без «seekable», а перемотку делаем пересборкой
     /// декодера (`seek`). Для остальных форматов (MP3, AAC-ADTS) «seekable» безопасен.
-    pub fn play_stream(
-        &self,
-        part: &Path,
-        dest: &Path,
-        progress: &DownloadProgress,
-    ) -> Result<Option<Duration>, AudioError> {
+    pub fn play_stream(&self, part: &Path, dest: &Path, progress: &DownloadProgress) -> Result<Option<Duration>, AudioError> {
         if progress.is_finished() && dest.exists() {
             return self.play_file(dest);
         }
@@ -291,12 +280,7 @@ impl AudioPlayer {
     }
 
     /// То же для докачиваемого файла (см. `play_stream`).
-    pub fn preload_stream(
-        &self,
-        part: &Path,
-        dest: &Path,
-        progress: &DownloadProgress,
-    ) -> Result<Option<Duration>, AudioError> {
+    pub fn preload_stream(&self, part: &Path, dest: &Path, progress: &DownloadProgress) -> Result<Option<Duration>, AudioError> {
         self.ensure_not_crossfading()?;
         if progress.is_finished() && dest.exists() {
             return self.preload_file(dest);
@@ -340,7 +324,8 @@ impl AudioPlayer {
     /// активным. Пауза сохраняется (стояли на паузе, останемся на паузе, играли, играем).
     /// Без предзагрузки ничего не делает и возвращает `false`.
     pub fn switch_to_preloaded(&self) -> bool {
-        if !self.has_preloaded() { // (во время кроссфейда предзагрузки нет)
+        if !self.has_preloaded() {
+            // (во время кроссфейда предзагрузки нет)
             return false;
         }
         let old = self.active_index();
@@ -445,10 +430,8 @@ impl AudioPlayer {
         let decoder = Decoder::try_from(File::open(path)?)?;
         let total = decoder.total_duration();
         let (gain, cancel) = (TrackGain::new(1.0), Arc::new(AtomicBool::new(false)));
-        let source = CancelSource::new(
-            GainSource::new(AnalyzedSource::new(decoder, self.visualizer.clone()), gain.clone()),
-            Arc::clone(&cancel),
-        );
+        let source =
+            CancelSource::new(GainSource::new(AnalyzedSource::new(decoder, self.visualizer.clone()), gain.clone()), Arc::clone(&cancel));
         deck.reconcile(); // сначала учесть, что очередь могла уже сдвинуться
         deck.stitch().push(gain, cancel);
         deck.player.append(source);
@@ -505,10 +488,14 @@ impl AudioPlayer {
         }
         self.visualizer.clear();
     }
-    pub fn is_paused(&self) -> bool { self.active_deck().player.is_paused() }
+    pub fn is_paused(&self) -> bool {
+        self.active_deck().player.is_paused()
+    }
 
     /// Трек доиграл (или ничего не загружено)?
-    pub fn is_finished(&self) -> bool { self.active_deck().player.empty() }
+    pub fn is_finished(&self) -> bool {
+        self.active_deck().player.empty()
+    }
 
     /// Громкость ползунка пользователя: 1.0 = как в файле, 0.5 = вдвое тише.
     pub fn set_volume(&self, volume: f32) {
@@ -548,9 +535,10 @@ impl AudioPlayer {
     /// Перематывать дальше скачанного нельзя: вызов будет ждать данные (см. `play_stream`).
     pub fn seek(&self, pos: Duration) -> Result<(), AudioError> {
         let deck = self.active_deck();
-        let rebuild = deck.ctx().as_ref().and_then(|c| {
-            c.rebuild_on_seek.then(|| (c.part.clone(), c.dest.clone(), c.progress.clone(), c.hint.clone()))
-        });
+        let rebuild = deck
+            .ctx()
+            .as_ref()
+            .and_then(|c| c.rebuild_on_seek.then(|| (c.part.clone(), c.dest.clone(), c.progress.clone(), c.hint.clone())));
         let Some((part, dest, progress, hint)) = rebuild else {
             deck.player.try_seek(pos)?;
             return Ok(());
@@ -579,11 +567,7 @@ const STREAM_START_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Строит декодер поверх докачиваемого файла. `mp4 = true` отключает режим «seekable» (почему,
 /// см. `AudioPlayer::play_stream`).
-fn build_stream_decoder(
-    reader: GrowingFile,
-    mp4: bool,
-    hint: Option<&str>,
-) -> Result<Decoder<GrowingFile>, AudioError> {
+fn build_stream_decoder(reader: GrowingFile, mp4: bool, hint: Option<&str>) -> Result<Decoder<GrowingFile>, AudioError> {
     let mut builder = Decoder::builder().with_data(reader).with_seekable(!mp4);
     if let Some(hint) = hint {
         builder = builder.with_hint(hint); // подсказка формата; на неверную декодер не обидится

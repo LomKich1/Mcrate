@@ -59,11 +59,8 @@ impl PlaybackSettings {
     /// нечисло (NaN) заменяется значением по умолчанию; кроссфейд не длиннее `MAX_CROSSFADE_SECS`.
     pub fn sanitized(mut self) -> Self {
         self.crossfade_secs = self.crossfade_secs.min(MAX_CROSSFADE_SECS);
-        self.target_lufs = if self.target_lufs.is_finite() {
-            self.target_lufs.clamp(TARGET_RANGE.0, TARGET_RANGE.1)
-        } else {
-            DEFAULT_TARGET_LUFS
-        };
+        self.target_lufs =
+            if self.target_lufs.is_finite() { self.target_lufs.clamp(TARGET_RANGE.0, TARGET_RANGE.1) } else { DEFAULT_TARGET_LUFS };
         self
     }
 }
@@ -169,11 +166,8 @@ impl Normalizer {
         let target_db = 20.0 * self.target.log10();
         let max_step = RAMP_DB_PER_SEC * dt.as_secs_f32();
         let diff = target_db - current_db;
-        self.gain = if diff.abs() <= max_step.max(0.001) {
-            self.target
-        } else {
-            10f32.powf((current_db + diff.signum() * max_step) / 20.0)
-        };
+        self.gain =
+            if diff.abs() <= max_step.max(0.001) { self.target } else { 10f32.powf((current_db + diff.signum() * max_step) / 20.0) };
         Some(self.gain)
     }
 

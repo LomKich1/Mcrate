@@ -31,8 +31,18 @@ pub enum ThemePreset {
 
 impl ThemePreset {
     pub const ALL: [ThemePreset; 12] = [
-        Self::Dark, Self::Light, Self::Amoled, Self::Embermire, Self::VelvetRose, Self::MistyWave,
-        Self::Glacier, Self::GreenDusk, Self::UrbanGray, Self::SilentDawn, Self::Sky, Self::Custom,
+        Self::Dark,
+        Self::Light,
+        Self::Amoled,
+        Self::Embermire,
+        Self::VelvetRose,
+        Self::MistyWave,
+        Self::Glacier,
+        Self::GreenDusk,
+        Self::UrbanGray,
+        Self::SilentDawn,
+        Self::Sky,
+        Self::Custom,
     ];
 
     pub fn label(self) -> &'static str {

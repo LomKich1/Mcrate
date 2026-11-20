@@ -3,9 +3,9 @@
 use egui::{Align, Align2, CursorIcon, FontId, Id, Layout, Pos2, Rect, RichText, Sense, Shape, Stroke, Ui, UiBuilder, Vec2, pos2, vec2};
 use mcrate_audio::RepeatMode;
 
-use super::home::elided;
+use super::format::{artists_text, fmt_time};
 use super::layout::bar_columns;
-use super::widgets::{ButtonKind, artists_text, cover_tile, fmt_time, icon_button, loading_outline, slider_bar};
+use super::widgets::{ButtonKind, cover_tile, elided, icon_button, loading_outline, slider_bar};
 use crate::app::{McrateApp, View};
 use crate::icons::Icon;
 use crate::theme::{Theme, with_alpha};
@@ -26,7 +26,7 @@ fn place_at<R>(ui: &mut Ui, center: Pos2, size: f32, add: impl FnOnce(&mut Ui) -
 }
 
 impl McrateApp {
-    pub fn player_bar(&mut self, ui: &mut Ui, theme: &Theme) {
+    pub(crate) fn player_bar(&mut self, ui: &mut Ui, theme: &Theme) {
         let total = ui.available_width();
         let gap = ui.spacing().item_spacing.x;
         // Боковые колонки равны, центр точно посередине (правила и тесты в ui/layout.rs).
@@ -68,7 +68,8 @@ impl McrateApp {
                 let text_w = (width - cover_size - 14.0).max(60.0);
                 let painter = ui.painter().clone();
                 let title = elided(&painter, &t.title, FontId::proportional(if compact { 13.5 } else { 15.0 }), p.on_surface, text_w);
-                let artists = (!compact).then(|| elided(&painter, &artists_text(&t), FontId::proportional(12.5), p.on_surface_variant, text_w));
+                let artists =
+                    (!compact).then(|| elided(&painter, &artists_text(&t), FontId::proportional(12.5), p.on_surface_variant, text_w));
                 let gap = 3.0;
                 let block_h = title.size().y + artists.as_ref().map_or(0.0, |a| gap + a.size().y);
                 let x = rect.right() + 14.0;
@@ -108,10 +109,8 @@ impl McrateApp {
         {
             self.ctl.toggle_shuffle();
         }
-        if place_at(ui, centers[1], sizes[1], |ui| {
-            icon_button(ui, theme, Icon::Prev, sizes[1], ButtonKind::Plain, false, "Предыдущий")
-        })
-        .clicked()
+        if place_at(ui, centers[1], sizes[1], |ui| icon_button(ui, theme, Icon::Prev, sizes[1], ButtonKind::Plain, false, "Предыдущий"))
+            .clicked()
         {
             self.ctl.prev();
         }
@@ -119,10 +118,8 @@ impl McrateApp {
         if place_at(ui, centers[2], sizes[2], |ui| icon_button(ui, theme, play_icon, sizes[2], ButtonKind::Filled, false, tip)).clicked() {
             self.ctl.toggle_pause();
         }
-        if place_at(ui, centers[3], sizes[3], |ui| {
-            icon_button(ui, theme, Icon::Next, sizes[3], ButtonKind::Plain, false, "Следующий")
-        })
-        .clicked()
+        if place_at(ui, centers[3], sizes[3], |ui| icon_button(ui, theme, Icon::Next, sizes[3], ButtonKind::Plain, false, "Следующий"))
+            .clicked()
         {
             self.ctl.next();
         }
@@ -131,10 +128,8 @@ impl McrateApp {
             RepeatMode::All => (Icon::Repeat, true, "Повтор: все"),
             RepeatMode::One => (Icon::RepeatOne, true, "Повтор: один трек"),
         };
-        if place_at(ui, centers[4], sizes[4], |ui| {
-            icon_button(ui, theme, rep_icon, sizes[4], ButtonKind::Plain, rep_active, rep_tip)
-        })
-        .clicked()
+        if place_at(ui, centers[4], sizes[4], |ui| icon_button(ui, theme, rep_icon, sizes[4], ButtonKind::Plain, rep_active, rep_tip))
+            .clicked()
         {
             self.ctl.cycle_repeat();
         }
@@ -149,11 +144,25 @@ impl McrateApp {
         let time_w = 44.0;
         let font = FontId::proportional(12.0);
         // Время прижато к полосе: левое вправо, правое влево, поэтому ничего не «гуляет» от ширины цифр.
-        ui.painter().text(pos2(seek.left() + time_w, seek.center().y), Align2::RIGHT_CENTER, fmt_time(shown as u64), font.clone(), p.on_surface_variant);
-        ui.painter().text(pos2(seek.right() - time_w, seek.center().y), Align2::LEFT_CENTER, fmt_time(dur as u64), font, p.on_surface_variant);
+        ui.painter().text(
+            pos2(seek.left() + time_w, seek.center().y),
+            Align2::RIGHT_CENTER,
+            fmt_time(shown as u64),
+            font.clone(),
+            p.on_surface_variant,
+        );
+        ui.painter().text(
+            pos2(seek.right() - time_w, seek.center().y),
+            Align2::LEFT_CENTER,
+            fmt_time(dur as u64),
+            font,
+            p.on_surface_variant,
+        );
 
         let bar_rect = Rect::from_min_max(pos2(seek.left() + time_w, seek.top()), pos2(seek.right() - time_w, seek.bottom()));
-        let out = ui.scope_builder(UiBuilder::new().max_rect(bar_rect), |ui| slider_bar(ui, theme, bar_rect.width(), frac, dur > 0.0, "Перемотка")).inner;
+        let out = ui
+            .scope_builder(UiBuilder::new().max_rect(bar_rect), |ui| slider_bar(ui, theme, bar_rect.width(), frac, dur > 0.0, "Перемотка"))
+            .inner;
         if out.response.dragged() {
             if let Some(v) = out.value {
                 self.seek_drag = Some(v);
@@ -178,7 +187,7 @@ impl McrateApp {
     fn pb_now_playing_toggle(&mut self, ui: &mut Ui, theme: &Theme) {
         let p = &theme.palette;
         let open = self.view == View::NowPlaying;
-        let t = ui.ctx().animate_bool_with_time(Id::new("np_toggle_arrow"), open, 0.30);
+        let t = ui.ctx().animate_bool_with_time(Id::unique("np_toggle_arrow"), open, 0.30);
         let e = t * t * (3.0 - 2.0 * t); // smoothstep: плавный старт и остановка
         let (rect, resp) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::click());
         let pressed = resp.is_pointer_button_down_on();
