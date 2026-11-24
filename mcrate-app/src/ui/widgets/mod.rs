@@ -14,7 +14,7 @@ mod slider;
 mod text;
 mod track_row;
 
-pub(crate) use buttons::{ButtonKind, IconButton, glass_icon_button, icon_button, pill_button};
+pub(crate) use buttons::{ButtonKind, IconButton, glass_icon_button, icon_button, like_button, pill_button, place_at};
 pub(crate) use cover::{cover_tile, loading_outline};
 pub(crate) use feedback::{error_banner, loading_indicator, status_snackbar};
 pub(super) use glide::squish;

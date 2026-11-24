@@ -8,12 +8,13 @@
 //!   * каждый кадр (`tick`) читаем события и снимок состояния движка и копируем в поля для UI;
 //!   * библиотека своих файлов (`LocalProvider`) и поиск по SoundCloud (в фоне, UI не ждёт).
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 use mcrate_audio::{CacheStats, PlaybackEngine, PlaybackEvent, PlaybackSettings, RepeatMode, VisualizerFrame};
-use mcrate_core::{History, MusicProvider, ProviderKind, Track, paths};
+use mcrate_core::{History, Likes, MusicProvider, Playlists, ProviderKind, Track, paths};
 use mcrate_providers::{LocalProvider, SoundCloudProvider};
 
 /// Как назвать сервис в интерфейсе («Свои файлы · в очереди: 3»).
@@ -136,6 +137,13 @@ pub struct Controller {
     /// История прослушивания за сеанс: новые сверху, без повторов (трек, сыгранный снова, поднимается наверх).
     /// История прослушивания (хранится на диске, см. `mcrate_core::History`).
     pub history: History,
+    /// Понравившиеся треки (хранятся на диске, см. `mcrate_core::Likes`).
+    pub likes: Likes,
+    /// Те же лайки как множество ключей `(сервис, id)`: строки списков проверяют лайк по нему за O(1).
+    /// Пересобирается при каждом изменении лайков.
+    liked: Arc<HashSet<LikeKey>>,
+    /// Плейлисты владельца (хранятся на диске, см. `mcrate_core::Playlists`).
+    pub playlists: Playlists,
     pub sc: SoundCloudState,
 
     // --- копия снимка движка (обновляется в `tick`) ---
@@ -226,6 +234,7 @@ impl Controller {
         }
 
         let (sc_tx, sc_rx) = mpsc::channel();
+        let likes = Likes::open(paths::likes_file());
         Self {
             rt: Some(rt),
             local,
@@ -239,6 +248,9 @@ impl Controller {
             status,
             play_error: None,
             history: History::open(paths::history_file()),
+            liked: Arc::new(liked_keys(likes.items())),
+            likes,
+            playlists: Playlists::open(paths::playlists_file()),
             sc: sc_state,
             playing: false,
             loading: false,
@@ -462,6 +474,32 @@ impl Controller {
         Some(CacheInfo { dir: engine.cache_dir().to_path_buf(), stats: engine.cache_stats(), limit: engine.cache_limit() })
     }
 
+    /// Добавить трек в конец очереди (если ничего не играло и очередь пуста, движок сам начнёт его играть).
+    pub fn add_to_queue(&mut self, track: Track) {
+        let Some(engine) = &self.engine else {
+            self.status = Some(format!("Нет звукового устройства: {}", self.audio_error.clone().unwrap_or_default()));
+            return;
+        };
+        engine.add_to_queue(track);
+    }
+
+    /// Стоит ли лайк на треке.
+    pub fn is_liked(&self, track: &Track) -> bool {
+        self.liked.contains(&(track.provider, track.id.clone()))
+    }
+
+    /// Множество лайкнутых треков (дёшево копируется: это `Arc`), его отдают строкам списков.
+    pub fn liked_keys(&self) -> Arc<HashSet<LikeKey>> {
+        Arc::clone(&self.liked)
+    }
+
+    /// Поставить или снять лайк; возвращает, стоит ли он теперь. Всё делает ядро (`Likes::toggle`).
+    pub fn toggle_like(&mut self, track: &Track) -> bool {
+        let liked = self.likes.toggle(track);
+        self.liked = Arc::new(liked_keys(self.likes.items()));
+        liked
+    }
+
     /// Очистить кэш онлайн-треков. Играющий и готовящийся следующий трек остаются; движок делает это
     /// в своём потоке, поэтому новый размер видно через `cache_info` со следующего кадра.
     pub fn cache_clear(&self) {
@@ -508,6 +546,14 @@ impl Drop for Controller {
     }
 }
 
+/// Ключ лайкнутого трека: сервис и id (у разных сервисов id могут совпасть).
+pub type LikeKey = (ProviderKind, String);
+
+/// Множество ключей по списку лайкнутых треков.
+fn liked_keys(items: &[Track]) -> HashSet<LikeKey> {
+    items.iter().map(|t| (t.provider, t.id.clone())).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -521,6 +567,15 @@ mod tests {
         sc.begin_search("старый".into());
         sc.finish_search("старый".into(), Ok(vec![track("1", ProviderKind::SoundCloud), track("2", ProviderKind::SoundCloud)]));
         sc
+    }
+
+    #[test]
+    fn liked_keys_tell_services_apart() {
+        let keys = liked_keys(&[track("1", ProviderKind::Local), track("2", ProviderKind::SoundCloud)]);
+        assert!(keys.contains(&(ProviderKind::Local, "1".to_string())));
+        assert!(keys.contains(&(ProviderKind::SoundCloud, "2".to_string())));
+        assert!(!keys.contains(&(ProviderKind::SoundCloud, "1".to_string())), "тот же id другого сервиса это другой трек");
+        assert_eq!(keys.len(), 2);
     }
 
     #[test]

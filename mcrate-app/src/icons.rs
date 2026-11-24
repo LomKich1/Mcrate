@@ -39,10 +39,16 @@ pub enum Icon {
     ChevronUp,
     Checkmark,
     Close,
+    /// Залитое сердце: лайк стоит.
+    Heart,
+    /// Пустое сердце: лайка нет.
+    HeartOutline,
+    /// Три точки по вертикали: меню действий трека.
+    MoreVertical,
 }
 
 impl Icon {
-    const COUNT: usize = 24;
+    const COUNT: usize = 27;
 
     const ALL: [Self; Self::COUNT] = [
         Self::Play,
@@ -69,6 +75,9 @@ impl Icon {
         Self::ChevronUp,
         Self::Checkmark,
         Self::Close,
+        Self::Heart,
+        Self::HeartOutline,
+        Self::MoreVertical,
     ];
 
     fn material_glyph(self) -> MaterialIcon {
@@ -97,6 +106,9 @@ impl Icon {
             Self::ChevronUp => mi::ICON_EXPAND_LESS,
             Self::Checkmark => mi::ICON_CHECK,
             Self::Close => mi::ICON_CLOSE,
+            Self::Heart => mi::ICON_FAVORITE.filled(),
+            Self::HeartOutline => mi::ICON_FAVORITE.outlined(),
+            Self::MoreVertical => mi::ICON_MORE_VERT,
         }
     }
 
@@ -127,6 +139,8 @@ impl Icon {
             Self::ChevronUp => "chevron-up",
             Self::Checkmark => "check",
             Self::Close => "x",
+            Self::Heart | Self::HeartOutline => "heart",
+            Self::MoreVertical => "ellipsis-vertical",
         }
     }
 
@@ -156,15 +170,17 @@ impl Icon {
 pub fn add_to_definitions(fonts: &mut egui::FontDefinitions) {
     use egui::epaint::text::FontPriority;
 
-    let material = egui_material_icons::font_insert();
-    for family in &material.families {
-        let list = fonts.families.entry(family.family.clone()).or_default();
-        match family.priority {
-            FontPriority::Highest => list.insert(0, material.name.clone()),
-            FontPriority::Lowest => list.push(material.name.clone()),
+    // Залитый и контурный наборы: контурный нужен для пустого сердечка.
+    for material in [egui_material_icons::font_insert(), egui_material_icons::font_insert_outlined()] {
+        for family in &material.families {
+            let list = fonts.families.entry(family.family.clone()).or_default();
+            match family.priority {
+                FontPriority::Highest => list.insert(0, material.name.clone()),
+                FontPriority::Lowest => list.push(material.name.clone()),
+            }
         }
+        fonts.font_data.insert(material.name.clone(), std::sync::Arc::new(material.data));
     }
-    fonts.font_data.insert(material.name.clone(), std::sync::Arc::new(material.data));
 
     // Lucide embedded TTF (единственный стиль в iconflow — Regular).
     let fallback_fonts: Vec<String> = fonts.font_data.keys().cloned().collect();
@@ -224,6 +240,14 @@ pub fn paint_equalizer(painter: &Painter, center: Pos2, size: f32, color: Color3
 mod tests {
     use super::*;
     use crate::settings::{Design, GraphicsSettings};
+
+    #[test]
+    fn heart_is_filled_when_liked_and_outlined_when_not() {
+        use egui_material_icons::IconStyle;
+        assert_eq!(Icon::Heart.material_glyph().style, IconStyle::Filled);
+        assert_eq!(Icon::HeartOutline.material_glyph().style, IconStyle::Outlined);
+        assert_eq!(Icon::Heart.material_glyph().codepoint, Icon::HeartOutline.material_glyph().codepoint, "тот же символ, разный стиль");
+    }
 
     #[test]
     fn both_icon_packs_render_every_shared_icon() {

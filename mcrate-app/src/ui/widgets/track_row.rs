@@ -5,11 +5,13 @@
 //! Liquid Glass (по просьбе владельца): при наведении выделяется только обложка.
 //! Те же слои включаются при нажатии (касание на Android: наведения там нет) и при фокусе с клавиатуры.
 
+use super::buttons::{IconButton, icon_button, like_button, place_at};
 use super::cover::cover_tile;
 use super::glide::squish;
 use crate::icons::{self, Icon};
 use crate::theme::{ShapeRole, TextRole, Theme, with_alpha};
 use crate::ui::format::{artists_text, fmt_time};
+use crate::ui::track_menu::{is_liked, request_like, request_menu};
 use egui::{Align2, Color32, CursorIcon, FontId, Id, Rect, Response, Sense, Ui, Vec2, pos2, vec2};
 use mcrate_core::Track;
 
@@ -19,6 +21,15 @@ const HOVER_FADE_SECS: f32 = 0.16;
 const COVER_SCRIM_ALPHA: u8 = 150;
 /// Размер кнопки воспроизведения на обложке, доля стороны обложки.
 const COVER_PLAY_RATIO: f32 = 0.5;
+/// Диаметр кнопки «три точки» (меню действий трека) и её отступ от правого края строки.
+const MORE_SIZE: f32 = 36.0;
+const MORE_INSET_RIGHT: f32 = 6.0;
+/// Диаметр сердечка «Нравится» слева от кнопки «три точки».
+const LIKE_SIZE: f32 = 36.0;
+/// Уже этого ширина строки сердечка нет: название осталось бы без места (кнопка «Нравится» есть и в меню трёх точек).
+const LIKE_MIN_ROW_WIDTH: f32 = 360.0;
+/// Сколько места справа в строке занимают кнопки (без сердечка) вместе с зазором до длительности.
+const BUTTONS_SLOT: f32 = MORE_SIZE + MORE_INSET_RIGHT + 4.0;
 
 /// Что нужно для отрисовки строки, кроме геометрии.
 #[derive(Clone, Copy)]
@@ -56,19 +67,15 @@ pub(crate) fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track,
     let cover_size = if theme.glass_active() || compact { 40.0 } else { 48.0 };
     let (rect, resp) = ui.allocate_exact_size(vec2(row_width, row_height), Sense::click());
     // Подсветку и pressed-state в Material 3 уже рисует общий glide/ripple списка.
-    // Дополнительное сжатие здесь уменьшало только фон текущего трека, тогда как
-    // общий слой оставался исходного размера — получались две вложенные карточки.
     // В Liquid Glass собственного M3 ripple нет, поэтому там сохраняем squish.
     if !ui.is_rect_visible(rect) {
         return resp; // не в кадре: ничего не считаем и не рисуем
     }
     let id = ui.scope_id().with(("track_row", &track.id));
     let hover = row_hover(ui, theme, id.with(index), &resp);
-    // Продавливание: содержимое строки чуть сжимается при нажатии. В Material 3 фон текущего трека
-    // и слой подсветки остаются исходного размера (`row_rect`), сжимается только содержимое.
-    let row_rect = rect;
+    // Продавливание: содержимое строки чуть сжимается при нажатии (слой подсветки M3 остаётся исходного размера).
     let rect = squish(ui, id, &resp, rect, 0.015, 0.07);
-    paint_row_background(ui, theme, (rect, row_rect), &resp, is_current);
+    paint_row_background(ui, theme, rect, &resp);
 
     let cover_left = if show_index { 34.0 } else { 16.0 };
     if show_index {
@@ -76,7 +83,10 @@ pub(crate) fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track,
     }
     let cover = Rect::from_min_size(pos2(rect.left() + cover_left, rect.center().y - cover_size * 0.5), Vec2::splat(cover_size));
     paint_row_cover(ui, theme, cover, track, &RowState { is_current, is_playing, hover, time });
-    paint_row_text(ui, theme, rect, cover.right(), track, (compact, is_current));
+    let show_like = row_width >= LIKE_MIN_ROW_WIDTH;
+    let buttons_slot = BUTTONS_SLOT + if show_like { LIKE_SIZE } else { 0.0 };
+    paint_row_text(ui, theme, rect, cover.right(), track, (compact, is_current, buttons_slot));
+    paint_row_buttons(ui, theme, rect, track, show_like);
 
     let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
     let accessible_label = format!("{} — {}", track.title, artists_text(track));
@@ -84,27 +94,12 @@ pub(crate) fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track,
     resp
 }
 
-/// Фон строки: заливка при нажатии в Liquid Glass и подложка текущего трека. `rect`: содержимое (сжатое при нажатии),
-/// `row_rect`: исходный размер строки (на нём лежит подложка текущего трека в Material 3).
-fn paint_row_background(ui: &Ui, theme: &Theme, (rect, row_rect): (Rect, Rect), resp: &Response, is_current: bool) {
-    let p = &theme.palette;
-    let painter = ui.painter();
-    if theme.glass_active() && resp.is_pointer_button_down_on() && !is_current {
+/// Фон строки: заливка при нажатии в Liquid Glass. Плашки под играющим треком нет (по просьбе владельца):
+/// играющий трек отличают название цветом акцента и эквалайзер на обложке. `rect`: содержимое (сжатое при нажатии).
+fn paint_row_background(ui: &Ui, theme: &Theme, rect: Rect, resp: &Response) {
+    if theme.glass_active() && resp.is_pointer_button_down_on() {
         let radius = theme.shape_radius(ShapeRole::Large) as f32;
-        painter.rect_filled(rect, radius, with_alpha(p.on_surface, 20));
-    }
-    if is_current {
-        if theme.glass_active() {
-            // Тот же цвет, что у выбранного пункта меню (`selected_fill`), плюс акцентная полоска слева.
-            painter.rect_filled(rect, theme.shape_radius(ShapeRole::Large), theme.selected_fill());
-            painter.rect_filled(
-                Rect::from_min_size(pos2(rect.left() + 4.0, rect.top() + 12.0), vec2(2.5, 32.0)),
-                1.25,
-                with_alpha(p.primary, 210),
-            );
-        } else {
-            painter.rect_filled(row_rect, theme.shape_radius(ShapeRole::Large), p.secondary_container);
-        }
+        ui.painter().rect_filled(rect, radius, with_alpha(theme.palette.on_surface, 20));
     }
 }
 
@@ -138,16 +133,24 @@ fn paint_row_cover(ui: &mut Ui, theme: &Theme, cover: Rect, track: &Track, state
 }
 
 /// Название, исполнитель и длительность. `cover_right`: правый край обложки, от него идёт текст.
-/// `compact`: узкая панель (меньше отступы); `is_current`: название цветом выбранного элемента.
-fn paint_row_text(ui: &Ui, theme: &Theme, rect: Rect, cover_right: f32, track: &Track, (compact, is_current): (bool, bool)) {
+/// `compact`: узкая панель (меньше отступы); `is_current`: название цветом акцента;
+/// `buttons_slot`: сколько места справа занято кнопками (длительность стоит левее них).
+fn paint_row_text(
+    ui: &Ui,
+    theme: &Theme,
+    rect: Rect,
+    cover_right: f32,
+    track: &Track,
+    (compact, is_current, buttons_slot): (bool, bool, f32),
+) {
     let p = &theme.palette;
     let painter = ui.painter();
     let text_left = cover_right + if compact { 10.0 } else { 14.0 };
-    let dur_x = rect.right() - if compact { 12.0 } else { 16.0 };
+    let dur_x = rect.right() - buttons_slot - if compact { 6.0 } else { 10.0 };
     let duration_gap = if compact { 44.0 } else { 56.0 };
     let clip = Rect::from_min_max(pos2(text_left, rect.top()), pos2((dur_x - duration_gap).max(text_left), rect.bottom()));
     let clipped = painter.with_clip_rect(clip);
-    let title_color = if is_current { if theme.glass_active() { p.primary } else { p.on_secondary_container } } else { p.on_surface };
+    let title_color = if is_current { p.primary } else { p.on_surface };
     let title_offset = if theme.glass_active() { 9.0 } else { 11.0 };
     let caption_offset = if theme.glass_active() { 10.0 } else { 12.0 };
     let supporting_role = if theme.glass_active() { TextRole::BodySmall } else { TextRole::BodyMedium };
@@ -173,6 +176,24 @@ fn paint_row_text(ui: &Ui, theme: &Theme, rect: Rect, cover_right: f32, track: &
         FontId::proportional(time_size),
         p.on_surface_variant,
     );
+}
+
+/// Кнопки у правого края строки: «три точки» (меню трека) и левее неё сердечко «Нравится» (`show_like`).
+/// Нажатия только просят приложение что-то сделать (`track_menu::request_menu`, `request_like`),
+/// само действие выполняется там.
+fn paint_row_buttons(ui: &mut Ui, theme: &Theme, rect: Rect, track: &Track, show_like: bool) {
+    let more_center = pos2(rect.right() - MORE_INSET_RIGHT - MORE_SIZE / 2.0, rect.center().y);
+    let more = place_at(ui, more_center, MORE_SIZE, |ui| icon_button(ui, theme, IconButton::new(Icon::MoreVertical, MORE_SIZE, "Ещё")));
+    if more.clicked() {
+        request_menu(ui.ctx(), track, more.rect);
+    }
+    if show_like {
+        let like_center = pos2(more_center.x - MORE_SIZE / 2.0 - LIKE_SIZE / 2.0, rect.center().y);
+        let liked = is_liked(ui.ctx(), track);
+        if place_at(ui, like_center, LIKE_SIZE, |ui| like_button(ui, theme, liked, LIKE_SIZE)).clicked() {
+            request_like(ui.ctx(), track);
+        }
+    }
 }
 
 /// Насколько строка «включена» (0..1): курсор над ней, нажатие или фокус с клавиатуры. Значение плавно растёт и спадает.

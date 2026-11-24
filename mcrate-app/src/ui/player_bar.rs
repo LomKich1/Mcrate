@@ -5,7 +5,7 @@ use mcrate_audio::RepeatMode;
 
 use super::format::{artists_text, fmt_time};
 use super::layout::bar_columns;
-use super::widgets::{ButtonKind, IconButton, cover_tile, elided, icon_button, loading_outline, slider_bar};
+use super::widgets::{ButtonKind, IconButton, cover_tile, elided, icon_button, like_button, loading_outline, place_at, slider_bar};
 use crate::app::{McrateApp, View};
 use crate::icons::Icon;
 use crate::theme::{Theme, with_alpha};
@@ -17,13 +17,10 @@ const ROW_GAP: f32 = 4.0;
 const BAR_H: f32 = CONTROLS_H + ROW_GAP + SEEK_H;
 /// Зазор между кнопками управления. Задан явно, чтобы положение каждой кнопки считалось точно.
 const BTN_GAP: f32 = 10.0;
-
-/// Поставить виджет ровно в центр `center`. Размер области = размер кнопки, поэтому
-/// кнопки разного диаметра оказываются на одной горизонтальной оси.
-fn place_at<R>(ui: &mut Ui, center: Pos2, size: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
-    let rect = Rect::from_center_size(center, Vec2::splat(size));
-    ui.scope_builder(UiBuilder::new().max_rect(rect), add).inner
-}
+/// Диаметр сердечка «Нравится» у правого края колонки с треком.
+const LIKE_SIZE: f32 = 36.0;
+/// Сколько места слева от сердечка отдано зазору, чтобы текст трека не упирался в кнопку.
+const LIKE_GAP: f32 = 8.0;
 
 impl McrateApp {
     pub(crate) fn player_bar(&mut self, ui: &mut Ui, theme: &Theme) {
@@ -65,7 +62,9 @@ impl McrateApp {
                 }
                 // Текст по вертикали центрируется по обложке: считаем высоту блока по реальным строкам
                 // и кладём его вровень с центром обложки (ui.vertical прижимал текст к верху колонки).
-                let text_w = (width - cover_size - 14.0).max(60.0);
+                // В узкой колонке (compact) сердечка нет: места мало, лайк доступен в «Сейчас играет».
+                let like_slot = if compact { 0.0 } else { LIKE_SIZE + LIKE_GAP };
+                let text_w = (width - cover_size - 14.0 - like_slot).max(60.0);
                 let painter = ui.painter().clone();
                 let title = elided(&painter, &t.title, FontId::proportional(if compact { 13.5 } else { 15.0 }), p.on_surface, text_w);
                 let artists =
@@ -78,6 +77,13 @@ impl McrateApp {
                 y += title.size().y + gap;
                 if let Some(a) = artists {
                     painter.galley(pos2(x, y), a, p.on_surface_variant);
+                }
+                if !compact {
+                    let center = pos2(ui.max_rect().right() - LIKE_SIZE / 2.0, rect.center().y);
+                    let liked = self.ctl.is_liked(&t);
+                    if place_at(ui, center, LIKE_SIZE, |ui| like_button(ui, theme, liked, LIKE_SIZE)).clicked() {
+                        self.ctl.toggle_like(&t);
+                    }
                 }
             }
             None => {

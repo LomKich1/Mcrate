@@ -2,10 +2,10 @@
 //!
 //! Главный экран (`View::Collection`): строки-переходы «Понравившиеся», «Плейлисты», «Скачанные»,
 //! «Ваши загрузки» и внизу блок «Недавно слушали» (последние 3 трека + «Смотреть все»).
-//! «Ваши загрузки» это экран своих файлов (`View::Library`, ui/library.rs). Остальные подэкраны
-//! пока заглушки: для лайков и плейлистов в ядре нет хранения, а у скачанных нет списка (кэш движка
-//! хранит только последние 20 треков и списком не отдаётся). История живёт в `Controller::history`
-//! только в рамках сеанса (на диск не пишется: `Track` не умеет сохраняться).
+//! «Ваши загрузки» это экран своих файлов (`View::Library`, ui/library.rs). «Понравившиеся», «Плейлисты» и один
+//! плейлист (`View::CollectionPlaylist`) настоящие экраны; окна плейлистов лежат в `ui/playlists.rs`.
+//! «Скачанные» пока заглушка: у скачанных нет списка (кэш движка хранит только последние 20 треков и списком
+//! не отдаётся). История хранится на диске (`Controller::history`).
 
 use egui::{Align, RichText, ScrollArea, Sense, Ui, Vec2};
 use mcrate_core::Track;
@@ -19,6 +19,7 @@ use super::components::{
 use super::layout::{
     SETTINGS_CONTENT_MAX_WIDTH, TRACK_LIST_MAX_WIDTH, bleed_clip, centered_column, pane_scroll, rows_in_view, scroll_end_padding,
 };
+use super::playlists::{PlaylistDialog, playlist_row, tracks_count_text};
 use super::settings::controls::{Row, Trailing, settings_group};
 use super::widgets::{ButtonKind, pill_button};
 use crate::app::{McrateApp, View};
@@ -30,6 +31,14 @@ const RECENT_COUNT: usize = 3;
 /// Подпись под названием заглушки (в шапке и на карточке).
 const STUB_SUBTITLE: &str = "Коллекция Mcrate";
 
+/// Кнопки экрана плейлиста.
+#[derive(Clone, Copy)]
+enum PlaylistAction {
+    Play,
+    Rename,
+    Delete,
+}
+
 /// Содержимое заглушки подэкрана коллекции.
 struct Stub {
     /// Ключ общей прокрутки узкой страницы (уникален для экрана: по нему шапка читает смещение).
@@ -39,22 +48,6 @@ struct Stub {
     headline: &'static str,
     text: &'static str,
 }
-
-const LIKED_STUB: Stub = Stub {
-    key: "collection_liked_scroll",
-    title: "Понравившиеся",
-    icon: Icon::Note,
-    headline: "Лайки пока не хранятся",
-    text: "Кнопка лайка и список появятся, когда в ядре будет хранение лайков.",
-};
-
-const PLAYLISTS_STUB: Stub = Stub {
-    key: "collection_playlists_scroll",
-    title: "Плейлисты",
-    icon: Icon::Queue,
-    headline: "Плейлистов пока нет",
-    text: "Создание и хранение плейлистов ещё не сделано.",
-};
 
 const DOWNLOADED_STUB: Stub = Stub {
     key: "collection_downloaded_scroll",
@@ -87,13 +80,15 @@ impl McrateApp {
     /// Меню подразделов: «Понравившиеся», «Плейлисты», «Скачанные», «Ваши загрузки».
     fn collection_menu(&mut self, ui: &mut Ui, theme: &Theme) {
         let uploads = format!("Своих файлов: {}", self.ctl.library.len());
+        let liked = tracks_count_text(self.ctl.likes.items().len());
+        let playlists = format!("Плейлистов: {}", self.ctl.playlists.list().len());
         let views = [View::CollectionLiked, View::CollectionPlaylists, View::CollectionDownloaded, View::Library];
         // Меню шириной 700 и с тем же видом пунктов, что на экране настроек.
         centered_column(ui, SETTINGS_CONTENT_MAX_WIDTH, |ui| {
             if theme.glass_active() {
                 let rows = [
-                    (views[0], "Понравившиеся", "Скоро".to_string()),
-                    (views[1], "Плейлисты", "Скоро".to_string()),
+                    (views[0], "Понравившиеся", liked),
+                    (views[1], "Плейлисты", playlists),
                     (views[2], "Скачанные", "Скоро".to_string()),
                     (views[3], "Ваши загрузки", uploads),
                 ];
@@ -102,8 +97,8 @@ impl McrateApp {
                 }
             } else {
                 let rows = vec![
-                    Row::new(mi::ICON_FAVORITE, "Понравившиеся", Trailing::Value("Скоро".into())),
-                    Row::new(mi::ICON_QUEUE_MUSIC, "Плейлисты", Trailing::Value("Скоро".into())),
+                    Row::new(mi::ICON_FAVORITE, "Понравившиеся", Trailing::Value(liked)),
+                    Row::new(mi::ICON_QUEUE_MUSIC, "Плейлисты", Trailing::Value(playlists)),
                     Row::new(mi::ICON_DOWNLOAD, "Скачанные", Trailing::Value("Скоро".into())),
                     Row::new(mi::ICON_FOLDER, "Ваши загрузки", Trailing::Value(uploads)),
                 ];
@@ -168,16 +163,159 @@ impl McrateApp {
         });
     }
 
+    /// «Понравившиеся»: треки с сердечком, свежие первыми. Клик играет список с этого трека.
     pub(crate) fn collection_liked_view(&mut self, ui: &mut Ui, theme: &Theme) {
-        self.collection_stub(ui, theme, &LIKED_STUB);
+        let mut back = false;
+        let mut clicked = None;
+        centered_column(ui, f32::INFINITY, |ui| {
+            back = back_header(ui, theme, "Понравившиеся");
+            ui.add_space(4.0);
+            pane_scroll(ui, self.bleed.below_header(), ScrollArea::vertical().auto_shrink([false, false]), |area, ui| {
+                area.show(ui, |ui| {
+                    bleed_clip(ui, self.bleed.below_header());
+                    let items = self.ctl.likes.items();
+                    if items.is_empty() {
+                        let top = empty_state_top_space(ui.available_height(), self.bottom_inset);
+                        empty_state(
+                            ui,
+                            theme,
+                            top,
+                            Icon::HeartOutline,
+                            "Лайков пока нет",
+                            "Нажмите на сердечко у трека, и он появится здесь.",
+                        );
+                    } else {
+                        clicked = self.track_rows_in_view(ui, theme, items);
+                    }
+                    scroll_end_padding(ui, self.bottom_inset);
+                })
+            });
+        });
+        if back {
+            self.view = View::Collection;
+        }
+        if let Some(i) = clicked {
+            // Копия очереди делается только по клику, не каждый кадр.
+            let items = self.ctl.likes.items().to_vec();
+            self.ctl.play_list(items, i);
+        }
     }
 
-    /// Требование к будущему экрану плейлиста: двухколоночная компоновка как на референсе.
-    /// Слева — ограниченная панель обложки, описания, владельца и кнопок управления;
-    /// справа — отдельный список треков с мини-обложкой, названием/исполнителем,
-    /// самостоятельными колонками лайка и длительности. Список не растягивать на весь экран.
+    /// «Плейлисты»: кнопка «Новый плейлист» и список плейлистов; клик открывает плейлист.
     pub(crate) fn collection_playlists_view(&mut self, ui: &mut Ui, theme: &Theme) {
-        self.collection_stub(ui, theme, &PLAYLISTS_STUB);
+        let mut back = false;
+        let mut create = false;
+        let mut open = None;
+        centered_column(ui, f32::INFINITY, |ui| {
+            back = back_header(ui, theme, "Плейлисты");
+            ui.add_space(4.0);
+            pane_scroll(ui, self.bleed.below_header(), ScrollArea::vertical().auto_shrink([false, false]), |area, ui| {
+                area.show(ui, |ui| {
+                    bleed_clip(ui, self.bleed.below_header());
+                    centered_column(ui, SETTINGS_CONTENT_MAX_WIDTH, |ui| {
+                        create = pill_button(ui, theme, "Новый плейлист", Some(Icon::Plus), ButtonKind::Filled).clicked();
+                        ui.add_space(10.0);
+                        let playlists = self.ctl.playlists.list();
+                        if playlists.is_empty() {
+                            let top = empty_state_top_space(ui.available_height(), self.bottom_inset);
+                            empty_state(
+                                ui,
+                                theme,
+                                top,
+                                Icon::Queue,
+                                "Плейлистов пока нет",
+                                "Создайте первый и собирайте в него любимые треки.",
+                            );
+                        }
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        for playlist in playlists {
+                            if playlist_row(ui, theme, playlist, None) {
+                                open = Some(playlist.id);
+                            }
+                        }
+                    });
+                    scroll_end_padding(ui, self.bottom_inset);
+                })
+            });
+        });
+        if back {
+            self.view = View::Collection;
+        }
+        if create {
+            self.playlist_dialog = Some(PlaylistDialog::Create { text: String::new(), then_add: None });
+        }
+        if let Some(id) = open {
+            self.open_playlist = Some(id);
+            self.view = View::CollectionPlaylist;
+        }
+    }
+
+    /// Один плейлист: «Слушать», «Переименовать», «Удалить» и список треков. Трек убирают через меню «три точки».
+    pub(crate) fn collection_playlist_view(&mut self, ui: &mut Ui, theme: &Theme) {
+        let Some(playlist) = self.open_playlist.and_then(|id| self.ctl.playlists.get(id)) else {
+            self.open_playlist = None;
+            self.view = View::CollectionPlaylists;
+            return;
+        };
+        let (id, name, count) = (playlist.id, playlist.name.clone(), playlist.tracks.len());
+        let mut back = false;
+        let mut action = None;
+        let mut clicked = None;
+        centered_column(ui, f32::INFINITY, |ui| {
+            let p = &theme.palette;
+            back = back_header(ui, theme, &name);
+            ui.add_space(2.0);
+            ui.label(RichText::new(tracks_count_text(count)).color(p.on_surface_variant));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.add_enabled_ui(count > 0, |ui| {
+                    if pill_button(ui, theme, "Слушать", Some(Icon::Play), ButtonKind::Filled).clicked() {
+                        action = Some(PlaylistAction::Play);
+                    }
+                });
+                if pill_button(ui, theme, "Переименовать", None, ButtonKind::Tonal).clicked() {
+                    action = Some(PlaylistAction::Rename);
+                }
+                if pill_button(ui, theme, "Удалить", None, ButtonKind::Tonal).clicked() {
+                    action = Some(PlaylistAction::Delete);
+                }
+            });
+            ui.add_space(6.0);
+            pane_scroll(ui, self.bleed.below_header(), ScrollArea::vertical().auto_shrink([false, false]), |area, ui| {
+                area.show(ui, |ui| {
+                    bleed_clip(ui, self.bleed.below_header());
+                    match self.ctl.playlists.get(id) {
+                        Some(pl) if !pl.tracks.is_empty() => clicked = self.track_rows_in_view(ui, theme, &pl.tracks),
+                        _ => {
+                            let top = empty_state_top_space(ui.available_height(), self.bottom_inset);
+                            empty_state(
+                                ui,
+                                theme,
+                                top,
+                                Icon::Queue,
+                                "В плейлисте пока пусто",
+                                "Добавьте треки через меню «три точки» у любого трека.",
+                            );
+                        }
+                    }
+                    scroll_end_padding(ui, self.bottom_inset);
+                })
+            });
+        });
+        if back {
+            self.view = View::CollectionPlaylists;
+        }
+        match action {
+            Some(PlaylistAction::Play) => clicked = clicked.or(Some(0)),
+            Some(PlaylistAction::Rename) => self.playlist_dialog = Some(PlaylistDialog::Rename { id, text: name }),
+            Some(PlaylistAction::Delete) => self.playlist_dialog = Some(PlaylistDialog::Delete(id)),
+            None => {}
+        }
+        if let Some(i) = clicked {
+            // Копия очереди делается только по клику, не каждый кадр.
+            let tracks = self.ctl.playlists.get(id).map(|p| p.tracks.clone()).unwrap_or_default();
+            self.ctl.play_list(tracks, i);
+        }
     }
 
     pub(crate) fn collection_downloaded_view(&mut self, ui: &mut Ui, theme: &Theme) {
@@ -220,7 +358,11 @@ impl McrateApp {
     /// Вся история в общей прокрутке: рисуются только видимые строки (`layout::rows_in_view`), а не все 700.
     /// Возвращает номер строки, по которой кликнули.
     fn history_rows_in_view(&self, ui: &mut Ui, theme: &Theme) -> Option<usize> {
-        let items = self.ctl.history.items();
+        self.track_rows_in_view(ui, theme, self.ctl.history.items())
+    }
+
+    /// Любой список треков в общей прокрутке: рисуются только видимые строки. Возвращает номер строки, по которой кликнули.
+    fn track_rows_in_view(&self, ui: &mut Ui, theme: &Theme, items: &[Track]) -> Option<usize> {
         centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
             let current = self.ctl.now.as_ref().map(|t| (t.id.clone(), t.provider));
             let playing = self.ctl.is_playing();

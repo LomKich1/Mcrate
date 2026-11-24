@@ -31,6 +31,8 @@ pub enum View {
     Collection,
     CollectionLiked,
     CollectionPlaylists,
+    /// Один плейлист (какой именно, хранит `McrateApp::open_playlist`).
+    CollectionPlaylist,
     CollectionDownloaded,
     CollectionHistory,
     /// «Ваши загрузки»: свои файлы (подэкран раздела «Библиотека»).
@@ -87,6 +89,7 @@ impl View {
             View::Collection
                 | View::CollectionLiked
                 | View::CollectionPlaylists
+                | View::CollectionPlaylist
                 | View::CollectionDownloaded
                 | View::CollectionHistory
                 | View::Library
@@ -103,27 +106,28 @@ impl View {
             // Подэкраны раздела идут сразу за его главным экраном: «внутрь» = вправо, «назад» = влево.
             View::CollectionLiked => 2,
             View::CollectionPlaylists => 3,
-            View::CollectionDownloaded => 4,
-            View::Library => 5,
-            View::CollectionHistory => 6,
-            View::NowPlaying => 7,
-            View::SoundCloud => 8,
-            View::Settings => 9,
-            View::SettingsAppearance => 10,
-            View::SettingsWindow => 11,
-            View::SettingsAbout => 12,
-            View::SettingsProfile => 13,
-            View::SettingsLanguage => 14,
-            View::SettingsPlayback => 15,
-            View::SettingsPrivacy => 16,
-            View::SettingsIntegrations => 17,
-            View::SettingsStorage => 18,
-            View::SettingsAiMemory => 19,
-            View::SettingsSessions => 20,
-            View::SettingsSubscription => 21,
-            View::SettingsFamily => 22,
-            View::SettingsSupport => 23,
-            View::SettingsPerformance => 24,
+            View::CollectionPlaylist => 4,
+            View::CollectionDownloaded => 5,
+            View::Library => 6,
+            View::CollectionHistory => 7,
+            View::NowPlaying => 8,
+            View::SoundCloud => 9,
+            View::Settings => 10,
+            View::SettingsAppearance => 11,
+            View::SettingsWindow => 12,
+            View::SettingsAbout => 13,
+            View::SettingsProfile => 14,
+            View::SettingsLanguage => 15,
+            View::SettingsPlayback => 16,
+            View::SettingsPrivacy => 17,
+            View::SettingsIntegrations => 18,
+            View::SettingsStorage => 19,
+            View::SettingsAiMemory => 20,
+            View::SettingsSessions => 21,
+            View::SettingsSubscription => 22,
+            View::SettingsFamily => 23,
+            View::SettingsSupport => 24,
+            View::SettingsPerformance => 25,
         }
     }
 }
@@ -170,6 +174,12 @@ pub struct McrateApp {
     pub volume_before_mute: f32,
     /// Состояние экрана «Сейчас играет»: панель текста, её анимация, раскладка карточек.
     pub np: NowPlayingState,
+    /// Открытое меню действий трека («три точки» в строке списка), см. `ui/track_menu.rs`.
+    pub track_menu: Option<crate::ui::track_menu::OpenTrackMenu>,
+    /// Открытое окно плейлистов (выбор плейлиста для трека, создание, переименование, удаление), см. `ui/playlists.rs`.
+    pub playlist_dialog: Option<crate::ui::playlists::PlaylistDialog>,
+    /// Какой плейлист открыт на экране `View::CollectionPlaylist`.
+    pub open_playlist: Option<u64>,
 }
 
 impl McrateApp {
@@ -221,6 +231,9 @@ impl McrateApp {
             seek_drag: None,
             volume_before_mute: 0.8,
             np: NowPlayingState::default(),
+            track_menu: None,
+            playlist_dialog: None,
+            open_playlist: None,
         }
     }
 
@@ -232,6 +245,7 @@ impl McrateApp {
             View::Collection => self.collection_view(ui, theme),
             View::CollectionLiked => self.collection_liked_view(ui, theme),
             View::CollectionPlaylists => self.collection_playlists_view(ui, theme),
+            View::CollectionPlaylist => self.collection_playlist_view(ui, theme),
             View::CollectionDownloaded => self.collection_downloaded_view(ui, theme),
             View::CollectionHistory => self.collection_history_view(ui, theme),
             View::Library => self.library_view(ui, theme),
@@ -458,6 +472,7 @@ impl eframe::App for McrateApp {
         self.sync_playback_settings();
         self.handle_input(&ctx);
         self.ctl.tick();
+        self.sync_row_state(&ctx);
         self.refresh_filter();
         self.update_transition(&ctx);
         self.step_now_playing(&ctx); // анимация панели текста: ровно один раз за кадр
@@ -482,6 +497,8 @@ impl eframe::App for McrateApp {
             self.panel_layout(ui, &theme, full, rail_width, compact);
         }
 
+        self.show_track_menu(&ctx, &theme);
+        self.show_playlist_dialog(&ctx, &theme);
         self.paint_drop_overlay(&ctx);
 
         // В раскладке стекла клик по меню случается ПОСЛЕ отрисовки экрана (рейка лежит над

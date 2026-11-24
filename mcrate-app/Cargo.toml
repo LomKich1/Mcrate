@@ -13,7 +13,8 @@ mcrate-providers = { path = "../mcrate-providers" }
 eframe = { version = "0.37", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "persistence", "wayland", "x11"] }
 # Liquid Glass: рефракция + блюр шейдерами wgpu (MIT). 0.2.x требует egui 0.37; есть LiveBackdrop (стекло видит живой контент). API может меняться
 egui = "0.37"
-egui_material_icons = "0.9"
+# Оба набора Material Symbols: залитый (по умолчанию) и контурный (пустое сердечко «Нравится»).
+egui_material_icons = { version = "0.9", features = ["filled", "outline"] }
 # Liquid Glass: open outline glyphs from Lucide (ISC).
 iconflow = { version = "2.1", default-features = false, features = ["pack-lucide"] }
 egui_glass = "0.2.0"

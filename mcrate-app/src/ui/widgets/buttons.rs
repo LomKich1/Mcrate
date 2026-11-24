@@ -4,7 +4,7 @@ use super::glide::squish;
 use crate::icons::{self, Icon};
 use crate::theme::{ShapeRole, TextRole, Theme, with_alpha};
 use crate::ui::ripple;
-use egui::{Color32, CursorIcon, FontId, Rect, Response, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
+use egui::{Color32, CursorIcon, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2, pos2, vec2};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ButtonKind {
@@ -237,6 +237,21 @@ fn icon_button_m3(ui: &Ui, theme: &Theme, resp: &Response, visual_rect: Rect, ki
     if resp.has_focus() {
         painter.circle_stroke(visual_rect.center(), r + 1.5, Stroke::new(2.0, p.primary));
     }
+}
+
+/// Поставить виджет ровно в центр `center`. Размер области = размер кнопки, поэтому
+/// кнопки разного диаметра оказываются на одной горизонтальной оси.
+pub(crate) fn place_at<R>(ui: &mut Ui, center: Pos2, size: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let rect = Rect::from_center_size(center, Vec2::splat(size));
+    ui.scope_builder(UiBuilder::new().max_rect(rect), add).inner
+}
+
+/// Кнопка-сердечко «Нравится»: пустое сердце, если лайка нет, и залитое, если он стоит. Одна и та же в плеере
+/// и в «Сейчас играет». В Liquid Glass у Lucide только контурное сердце, поэтому там состояние показывает подсветка кнопки.
+pub(crate) fn like_button(ui: &mut Ui, theme: &Theme, liked: bool, diameter: f32) -> Response {
+    let tip = if liked { "Убрать из понравившихся" } else { "Нравится" };
+    let icon = if liked { Icon::Heart } else { Icon::HeartOutline };
+    icon_button(ui, theme, IconButton::new(icon, diameter, tip).active(liked && theme.glass_active()))
 }
 
 /// Кнопка-«таблетка» с текстом и необязательной иконкой.

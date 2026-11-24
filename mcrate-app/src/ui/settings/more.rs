@@ -11,7 +11,7 @@ use crate::app::{McrateApp, View};
 use crate::platform;
 use crate::settings::{GlassQuality, Language, WindowBackdrop};
 use crate::theme::{TextRole, Theme};
-use crate::ui::components::back_header;
+use crate::ui::components::{ConfirmDialog, DialogChoice, back_header, confirm_dialog};
 use crate::ui::layout::{bleed_clip, centered_column, pane_scroll, responsive_column, scroll_end_padding};
 use crate::ui::widgets::error_banner;
 
@@ -189,13 +189,33 @@ impl McrateApp {
                     Row::new(mi::ICON_DELETE, "Очистить кэш", Trailing::Action)
                         .subtitle("Удалить скачанные треки. Играющий и следующий останутся, остальные скачаются заново."),
                 ];
+                let pending_id = egui::Id::unique("cache_clear_confirm");
                 if settings_group(ui, theme, "cache_clear", clear).is_some() {
-                    app.ctl.cache_clear();
-                    // Движок чистит в своём потоке: через мгновение перерисуемся, чтобы показать новый размер.
-                    ui.ctx().request_repaint_after(CACHE_REFRESH_DELAY);
+                    ui.ctx().data_mut(|d| d.insert_temp(pending_id, true));
+                }
+                if ui.ctx().data(|d| d.get_temp::<bool>(pending_id)).unwrap_or(false) {
+                    app.cache_clear_dialog(ui.ctx(), theme, pending_id);
                 }
             }
         });
+    }
+
+    /// Окно «Очистить кэш?»: до подтверждения ничего не удаляется. `pending_id` это флаг «окно открыто»
+    /// во временной памяти egui; после выбора он снимается.
+    fn cache_clear_dialog(&mut self, ctx: &egui::Context, theme: &Theme, pending_id: egui::Id) {
+        let spec = ConfirmDialog {
+            key: "cache_clear",
+            title: "Очистить кэш?",
+            text: "Скачанные треки будут удалены, играющий и следующий останутся. Остальные скачаются заново, когда понадобятся.",
+            confirm_label: "Очистить",
+        };
+        let Some(choice) = confirm_dialog(ctx, theme, &spec) else { return };
+        ctx.data_mut(|d| d.insert_temp(pending_id, false));
+        if choice == DialogChoice::Confirm {
+            self.ctl.cache_clear();
+            // Движок чистит в своём потоке: через мгновение перерисуемся, чтобы показать новый размер.
+            ctx.request_repaint_after(CACHE_REFRESH_DELAY);
+        }
     }
 
     /// «О приложении»: в Liquid Glass прежний экран, в Material 3 новый.

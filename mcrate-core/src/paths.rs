@@ -30,6 +30,16 @@ pub fn history_file() -> Option<PathBuf> {
     app_dir().map(|dir| dir.join("history.txt"))
 }
 
+/// Понравившиеся треки: `likes.txt`.
+pub fn likes_file() -> Option<PathBuf> {
+    app_dir().map(|dir| dir.join("likes.txt"))
+}
+
+/// Плейлисты: `playlists.txt`.
+pub fn playlists_file() -> Option<PathBuf> {
+    app_dir().map(|dir| dir.join("playlists.txt"))
+}
+
 /// Файл с публичным `client_id` SoundCloud: `soundcloud_client_id.txt`.
 pub fn soundcloud_client_id_file() -> Option<PathBuf> {
     app_dir().map(|dir| dir.join("soundcloud_client_id.txt"))

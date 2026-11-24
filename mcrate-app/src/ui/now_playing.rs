@@ -11,7 +11,7 @@ use egui::{Align, CursorIcon, Layout, Pos2, Rect, RichText, ScrollArea, Sense, S
 use super::anim::spring_step;
 use super::format::artists_text;
 use super::layout::cover_side;
-use super::widgets::{ButtonKind, IconButton, cover_tile, icon_button};
+use super::widgets::{ButtonKind, IconButton, cover_tile, icon_button, like_button};
 use crate::app::{McrateApp, View};
 use crate::controller::provider_label;
 use crate::icons::Icon;
@@ -27,6 +27,8 @@ const SPLIT_ID: &str = "np_split_handle";
 /// Кнопка «скрыть/показать текст» стоит в правом верхнем углу области страницы: при открытом тексте
 /// это шапка карточки текста, при закрытом — угол карточки трека (место на экране одно и то же).
 const TOGGLE_SIZE: f32 = 32.0;
+/// Диаметр сердечка «Нравится» под названием трека.
+const NP_LIKE_SIZE: f32 = 40.0;
 const TOGGLE_INSET_RIGHT: f32 = 14.0;
 const TOGGLE_INSET_TOP: f32 = 10.0;
 /// Пружина двигает число от 0 до этого значения (а не до 1): у `spring_step` порог остановки
@@ -245,7 +247,7 @@ impl McrateApp {
     /// Нарисовать обе карточки. `shield` = поставить невидимый щит под каждой, чтобы клики и
     /// прокрутка не проваливались в страницу под стеклом (как у рейки и плеера).
     /// Кнопка «скрыть/показать текст» рисуется поверх карточек; `true` = её нажали.
-    fn draw_np_cards(&self, ui: &mut Ui, theme: &Theme, layout: NpLayout, shield: bool) -> bool {
+    fn draw_np_cards(&mut self, ui: &mut Ui, theme: &Theme, layout: NpLayout, shield: bool) -> bool {
         let track = self.ctl.now.clone();
 
         if shield {
@@ -281,7 +283,7 @@ impl McrateApp {
         .clicked()
     }
 
-    fn track_panel(&self, ui: &mut Ui, theme: &Theme, track: Option<&mcrate_core::Track>) {
+    fn track_panel(&mut self, ui: &mut Ui, theme: &Theme, track: Option<&mcrate_core::Track>) {
         let p = &theme.palette;
         theme.surface(ui, Surface::Dialog, |ui| {
             ui.set_min_size(ui.available_size());
@@ -297,7 +299,11 @@ impl McrateApp {
                         ui.label(RichText::new(&track.title).size(if compact { 21.0 } else { 25.0 }).strong());
                         ui.add_space(4.0);
                         ui.label(RichText::new(artists_text(track)).size(15.0).color(p.on_surface_variant));
-                        ui.add_space(12.0);
+                        ui.add_space(10.0);
+                        if like_button(ui, theme, self.ctl.is_liked(track), NP_LIKE_SIZE).clicked() {
+                            self.ctl.toggle_like(track);
+                        }
+                        ui.add_space(10.0);
                         let queue_count = self.ctl.queue.len();
                         let queue_position = if queue_count > 0 {
                             format!("В очереди · {} из {queue_count}", self.ctl.queue.index().saturating_add(1).min(queue_count))

@@ -1,20 +1,16 @@
 //! История прослушивания: последние сыгранные треки, самый свежий первым. Хранится на диске и
 //! переживает перезапуск приложения.
 //!
-//! Файл `history.txt`: одна строка = один трек, поля через табуляцию:
-//! `сервис`, `длительность в секундах`, `id`, `название`, `исполнители` (через символ 0x1F).
-//! Табуляция, перевод строки, обратная косая и 0x1F внутри текста экранируются (`\t`, `\n`, `\r`, `\\`, `\u`).
-//! Нечитаемые строки пропускаются: порча одной записи не должна стирать всю историю.
+//! Файл `history.txt`: одна строка = один трек (формат строки в `track_codec`). Нечитаемые строки
+//! пропускаются: порча одной записи не должна стирать всю историю.
 
 use std::path::PathBuf;
 
-use crate::{ProviderKind, Track};
+use crate::Track;
+use crate::track_codec::{decode_track, encode_track, save_or_log};
 
 /// Сколько треков помним в истории.
 pub const HISTORY_MAX: usize = 700;
-
-/// Разделитель исполнителей внутри одного поля файла.
-const ARTIST_SEP: char = '\u{1f}';
 
 /// История прослушивания с сохранением в файл.
 #[derive(Debug)]
@@ -40,20 +36,7 @@ impl History {
     /// Если сохранить не вышло, только сообщаем в консоль: историю в памяти из-за этого не теряем.
     pub fn push(&mut self, track: Track) {
         push_front(&mut self.items, track);
-        if let Err(e) = self.save() {
-            eprintln!("не удалось сохранить историю: {e}");
-        }
-    }
-
-    /// Запись во временный файл и переименование: сбой посреди записи оставляет старый файл целым.
-    fn save(&self) -> std::io::Result<()> {
-        let Some(path) = &self.path else { return Ok(()) };
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, serialize(&self.items))?;
-        std::fs::rename(&tmp, path)
+        save_or_log(&self.path, "историю", &serialize(&self.items));
     }
 }
 
@@ -65,81 +48,23 @@ fn push_front(items: &mut Vec<Track>, track: Track) {
 }
 
 fn serialize(items: &[Track]) -> String {
-    let mut text = String::new();
-    for t in items {
-        let artists = t.artists.iter().map(|a| escape(a)).collect::<Vec<_>>().join(&ARTIST_SEP.to_string());
-        text.push_str(&format!("{}\t{}\t{}\t{}\t{artists}\n", t.provider.key(), t.duration_secs, escape(&t.id), escape(&t.title)));
-    }
-    text
+    items.iter().map(|t| encode_track(t) + "\n").collect()
 }
 
 fn parse(text: &str) -> Vec<Track> {
-    let mut items: Vec<Track> = text.lines().filter_map(parse_line).collect();
+    let mut items: Vec<Track> = text.lines().filter_map(decode_track).collect();
     items.truncate(HISTORY_MAX);
     items
-}
-
-fn parse_line(line: &str) -> Option<Track> {
-    let mut f = line.split('\t');
-    let provider = ProviderKind::from_key(f.next()?)?;
-    let duration_secs = f.next()?.parse().ok()?;
-    let id = unescape(f.next()?);
-    let title = unescape(f.next()?);
-    let artists_field = f.next()?;
-    if f.next().is_some() || id.is_empty() {
-        return None;
-    }
-    let artists = if artists_field.is_empty() { Vec::new() } else { artists_field.split(ARTIST_SEP).map(unescape).collect() };
-    Some(Track { id, provider, title, artists, duration_secs })
-}
-
-fn escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\t' => out.push_str("\\t"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            ARTIST_SEP => out.push_str("\\u"),
-            c => out.push(c),
-        }
-    }
-    out
-}
-
-fn unescape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            out.push(c);
-            continue;
-        }
-        match chars.next() {
-            Some('t') => out.push('\t'),
-            Some('n') => out.push('\n'),
-            Some('r') => out.push('\r'),
-            Some('u') => out.push(ARTIST_SEP),
-            Some(other) => out.push(other), // `\\` и неизвестное: берём символ как есть
-            None => out.push('\\'),
-        }
-    }
-    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn track(id: &str, provider: ProviderKind) -> Track {
-        Track { id: id.to_string(), provider, title: format!("Трек {id}"), artists: vec!["А".into(), "Б".into()], duration_secs: 200 }
-    }
+    use crate::ProviderKind;
+    use crate::track_codec::tests::{cleanup, temp_file as codec_temp_file, track};
 
     fn temp_file(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("mcrate-history-test-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir.join("sub").join("history.txt") // папки sub ещё нет: save должен её создать
+        codec_temp_file("history", name)
     }
 
     #[test]
@@ -182,22 +107,7 @@ mod tests {
         assert_eq!(reopened.items()[1].provider, ProviderKind::SoundCloud);
         assert_eq!(reopened.items()[1].artists, ["А", "Б"]);
         assert_eq!(reopened.items()[1].duration_secs, 200);
-        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
-    }
-
-    #[test]
-    fn special_characters_roundtrip() {
-        let t = Track {
-            id: "C:\\музыка\\a\tb.mp3".into(),
-            provider: ProviderKind::Local,
-            title: "Строка\nс переводом\\и\tтабом".into(),
-            artists: vec!["Б\u{1f}В".into(), "Г".into()],
-            duration_secs: 7,
-        };
-        let back = parse(&serialize(std::slice::from_ref(&t)));
-        assert_eq!(back.len(), 1);
-        assert_eq!((back[0].id.as_str(), back[0].title.as_str()), (t.id.as_str(), t.title.as_str()));
-        assert_eq!(back[0].artists, t.artists);
+        cleanup(&path);
     }
 
     #[test]
