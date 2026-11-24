@@ -48,40 +48,31 @@ pub(crate) fn glide_begin(ui: &Ui) -> ShapeIdx {
     ui.painter().add(Shape::Noop)
 }
 
-/// Скользящая подсветка под курсором: одна на весь список. При переходе на другую
-/// строку пружина получает новую цель, сохраняя текущую скорость — даже при быстрых
-/// перемещениях курсора она не телепортируется и не начинает движение с нуля.
-///
-/// Material 3: подсветка растёт кружком из точки, куда навели курсор, и едет за ним (см. `ripple.rs`);
-/// цвет и плотность единые, поэтому отдельного варианта «плоский слой» нет. Liquid Glass: стеклянная подложка.
-pub(crate) fn glide_end(ui: &Ui, theme: &Theme, slot: ShapeIdx, salt: Id, target: Option<(u64, Rect)>, radius: f32) {
-    if !theme.glass_active() {
-        ripple::glide_ripple(ui, theme, slot, salt, target, radius);
-        return;
-    }
-    let dt = ui.input(|i| i.stable_dt).clamp(0.0, 0.064);
-    let mut g: Glide = ui.ctx().data_mut(|d| d.get_temp(salt)).unwrap_or_default();
-    let mut moving = false;
-
-    if let Some((key, rect)) = target {
-        if !g.alive || g.alpha < 0.02 {
-            // После полного исчезновения подсветка появляется сразу под новым пунктом.
+/// Новая цель подсветки: после полного исчезновения она появляется сразу под новым пунктом,
+/// иначе меняется только цель (положение и импульс сохраняются).
+fn glide_retarget(g: &mut Glide, key: u64, rect: Rect) {
+    if !g.alive || g.alpha < 0.02 {
+        // После полного исчезновения подсветка появляется сразу под новым пунктом.
+        g.key = key;
+        g.target = rect;
+        g.min = rect.min;
+        g.max = rect.max;
+        g.velocity_min = Vec2::ZERO;
+        g.velocity_max = Vec2::ZERO;
+        g.alive = true;
+    } else {
+        // Меняем только цель. Текущее положение и импульс сохраняются.
+        if g.key != key {
             g.key = key;
-            g.target = rect;
-            g.min = rect.min;
-            g.max = rect.max;
-            g.velocity_min = Vec2::ZERO;
-            g.velocity_max = Vec2::ZERO;
-            g.alive = true;
-        } else {
-            // Меняем только цель. Текущее положение и импульс сохраняются.
-            if g.key != key {
-                g.key = key;
-            }
-            g.target = rect;
         }
+        g.target = rect;
     }
+}
 
+/// Шаг пружин границ и прозрачности подсветки; `has_target`: курсор над пунктом (подсветка проявляется, иначе гаснет).
+/// Возвращает `true`, пока что-то ещё движется и нужен следующий кадр.
+fn glide_step(g: &mut Glide, has_target: bool, dt: f32) -> bool {
+    let mut moving = false;
     if g.alive {
         moving |= spring_step(&mut g.min.x, &mut g.velocity_min.x, g.target.min.x, dt);
         moving |= spring_step(&mut g.min.y, &mut g.velocity_min.y, g.target.min.y, dt);
@@ -89,7 +80,7 @@ pub(crate) fn glide_end(ui: &Ui, theme: &Theme, slot: ShapeIdx, salt: Id, target
         moving |= spring_step(&mut g.max.y, &mut g.velocity_max.y, g.target.max.y, dt);
     }
 
-    if target.is_some() {
+    if has_target {
         g.alpha += (1.0 - g.alpha) * (1.0 - (-dt * 20.0).exp());
         if g.alpha > 0.99 {
             g.alpha = 1.0;
@@ -105,6 +96,27 @@ pub(crate) fn glide_end(ui: &Ui, theme: &Theme, slot: ShapeIdx, salt: Id, target
             moving = true;
         }
     }
+    moving
+}
+
+/// Скользящая подсветка под курсором: одна на весь список. При переходе на другую
+/// строку пружина получает новую цель, сохраняя текущую скорость — даже при быстрых
+/// перемещениях курсора она не телепортируется и не начинает движение с нуля.
+///
+/// Material 3: подсветка растёт кружком из точки, куда навели курсор, и едет за ним (см. `ripple.rs`);
+/// цвет и плотность единые, поэтому отдельного варианта «плоский слой» нет. Liquid Glass: стеклянная подложка.
+pub(crate) fn glide_end(ui: &Ui, theme: &Theme, slot: ShapeIdx, salt: Id, target: Option<(u64, Rect)>, radius: f32) {
+    if !theme.glass_active() {
+        ripple::glide_ripple(ui, theme, slot, salt, target, radius);
+        return;
+    }
+    let dt = ui.input(|i| i.stable_dt).clamp(0.0, 0.064);
+    let mut g: Glide = ui.ctx().data_mut(|d| d.get_temp(salt)).unwrap_or_default();
+
+    if let Some((key, rect)) = target {
+        glide_retarget(&mut g, key, rect);
+    }
+    let moving = glide_step(&mut g, target.is_some(), dt);
 
     if g.alive && g.alpha > 0.0 {
         let shown = Rect::from_min_max(g.min, g.max);

@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc}; // mpsc = канал сообщений между потоками
 use std::thread::{self, JoinHandle};
@@ -34,7 +34,7 @@ use mcrate_net::{DownloadProgress, StreamDownloader};
 use crate::crossfade::fit as fit_crossfade;
 use crate::loudness::{self, Loudness, Measured};
 use crate::normalize::{Normalizer, PlaybackSettings, TrackKey};
-use crate::stream_cache::{StreamCache, part_path};
+use crate::stream_cache::{CacheStats, StreamCache, part_path};
 use crate::visualizer::{VisualizerFeed, VisualizerFrame};
 use crate::{AudioError, AudioPlayer, PlayQueue, RepeatMode};
 
@@ -68,6 +68,8 @@ enum Command {
     SetShuffle(bool),
     CycleRepeat,
     Stop,
+    /// Очистить кэш скачанных треков (кроме играющего и следующего).
+    ClearCache,
     Shutdown,
     /// Внутренняя: фоновая загрузка закончилась. `request` = номер запроса, на который это ответ.
     /// Эту команду шлёт сам движок (из фоновой задачи), UI её не видит.
@@ -149,6 +151,8 @@ pub struct PlaybackState {
     /// Во сколько раз нормализация сейчас меняет громкость трека (1.0 = не меняет).
     /// Меняется плавно, пока замер подтягивает громкость к целевой.
     pub normalization_gain: f32,
+    /// true, пока идёт наложение двух треков (кроссфейд): `current` уже новый трек, прежний ещё затихает.
+    pub crossfading: bool,
 }
 
 impl PlaybackState {
@@ -166,6 +170,7 @@ impl PlaybackState {
             queue_len: 0,
             download_progress: None,
             normalization_gain: 1.0,
+            crossfading: false,
         }
     }
 }
@@ -177,6 +182,8 @@ pub struct PlaybackEngine {
     state: Arc<Mutex<PlaybackState>>, // общий снимок: движок пишет, UI читает
     /// Атомарный снимок аудиоогибающей; UI читает его независимо от цикла состояния (100 мс).
     visualizer: VisualizerFeed,
+    /// Тот же кэш, что у потока движка: из него UI читает размер (папка лежит на диске, гонок нет).
+    cache: StreamCache,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -187,9 +194,30 @@ impl PlaybackEngine {
         Self::with_stream_cache(providers, StreamCache::default_dir())
     }
 
-    /// Папка, куда движок складывает скачанные онлайн-треки (`%TEMP%\mcrate\stream`).
+    /// Папка кэша по умолчанию (`%TEMP%\mcrate\stream`), когда самого движка ещё нет (примеры, проверки).
     pub fn stream_cache_dir() -> PathBuf {
         StreamCache::default_dir()
+    }
+
+    /// Папка, куда этот движок складывает скачанные онлайн-треки.
+    pub fn cache_dir(&self) -> &Path {
+        self.cache.dir()
+    }
+
+    /// Сколько онлайн-треков и байт сейчас в кэше.
+    pub fn cache_stats(&self) -> CacheStats {
+        self.cache.stats()
+    }
+
+    /// Сколько скачанных треков кэш хранит: старые сверх этого числа удаляются сами.
+    pub fn cache_limit(&self) -> usize {
+        MAX_CACHED_TRACKS
+    }
+
+    /// Очистить кэш. Играющий и готовящийся следующий трек не удаляются; сам кэш не меняется мгновенно:
+    /// команду исполняет поток движка, поэтому новый размер видно со следующего кадра.
+    pub fn cache_clear(&self) {
+        self.send(Command::ClearCache);
     }
 
     /// То же, что `new`, но папку кэша скачанных треков задаёшь сам (нужно тестам и примерам).
@@ -204,6 +232,8 @@ impl PlaybackEngine {
         // Копия отправителя команд для самого движка: через неё фоновые задачи
         // возвращают результат загрузки в поток движка
         let worker_tx = cmd_tx.clone();
+        let cache = StreamCache::new(cache_dir, MAX_CACHED_TRACKS);
+        let worker_cache = cache.clone();
 
         // `move` отдаёт замыканию владение переменными: оно работает в другом потоке
         let handle = thread::spawn(move || {
@@ -237,7 +267,7 @@ impl PlaybackEngine {
                 // Если сетевой клиент не создался, играть можно только локальные файлы;
                 // ошибка всплывёт при первой попытке сыграть онлайн-трек
                 downloader: StreamDownloader::new().map(Arc::new).map_err(|e| e.to_string()),
-                cache: StreamCache::new(cache_dir, MAX_CACHED_TRACKS),
+                cache: worker_cache,
                 commands_tx: worker_tx,
                 queue: PlayQueue::new(),
                 state: thread_state,
@@ -267,7 +297,7 @@ impl PlaybackEngine {
 
         // Ждём, пока поток сообщит, удалось ли открыть звук
         match init_rx.recv() {
-            Ok(Ok(())) => Ok(Self { commands: cmd_tx, events: evt_rx, state, visualizer, thread: Some(handle) }),
+            Ok(Ok(())) => Ok(Self { commands: cmd_tx, events: evt_rx, state, visualizer, cache, thread: Some(handle) }),
             Ok(Err(msg)) => Err(AudioError::Engine(msg)),
             Err(_) => Err(AudioError::Engine("поток движка завершился при запуске".to_string())),
         }
@@ -587,6 +617,7 @@ impl Worker {
                 self.emit_modes();
             }
             Command::Stop => self.set_idle(),
+            Command::ClearCache => self.clear_cache(),
             Command::LoadFinished { request, result } => self.on_load_finished(request, result),
             Command::StreamReady { request, part, dest, progress } => self.on_stream_ready(request, part, dest, progress),
             Command::StreamComplete { request, path } => self.on_stream_complete(request, path),
@@ -1168,6 +1199,21 @@ impl Worker {
         }
     }
 
+    /// Очистка кэша по команде UI: остаются файлы играющего, грузящегося и подготовленного следующего трека.
+    fn clear_cache(&mut self) {
+        let mut keep = Vec::new();
+        if let Some(stem) = self.playing_file.as_ref().and_then(|p| p.file_stem()) {
+            keep.push(stem.to_string_lossy().into_owned());
+        }
+        if let Some(track) = &self.loading_track {
+            keep.push(StreamCache::stem(track));
+        }
+        if let Some((provider, id)) = self.preload.as_ref().map(|p| &p.key) {
+            keep.push(StreamCache::stem_of(*provider, id));
+        }
+        self.cache.clear(&keep);
+    }
+
     fn set_idle(&mut self) {
         self.cancel_loading();
         self.start_paused = false;
@@ -1200,6 +1246,7 @@ impl Worker {
             queue_len: self.queue.len(),
             download_progress: self.stream_progress.as_ref().filter(|p| !p.is_finished()).and_then(|p| p.fraction()),
             normalization_gain: self.player.gain(), // то, что реально применено к звуку
+            crossfading: self.player.is_crossfading(),
         };
         *self.state.lock().unwrap() = snapshot; // lock() = взять замок, чтобы записать безопасно
     }
@@ -1935,5 +1982,100 @@ mod tests {
         // Без заблаговременного замера усиление стартовало бы с 1.0 и ползло бы к цели секунды (6 дБ/с)
         assert!(wait_gain(&mut fx, 400, |g| g > 3.0), "«b» стартовал без своего усиления: {}", fx.engine.state().normalization_gain);
         let _ = (fs::remove_file(&loud), fs::remove_file(&quiet));
+    }
+
+    /// Запускает очередь из трёх треков на паузе с кроссфейдом 3 с (без «бесшовного») и ждёт, пока
+    /// следующий трек подготовится во второй деке. Возвращает стенд готовым нажать «играть».
+    fn crossfade_fixture(name: &str) -> Option<Fixture> {
+        let mut fx = Fixture::new(name, &[("a", 300), ("b", 300), ("c", 300)])?;
+        fx.engine.set_settings(PlaybackSettings { crossfade_secs: 3, gapless: false, ..PlaybackSettings::default() });
+        play_queue_paused(&mut fx, &["a", "b", "c"]);
+        let fake = Arc::clone(&fx.fake);
+        assert!(wait_calls(&mut fx, &fake.calls, 2, 3000), "следующий трек не подготовлен");
+        fx.idle(800); // «b» «скачался» и стоит во второй деке
+        Some(fx)
+    }
+
+    /// Ждёт, пока снимок состояния не удовлетворит условию (не дольше `timeout_ms`).
+    fn wait_state(fx: &mut Fixture, timeout_ms: u64, pred: impl Fn(&PlaybackState) -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        while !pred(&fx.engine.state()) {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            fx.idle(20);
+        }
+        true
+    }
+
+    #[test]
+    fn crossfade_overlaps_the_end_of_the_current_track() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mut fx) = crossfade_fixture("xfade-overlap") else { return };
+        let fake = Arc::clone(&fx.fake);
+
+        fx.engine.toggle_pause(); // «a» играет; за 3 с до конца должно начаться наложение
+        assert!(wait_state(&mut fx, 10_000, |s| s.crossfading), "наложение не началось");
+        let state = fx.engine.state();
+        assert_eq!(state.current.as_ref().map(|t| t.id.as_str()), Some("b"), "во время фейда текущий уже «b»");
+        assert!(state.is_playing);
+
+        assert!(wait_state(&mut fx, 6000, |s| !s.crossfading), "наложение не закончилось");
+        assert_eq!(fx.engine.state().current.as_ref().map(|t| t.id.as_str()), Some("b"));
+        assert!(!fx.log.iter().any(|e| matches!(e, PlaybackEvent::Loading(t) if t.id == "b")), "«b» прошёл через загрузку");
+        assert_eq!(fake.calls.load(Ordering::SeqCst), 3, "ссылки: «a», «b» и предзагрузка «c», повторных запросов нет");
+    }
+
+    #[test]
+    fn manual_next_during_crossfade_cuts_it_off() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mut fx) = crossfade_fixture("xfade-next") else { return };
+
+        fx.engine.toggle_pause();
+        assert!(wait_state(&mut fx, 10_000, |s| s.crossfading), "наложение не началось");
+        fx.engine.next(); // «b» уже играет, «Далее» ведёт на «c» и обрывает затихающий «a»
+        assert!(fx.wait_for(5000, is_started("c")), "«c» не заиграл (события: {:?})", fx.log);
+        // Проверяем, что движок не застрял в наложении. Сам обрыв фейда проверяет тест плеера
+        // `explicit_play_or_stop_cancels_a_crossfade`: на нулевом устройстве звук идёт быстрее реального
+        // времени и фейд мог бы кончиться сам, поэтому здесь отличить обрыв от конца нельзя.
+        assert!(wait_state(&mut fx, 2000, |s| !s.crossfading), "наложение осталось после «Далее»");
+        assert_eq!(fx.engine.state().current.as_ref().map(|t| t.id.as_str()), Some("c"));
+    }
+
+    #[test]
+    fn pause_freezes_the_crossfade() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mut fx) = crossfade_fixture("xfade-pause") else { return };
+
+        fx.engine.toggle_pause();
+        assert!(wait_state(&mut fx, 10_000, |s| s.crossfading), "наложение не началось");
+        fx.engine.toggle_pause();
+        assert!(wait_state(&mut fx, 1000, |s| !s.is_playing), "пауза не наступила");
+        fx.idle(4000); // дольше всего фейда (3 с): на паузе он не двигается
+        assert!(fx.engine.state().crossfading, "фейд кончился на паузе");
+
+        fx.engine.toggle_pause();
+        assert!(wait_state(&mut fx, 6000, |s| !s.crossfading), "после паузы наложение не закончилось");
+    }
+
+    #[test]
+    fn cache_clear_removes_finished_files_and_keeps_unfinished() {
+        let _lock = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(mut fx) = Fixture::new("cache-clear", &[("a", 0)]) else { return };
+        let cache = fx.dir.join("cache");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join("soundcloud-old.m4a"), [0u8; 10]).unwrap();
+        fs::write(cache.join("soundcloud-new.m4a.part"), [0u8; 10]).unwrap();
+        assert_eq!(fx.engine.cache_stats().files, 2);
+        assert_eq!(fx.engine.cache_dir(), cache.as_path());
+
+        fx.engine.cache_clear(); // команду исполняет поток движка
+        let deadline = Instant::now() + Duration::from_millis(2000);
+        while fx.engine.cache_stats().files > 1 && Instant::now() < deadline {
+            fx.idle(20);
+        }
+        assert_eq!(fx.engine.cache_stats().files, 1, "лишний файл не удалён");
+        assert!(cache.join("soundcloud-new.m4a.part").exists(), "недокачанный файл удалён");
+        assert!(!cache.join("soundcloud-old.m4a").exists());
     }
 }

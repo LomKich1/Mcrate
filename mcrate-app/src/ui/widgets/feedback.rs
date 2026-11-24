@@ -1,11 +1,11 @@
 //! Обратная связь пользователю: снэкбар, баннер ошибки и индикатор загрузки.
 
 use super::glide::squish;
+use super::loading_indicator::M3ELoadingIndicator;
 use crate::icons::{self, Icon};
 use crate::theme::{ShapeRole, TextRole, Theme};
-use crate::ui::anim::{STANDARD, cubic_bezier};
 use crate::ui::ripple;
-use egui::{Align, Align2, CornerRadius, CursorIcon, FontId, Frame, Layout, Margin, Pos2, Response, Sense, Shape, Stroke, Ui, Vec2, vec2};
+use egui::{Align, Align2, CornerRadius, CursorIcon, FontId, Frame, Layout, Margin, Response, Sense, Ui, vec2};
 
 /// M3 snackbar: инверсная поверхность, контрастный текст и действие inverse-primary.
 /// Возвращает true, если пользователь нажал на закрытие.
@@ -21,7 +21,7 @@ pub(crate) fn status_snackbar(ui: &mut Ui, theme: &Theme, message: &str) -> bool
                     let (base_rect, response) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click());
                     let rect = squish(ui, response.id, &response, base_rect, 0.06, 0.06);
                     let tint = ripple::StateTint { color: p.inverse_on_surface, hover_alpha: 20, press_alpha: 31 };
-                    ripple::state_layer_colored(ui, theme, ui.painter(), &response, rect, 15.0, tint);
+                    ripple::state_layer_colored(ui, theme, ui.painter(), &response, ripple::LayerArea { rect, corner: 15.0 }, tint);
                     icons::paint(theme, ui.painter(), Icon::Close, rect.center(), 18.0, p.inverse_primary);
                     ui.add(
                         egui::Label::new(
@@ -63,47 +63,9 @@ pub(crate) fn error_banner(ui: &mut Ui, theme: &Theme, message: &str) {
         });
 }
 
-/// Индикатор загрузки Material 3 (indeterminate circular progress), без подписей.
-/// Анимация повторяет спецификацию M3: дуга растёт и сжимается (голова и хвост бегут с задержкой),
-/// пока вся фигура вращается; один цикл 1332 мс, пять циклов до полного повтора вращения.
-/// Рисуется в обеих темах одинаково, цвет `primary`. Сам просит перерисовку, пока виден.
+/// Индикатор загрузки Material 3 Expressive (морфирующая последовательность из семи фигур), без подписей.
+/// Тонкая обёртка над `M3ELoadingIndicator` (`widgets/loading_indicator/`): цвет `primary`, в обеих темах
+/// одинаково; при «Уменьшить анимацию» фигура неподвижна. Сам просит перерисовку, пока виден.
 pub(crate) fn loading_indicator(ui: &mut Ui, theme: &Theme, size: f32) -> Response {
-    const CYCLE: f64 = 1.332; // секунд на один рост и сжатие дуги
-    const HEAD_TAIL: f32 = 0.666; // длительность бега головы и хвоста
-    const JUMP: f32 = 290.0; // на сколько градусов вырастает дуга
-    const ROTATIONS: f64 = 5.0; // циклов до повтора вращения
-    const BASE_DEG: f32 = 286.0; // равномерное вращение за ROTATIONS циклов
-
-    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
-    if !ui.is_rect_visible(rect) {
-        return resp;
-    }
-    ui.ctx().request_repaint();
-
-    let time = ui.input(|i| i.time);
-    let in_cycle = (time % CYCLE) as f32;
-    let cycle_index = (time / CYCLE).floor() as i64 % ROTATIONS as i64;
-    let ease = |x: f32| cubic_bezier(STANDARD, x.clamp(0.0, 1.0));
-    let end = JUMP * ease(in_cycle / HEAD_TAIL);
-    let start = JUMP * ease((in_cycle - HEAD_TAIL) / HEAD_TAIL);
-    let base = BASE_DEG * ((time % (CYCLE * ROTATIONS)) / (CYCLE * ROTATIONS)) as f32;
-    let offset = -90.0 + (cycle_index as f32 * JUMP) % 360.0 + base;
-    let sweep = (end - start).abs().max(0.5);
-
-    let stroke_w = 4.0 * size / 48.0; // M3: дорожка 4 dp при размере 48 dp
-    let radius = (size - stroke_w) * 0.5;
-    let color = theme.palette.primary;
-    let steps = ((sweep / 4.0).ceil() as usize).max(2);
-    let point = |deg: f32| {
-        let a = deg.to_radians();
-        rect.center() + vec2(a.cos(), a.sin()) * radius
-    };
-    let points: Vec<Pos2> = (0..=steps).map(|i| point(start + offset + sweep * i as f32 / steps as f32)).collect();
-    let painter = ui.painter();
-    painter.add(Shape::line(points.clone(), Stroke::new(stroke_w, color)));
-    // Круглые концы дуги (в egui у линии они плоские).
-    for end_point in [points[0], points[steps]] {
-        painter.circle_filled(end_point, stroke_w * 0.5, color);
-    }
-    resp
+    ui.add(M3ELoadingIndicator::new().size(size).color(theme.palette.primary).reduce_motion(theme.settings.reduce_motion))
 }

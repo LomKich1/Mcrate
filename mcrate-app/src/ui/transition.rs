@@ -75,6 +75,16 @@ struct LayerPose {
     alpha: f32,
 }
 
+/// Где и в каком направлении рисуется слой перехода (одинаково для обоих слоёв).
+#[derive(Clone, Copy)]
+struct LayerFrame {
+    /// Область, которую занимает экран.
+    rect: Rect,
+    bleed: Bleed,
+    /// Переход идёт по вертикали (открытие и закрытие «Сейчас играет»).
+    vertical: bool,
+}
+
 /// Позы уходящего и приходящего экранов. `raw` = доля времени 0..1, `dir` = +1, если новый
 /// экран приходит справа (вперёд по меню), -1, если слева, `width` = ширина области.
 fn poses(raw: f32, dir: f32, width: f32) -> (LayerPose, LayerPose) {
@@ -122,7 +132,7 @@ fn host(ui: &mut Ui, transition: Option<ViewTransition>, view: View, bleed: Blee
     // приходящий экран). Пустой слот просто пропускает номер (`skip_ahead_auto_ids`).
     let Some(tr) = transition else {
         ui.skip_ahead_auto_ids(1); // пустой нижний слот
-        layer(ui, view, rect, bleed, LayerPose { dx: 0.0, alpha: 1.0 }, false, draw);
+        layer(ui, view, LayerFrame { rect, bleed, vertical: false }, LayerPose { dx: 0.0, alpha: 1.0 }, draw);
         return;
     };
 
@@ -143,15 +153,16 @@ fn host(ui: &mut Ui, transition: Option<ViewTransition>, view: View, bleed: Blee
     let (out_pose, in_pose) = poses(tr.progress(), dir, extent);
 
     // Уходящий рисуется первым (под низом), новый поверх.
-    layer(ui, tr.from, rect, bleed, out_pose, vertical, draw);
+    layer(ui, tr.from, LayerFrame { rect, bleed, vertical }, out_pose, draw);
     // «Щит»: невидимая область поверх уходящего экрана. Клики и наведение достаются ему,
     // а не кнопкам под ним. Виджеты нового экрана добавляются позже, поэтому они выше щита.
     ui.interact(rect, ui.scope_id().with("view_transition_shield"), Sense::click_and_drag());
-    layer(ui, tr.to, rect, bleed, in_pose, vertical, draw);
+    layer(ui, tr.to, LayerFrame { rect, bleed, vertical }, in_pose, draw);
 }
 
 /// Один слой: экран, сдвинутый вдоль оси перехода и с заданной прозрачностью, обрезанный по `rect`.
-fn layer(ui: &mut Ui, view: View, rect: Rect, bleed: Bleed, pose: LayerPose, vertical: bool, draw: &mut dyn FnMut(&mut Ui, View)) {
+fn layer(ui: &mut Ui, view: View, frame: LayerFrame, pose: LayerPose, draw: &mut dyn FnMut(&mut Ui, View)) {
+    let LayerFrame { rect, bleed, vertical } = frame;
     // Слой прозрачнее одного шага 8-битного канала не виден: не тратим на него кадр.
     // Но номер в нумерации id занимаем (см. комментарий в `host`).
     if pose.alpha < 1.0 / 255.0 {

@@ -2,8 +2,6 @@
 //! «Хранилище и кеш», «О приложении», «Поддержка» и экраны-«скоро» (профиль, сессии, подписка,
 //! семья, AI-память: им нужен сервер, а проект «только клиент», поэтому это только вид).
 
-use std::path::PathBuf;
-
 use egui::{ScrollArea, Ui, vec2};
 use egui_material_icons::MaterialIcon;
 use egui_material_icons::icons as mi;
@@ -49,18 +47,8 @@ impl SoonKind {
     }
 }
 
-/// Папка кэша онлайн-треков (та же, что у движка: `%TEMP%\mcrate\stream`) и её размер.
-fn cache_stats() -> (PathBuf, u64, usize) {
-    let dir = std::env::temp_dir().join("mcrate").join("stream");
-    let (mut bytes, mut files) = (0u64, 0usize);
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for meta in entries.flatten().filter_map(|e| e.metadata().ok()).filter(|m| m.is_file()) {
-            bytes += meta.len();
-            files += 1;
-        }
-    }
-    (dir, bytes, files)
-}
+/// Через сколько после «Очистить кэш» перерисовать экран, чтобы показать новый размер: движок чистит в своём потоке.
+const CACHE_REFRESH_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
 
 fn format_size(bytes: u64) -> String {
     if bytes < 1024 * 1024 {
@@ -178,18 +166,35 @@ impl McrateApp {
         });
     }
 
-    /// «Хранилище и кеш»: где лежит кэш онлайн-треков и сколько он занимает. Очистки пока нет:
-    /// движок не даёт для неё метода, а UI по правилам дорожки B движок не правит.
+    /// «Хранилище и кеш»: где лежит кэш онлайн-треков и сколько он занимает. Данные даёт движок
+    /// (`Controller::cache_info`), сам экран диск не читает. Строка «Очистить кэш» просит движок
+    /// (`Controller::cache_clear`) удалить скачанные треки, кроме играющего и следующего.
     pub(crate) fn settings_storage_view(&mut self, ui: &mut Ui, theme: &Theme) {
-        self.settings_page(ui, theme, "Хранилище и кеш", |_, ui| {
-            let (dir, bytes, files) = cache_stats();
+        self.settings_page(ui, theme, "Хранилище и кеш", |app, ui| {
+            let info = app.ctl.cache_info();
+            let (bytes, files, limit) = info.as_ref().map_or((0, 0, 0), |i| (i.stats.bytes, i.stats.files, i.limit));
             group_label(ui, theme, "Кэш потока");
             let rows = vec![
                 Row::new(mi::ICON_STORAGE, "Занято", Trailing::Label(format_size(bytes))),
-                Row::new(mi::ICON_AUDIO_FILE, "Треков в кэше", Trailing::Label(format!("{files} из 20"))),
+                Row::new(mi::ICON_AUDIO_FILE, "Треков в кэше", Trailing::Label(format!("{files} из {limit}"))),
             ];
             settings_group(ui, theme, "cache", rows);
-            hint_text(ui, theme, &format!("Папка: {}. Старые треки удаляются сами, когда их становится больше 20.", dir.display()));
+            let hint = match &info {
+                Some(i) => format!("Папка: {}. Старые треки удаляются сами, когда их становится больше {}.", i.dir.display(), i.limit),
+                None => "Звуковой движок не запущен, кэш недоступен.".to_string(),
+            };
+            hint_text(ui, theme, &hint);
+            if info.is_some() {
+                let clear = vec![
+                    Row::new(mi::ICON_DELETE, "Очистить кэш", Trailing::Action)
+                        .subtitle("Удалить скачанные треки. Играющий и следующий останутся, остальные скачаются заново."),
+                ];
+                if settings_group(ui, theme, "cache_clear", clear).is_some() {
+                    app.ctl.cache_clear();
+                    // Движок чистит в своём потоке: через мгновение перерисуемся, чтобы показать новый размер.
+                    ui.ctx().request_repaint_after(CACHE_REFRESH_DELAY);
+                }
+            }
         });
     }
 

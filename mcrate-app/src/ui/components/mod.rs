@@ -5,10 +5,12 @@ mod empty_state;
 mod nav_list;
 mod screen_header;
 mod split_page;
+mod title_scroll;
 mod track_list;
 
-pub(super) use empty_state::{empty_state, empty_state_top_space, empty_state_with};
+pub(super) use empty_state::{EmptyText, empty_state, empty_state_top_space, empty_state_with};
 pub(super) use nav_list::nav_list;
-pub(super) use screen_header::{TitleRow, back_header, screen_title, title_search_row};
-pub(super) use split_page::{SIDE_COVER_SIZE, split_page};
-pub(super) use track_list::track_list;
+pub(super) use screen_header::{TitleRow, back_header, back_title_row, screen_title, title_search_row};
+pub(super) use split_page::{SIDE_COVER_SIZE, SplitPage, split_is_wide, split_page};
+pub(super) use title_scroll::{narrow_title_shown, title_scroll_page};
+pub(super) use track_list::{same_track_as, track_list};

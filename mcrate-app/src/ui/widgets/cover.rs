@@ -24,20 +24,10 @@ pub(crate) fn cover_tile(ui: &mut Ui, theme: &Theme, rect: Rect, seed: &str, rad
     icons::paint(theme, painter, Icon::Note, rect.center(), rect.height() * 0.5, with_alpha(fg, 200));
 }
 
-/// Контур загрузки: яркий отрезок с затухающим хвостом бежит по периметру обложки, пока трек грузится.
-/// Чисел нет. Контур рисуется чуть внутри обложки (`rect`), чтобы его не обрезала область панели.
-/// При включённом «уменьшении движения» вместо бега показывается неподвижная рамка.
-pub(crate) fn loading_outline(ui: &Ui, theme: &Theme, cover: Rect, radius: f32, time: f64) {
+/// Замкнутая ломаная по скруглённому прямоугольнику, по часовой стрелке (ось y экрана смотрит вниз).
+/// Последняя точка не повторяет первую.
+fn rounded_rect_ring(rect: Rect, r: f32) -> Vec<Pos2> {
     const STEPS: usize = 6; // сегментов на каждый скруглённый угол
-    const TRAIL: f32 = 0.30; // длина бегущего отрезка, доля периметра
-    const LAP_SECS: f64 = 1.4; // один круг по периметру
-    const SEGMENTS: usize = 28; // на сколько кусочков режем отрезок для затухания хвоста
-
-    let p = &theme.palette;
-    let rect = cover.shrink(1.5);
-    let r = (radius - 1.5).clamp(0.0, rect.width().min(rect.height()) * 0.5);
-
-    // Замкнутая ломаная по скруглённому прямоугольнику, по часовой стрелке (ось y экрана смотрит вниз).
     let corners = [
         (pos2(rect.right() - r, rect.top() + r), -90.0_f32),
         (pos2(rect.right() - r, rect.bottom() - r), 0.0),
@@ -51,7 +41,23 @@ pub(crate) fn loading_outline(ui: &Ui, theme: &Theme, cover: Rect, radius: f32, 
             pts.push(center + vec2(a.cos(), a.sin()) * r);
         }
     }
-    let ring = pts.clone();
+    pts
+}
+
+/// Контур загрузки: яркий отрезок с затухающим хвостом бежит по периметру обложки, пока трек грузится.
+/// Чисел нет. Контур рисуется чуть внутри обложки (`rect`), чтобы его не обрезала область панели.
+/// При включённом «уменьшении движения» вместо бега показывается неподвижная рамка.
+pub(crate) fn loading_outline(ui: &Ui, theme: &Theme, cover: Rect, radius: f32, time: f64) {
+    const TRAIL: f32 = 0.30; // длина бегущего отрезка, доля периметра
+    const LAP_SECS: f64 = 1.4; // один круг по периметру
+    const SEGMENTS: usize = 28; // на сколько кусочков режем отрезок для затухания хвоста
+
+    let p = &theme.palette;
+    let rect = cover.shrink(1.5);
+    let r = (radius - 1.5).clamp(0.0, rect.width().min(rect.height()) * 0.5);
+
+    let ring = rounded_rect_ring(rect, r);
+    let mut pts = ring.clone();
     pts.push(pts[0]); // замыкаем, чтобы последний отрезок периметра тоже считался
 
     // Накопленная длина вдоль периметра: по ней находим точку на расстоянии `s` от старта.

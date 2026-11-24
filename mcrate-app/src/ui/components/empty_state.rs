@@ -14,19 +14,20 @@ pub(in crate::ui) fn empty_state_top_space(available_height: f32, bottom_inset: 
 
 /// Пустое состояние без дополнительного содержимого.
 pub(in crate::ui) fn empty_state(ui: &mut Ui, theme: &Theme, top_space: f32, icon: Icon, headline: &str, text: &str) {
-    empty_state_with(ui, theme, top_space, icon, headline, text, |_| {});
+    empty_state_with(ui, theme, top_space, EmptyText { icon, headline, text }, |_| {});
+}
+
+/// Что написано в пустом состоянии: иконка, заголовок и пояснение.
+#[derive(Clone, Copy)]
+pub(in crate::ui) struct EmptyText<'a> {
+    pub icon: Icon,
+    pub headline: &'a str,
+    pub text: &'a str,
 }
 
 /// То же, но под текстом можно добавить свой блок (например, баннер ошибки): он тоже по центру.
-pub(in crate::ui) fn empty_state_with(
-    ui: &mut Ui,
-    theme: &Theme,
-    top_space: f32,
-    icon: Icon,
-    headline: &str,
-    text: &str,
-    below: impl FnOnce(&mut Ui),
-) {
+pub(in crate::ui) fn empty_state_with(ui: &mut Ui, theme: &Theme, top_space: f32, content: EmptyText, below: impl FnOnce(&mut Ui)) {
+    let EmptyText { icon, headline, text } = content;
     let p = &theme.palette;
     ui.vertical_centered(|ui| {
         ui.add_space(top_space);

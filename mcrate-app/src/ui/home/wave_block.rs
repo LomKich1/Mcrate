@@ -70,7 +70,14 @@ impl McrateApp {
         let cols = ((canvas.width() / COL_STEP_PX / WAVE_COLS_QUANTUM as f32).round() as usize * WAVE_COLS_QUANTUM)
             .clamp(WAVE_COLS_MIN, WAVE_COLS_MAX);
         let table = wave::wave_table(ui.ctx(), cols);
-        wave::paint(ui.painter(), canvas, &sim, &table, p.on_surface, p.primary, if backdrop_pass { 3 } else { 1 });
+        wave::paint(
+            ui.painter(),
+            canvas,
+            &sim,
+            &table,
+            wave::WaveColors { base: p.on_surface, accent: p.primary },
+            if backdrop_pass { 3 } else { 1 },
+        );
         ui.ctx().data_mut(|d| d.insert_temp(wave_id, sim));
     }
 }

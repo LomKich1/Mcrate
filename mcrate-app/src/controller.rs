@@ -12,21 +12,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use mcrate_audio::{PlaybackEngine, PlaybackEvent, PlaybackSettings, RepeatMode, VisualizerFrame};
-use mcrate_core::{MusicProvider, ProviderKind, Track};
+use mcrate_audio::{CacheStats, PlaybackEngine, PlaybackEvent, PlaybackSettings, RepeatMode, VisualizerFrame};
+use mcrate_core::{History, MusicProvider, ProviderKind, Track, paths};
 use mcrate_providers::{LocalProvider, SoundCloudProvider};
-
-/// Где лежит файл со списком сохранённых треков: %APPDATA%\Mcrate\library.txt
-/// (APPDATA = переменная окружения Windows, обычно C:\Users\<имя>\AppData\Roaming).
-/// Option, потому что переменной теоретически может не быть.
-fn library_file() -> Option<PathBuf> {
-    app_dir().map(|dir| dir.join("library.txt"))
-}
-
-/// Папка приложения: %APPDATA%\Mcrate (туда же ядро кладёт `soundcloud_client_id.txt`).
-fn app_dir() -> Option<PathBuf> {
-    std::env::var_os("APPDATA").map(|dir| PathBuf::from(dir).join("Mcrate"))
-}
 
 /// Как назвать сервис в интерфейсе («Свои файлы · в очереди: 3»).
 pub fn provider_label(kind: ProviderKind) -> &'static str {
@@ -43,14 +31,15 @@ pub fn provider_label(kind: ProviderKind) -> &'static str {
 /// (снимок обновляется раз в ~100 мс; без этого ползунок на миг прыгал бы назад).
 const SEEK_HOLD: Duration = Duration::from_millis(300);
 
-/// Сколько треков помним в истории прослушивания.
-const HISTORY_MAX: usize = 100;
-
-/// Поднять трек наверх истории (убрав прежнюю запись о нём) и обрезать список до `HISTORY_MAX`.
-fn push_history(history: &mut Vec<Track>, track: Track) {
-    history.retain(|t| !(t.id == track.id && t.provider == track.provider));
-    history.insert(0, track);
-    history.truncate(HISTORY_MAX);
+/// Сведения о кэше онлайн-треков, как их отдаёт движок.
+#[derive(Debug, Clone)]
+pub struct CacheInfo {
+    /// Папка кэша.
+    pub dir: PathBuf,
+    /// Сколько треков и байт в кэше сейчас.
+    pub stats: CacheStats,
+    /// Сколько треков кэш хранит, старые сверх этого удаляются сами.
+    pub limit: usize,
 }
 
 /// Снимок очереди движка. Читается методами, как раньше читали `PlayQueue`
@@ -85,12 +74,38 @@ pub struct SoundCloudState {
     /// Запрос, по которому получены (или ищутся) результаты.
     pub query: String,
     pub results: Vec<Track>,
-    /// Поиск идёт прямо сейчас (первый поиск может занять до ~30 с: добывается client_id).
+    /// Поиск идёт прямо сейчас.
     pub searching: bool,
     /// Ошибка последнего поиска (текст уже для пользователя).
     pub error: Option<String>,
     /// Был ли уже хотя бы один поиск (чтобы отличить «ничего не искали» от «ничего не нашли»).
     pub searched: bool,
+}
+
+impl SoundCloudState {
+    /// Начало нового поиска: прошлые результаты убираются сразу. Иначе на время поиска они остались бы на экране
+    /// под заголовком уже нового запроса, а индикатор загрузки встал бы поверх них.
+    fn begin_search(&mut self, query: String) {
+        self.query = query;
+        self.results.clear();
+        self.searching = true;
+        self.error = None;
+    }
+
+    /// Поиск закончился (ответ не устаревший): результаты или ошибка. Прошлых результатов уже нет (`begin_search`),
+    /// поэтому при ошибке на экране остаётся только она.
+    fn finish_search(&mut self, query: String, result: Result<Vec<Track>, String>) {
+        self.searching = false;
+        self.searched = true;
+        self.query = query;
+        match result {
+            Ok(tracks) => {
+                self.results = tracks;
+                self.error = None;
+            }
+            Err(e) => self.error = Some(format!("Поиск не удался: {e}")),
+        }
+    }
 }
 
 /// Ответ фоновой задачи поиска: номер запроса (чтобы выбросить устаревшие), запрос и результат.
@@ -119,7 +134,8 @@ pub struct Controller {
     /// Стирается, когда пошёл следующий трек.
     pub play_error: Option<String>,
     /// История прослушивания за сеанс: новые сверху, без повторов (трек, сыгранный снова, поднимается наверх).
-    pub history: Vec<Track>,
+    /// История прослушивания (хранится на диске, см. `mcrate_core::History`).
+    pub history: History,
     pub sc: SoundCloudState,
 
     // --- копия снимка движка (обновляется в `tick`) ---
@@ -140,13 +156,17 @@ pub struct Controller {
 }
 
 impl Controller {
+    /// Собирает контроллер: библиотека на диске, провайдеры, движок воспроизведения и каналы фоновых задач.
+    ///
+    /// Длиннее 60 строк намеренно: это линейная сборка полей по порядку, в котором они зависят друг от друга
+    /// (например, HTTP-клиент SoundCloud создаётся внутри среды tokio, см. комментарии ниже); разрез только размазал бы эту цепочку.
     pub fn new() -> Self {
         let rt =
             tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("не удалось создать tokio runtime");
 
         // Библиотека сохраняется между запусками. Если папку приложения определить не удалось,
         // работаем только в памяти (как раньше).
-        let local = Arc::new(match library_file() {
+        let local = Arc::new(match paths::library_file() {
             Some(path) => LocalProvider::with_storage(path),
             None => LocalProvider::new(),
         });
@@ -169,12 +189,19 @@ impl Controller {
             let _guard = rt.enter();
             match SoundCloudProvider::new() {
                 Ok(p) => {
-                    let p = match app_dir() {
+                    let p = match paths::soundcloud_client_id_file() {
                         // client_id публичный; без файла он добывался бы с сайта при каждом запуске (~30 с)
-                        Some(dir) => p.with_client_id_file(dir.join("soundcloud_client_id.txt")),
+                        Some(file) => p.with_client_id_file(file),
                         None => p,
                     };
-                    Some(Arc::new(p))
+                    let p = Arc::new(p);
+                    // client_id добываем в фоне при запуске, чтобы первый поиск не ждал (при первом запуске
+                    // это до ~30 с, дальше он берётся из файла). Ошибку не показываем: поиск попробует сам.
+                    let warm = Arc::clone(&p);
+                    rt.spawn(async move {
+                        let _ = warm.prepare().await;
+                    });
+                    Some(p)
                 }
                 Err(e) => {
                     sc_state.error = Some(format!("SoundCloud недоступен: {e}"));
@@ -211,7 +238,7 @@ impl Controller {
             volume,
             status,
             play_error: None,
-            history: Vec::new(),
+            history: History::open(paths::history_file()),
             sc: sc_state,
             playing: false,
             loading: false,
@@ -275,9 +302,7 @@ impl Controller {
         };
         self.sc_request += 1;
         let request = self.sc_request;
-        self.sc.query = query.clone();
-        self.sc.searching = true;
-        self.sc.error = None;
+        self.sc.begin_search(query.clone());
 
         let tx = self.sc_tx.clone();
         self.rt().spawn(async move {
@@ -291,19 +316,7 @@ impl Controller {
             if request != self.sc_request {
                 continue; // устаревший ответ: уже запущен новый поиск
             }
-            self.sc.searching = false;
-            self.sc.searched = true;
-            self.sc.query = query;
-            match result {
-                Ok(tracks) => {
-                    self.sc.results = tracks;
-                    self.sc.error = None;
-                }
-                Err(e) => {
-                    // Прошлые результаты оставляем: они ещё играбельны, а ошибку покажем рядом.
-                    self.sc.error = Some(format!("Поиск не удался: {e}"));
-                }
-            }
+            self.sc.finish_search(query, result);
         }
     }
 
@@ -365,7 +378,7 @@ impl Controller {
                         // занимает `self.engine` только для чтения, и метод на всём `&mut self`
                         // Rust не пропускает (borrow checker, проверка заимствований).
                         // Обращение к отдельному полю `self.history` ему не мешает.
-                        push_history(&mut self.history, track);
+                        self.history.push(track);
                     }
                 }
                 PlaybackEvent::ModeChanged { shuffle, repeat } => {
@@ -443,6 +456,20 @@ impl Controller {
         }
     }
 
+    /// Что сейчас в кэше онлайн-треков (для экрана «Хранилище и кеш»). `None`, если звукового движка нет.
+    pub fn cache_info(&self) -> Option<CacheInfo> {
+        let engine = self.engine.as_ref()?;
+        Some(CacheInfo { dir: engine.cache_dir().to_path_buf(), stats: engine.cache_stats(), limit: engine.cache_limit() })
+    }
+
+    /// Очистить кэш онлайн-треков. Играющий и готовящийся следующий трек остаются; движок делает это
+    /// в своём потоке, поэтому новый размер видно через `cache_info` со следующего кадра.
+    pub fn cache_clear(&self) {
+        if let Some(engine) = &self.engine {
+            engine.cache_clear();
+        }
+    }
+
     /// Передать движку настройки воспроизведения (нормализация громкости). Можно звать на ходу.
     pub fn set_playback_settings(&self, settings: PlaybackSettings) {
         if let Some(engine) = &self.engine {
@@ -458,10 +485,10 @@ impl Controller {
         }
     }
 
-    pub fn cycle_repeat(&mut self) {
+    /// Следующий режим повтора выбирает движок; новое значение приходит событием `ModeChanged` в `tick`.
+    pub fn cycle_repeat(&self) {
         if let Some(engine) = &self.engine {
             engine.cycle_repeat();
-            self.queue.repeat = self.queue.repeat.cycle();
         }
     }
 
@@ -489,31 +516,43 @@ mod tests {
         Track { id: id.to_string(), provider, title: id.to_string(), artists: vec![], duration_secs: 1 }
     }
 
-    #[test]
-    fn history_puts_latest_first_without_duplicates() {
-        let mut h = Vec::new();
-        push_history(&mut h, track("a", ProviderKind::Local));
-        push_history(&mut h, track("b", ProviderKind::Local));
-        push_history(&mut h, track("a", ProviderKind::Local)); // сыгран снова: поднимается наверх
-        let ids: Vec<_> = h.iter().map(|t| t.id.as_str()).collect();
-        assert_eq!(ids, ["a", "b"]);
+    fn state_with_old_results() -> SoundCloudState {
+        let mut sc = SoundCloudState::default();
+        sc.begin_search("старый".into());
+        sc.finish_search("старый".into(), Ok(vec![track("1", ProviderKind::SoundCloud), track("2", ProviderKind::SoundCloud)]));
+        sc
     }
 
     #[test]
-    fn same_id_from_other_service_is_a_different_track() {
-        let mut h = Vec::new();
-        push_history(&mut h, track("1", ProviderKind::Local));
-        push_history(&mut h, track("1", ProviderKind::SoundCloud));
-        assert_eq!(h.len(), 2);
+    fn new_search_drops_old_results_at_once() {
+        let mut sc = state_with_old_results();
+        assert_eq!(sc.results.len(), 2);
+        sc.begin_search("новый".into());
+        assert!(sc.results.is_empty(), "старые результаты не должны жить под индикатором нового поиска");
+        assert!(sc.searching);
+        assert_eq!(sc.query, "новый");
+        assert!(sc.error.is_none());
+        assert!(sc.searched, "«искали» остаётся: пустое состояние «ничего не искали» не должно вернуться");
     }
 
     #[test]
-    fn history_is_capped() {
-        let mut h = Vec::new();
-        for i in 0..HISTORY_MAX + 20 {
-            push_history(&mut h, track(&i.to_string(), ProviderKind::Local));
-        }
-        assert_eq!(h.len(), HISTORY_MAX);
-        assert_eq!(h[0].id, (HISTORY_MAX + 19).to_string());
+    fn failed_search_leaves_only_the_error() {
+        let mut sc = state_with_old_results();
+        sc.begin_search("новый".into());
+        sc.finish_search("новый".into(), Err("нет сети".into()));
+        assert!(!sc.searching);
+        assert!(sc.results.is_empty());
+        assert_eq!(sc.error.as_deref(), Some("Поиск не удался: нет сети"));
+    }
+
+    #[test]
+    fn finished_search_shows_new_results() {
+        let mut sc = state_with_old_results();
+        sc.begin_search("новый".into());
+        sc.finish_search("новый".into(), Ok(vec![track("3", ProviderKind::SoundCloud)]));
+        assert!(!sc.searching);
+        assert_eq!(sc.results.len(), 1);
+        assert_eq!(sc.results[0].id, "3");
+        assert!(sc.error.is_none());
     }
 }

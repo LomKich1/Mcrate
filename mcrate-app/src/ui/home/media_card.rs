@@ -20,6 +20,9 @@ pub(super) struct MediaCard<'a> {
 
 /// Медиакарточка. В M3 — filled card; в Liquid Glass — обложка и подписи напрямую
 /// на контентной поверхности без отдельного M3-контейнера.
+///
+/// Длиннее 60 строк намеренно: линейная раскладка одной карточки (фон, обложка, слои наведения, подписи), каждый шаг
+/// опирается на геометрию предыдущего, а общих частей, которые стоило бы вынести, нет.
 pub(super) fn media_card(ui: &mut Ui, theme: &Theme, card: &MediaCard, is_current: bool, is_playing: bool, time: f64) -> Response {
     let p = &theme.palette;
     let glass = theme.glass_active();

@@ -48,8 +48,10 @@ struct CachedTrack {
 pub struct SoundCloudProvider {
     client: reqwest::Client,
     format: StreamFormat,
-    client_id: Mutex<Option<String>>,           // добытый client_id (None = ещё не добывали)
-    client_id_file: Option<PathBuf>,            // где хранить client_id между запусками (None = не хранить)
+    client_id: Mutex<Option<String>>, // добытый client_id (None = ещё не добывали)
+    client_id_file: Option<PathBuf>,  // где хранить client_id между запусками (None = не хранить)
+    /// Замок «client_id добывает кто-то один»: пока идёт долгая добыча, остальные ждут и берут готовый результат.
+    fetch_gate: tokio::sync::Mutex<()>,
     cache: Mutex<HashMap<String, CachedTrack>>, // id трека -> данные о потоках из последнего поиска
 }
 
@@ -59,7 +61,14 @@ impl SoundCloudProvider {
     }
 
     pub fn with_format(format: StreamFormat) -> ProviderResult<Self> {
-        Ok(Self { client: build_client()?, format, client_id: Mutex::new(None), client_id_file: None, cache: Mutex::new(HashMap::new()) })
+        Ok(Self {
+            client: build_client()?,
+            format,
+            client_id: Mutex::new(None),
+            client_id_file: None,
+            fetch_gate: tokio::sync::Mutex::new(()),
+            cache: Mutex::new(HashMap::new()),
+        })
     }
 
     /// Включает хранение client_id в файле. Добыча client_id с сайта долгая (качаются большие скрипты:
@@ -105,7 +114,22 @@ impl SoundCloudProvider {
 
     /// Возвращает client_id: из памяти, а если его ещё нет, добывает с сайта.
     async fn client_id(&self) -> ProviderResult<String> {
+        self.client_id_or_fetch(|| fetch_client_id(&self.client)).await
+    }
+
+    /// То же, но способ добычи с сайта (`fetch`) передаётся снаружи: так проверяется, что при одновременных
+    /// запросах (фоновая подготовка при запуске и первый поиск) он вызывается один раз.
+    async fn client_id_or_fetch<F, Fut>(&self, fetch: F) -> ProviderResult<String>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ProviderResult<String>>,
+    {
         // lock() берёт замок, unwrap() = «если замок сломан, падаем». Держим его только на миг, без .await внутри.
+        if let Some(id) = self.client_id.lock().unwrap().clone() {
+            return Ok(id);
+        }
+        // Добывать с сайта должен кто-то один. Остальные ждут здесь, а потом находят готовый client_id в памяти.
+        let _gate = self.fetch_gate.lock().await;
         if let Some(id) = self.client_id.lock().unwrap().clone() {
             return Ok(id);
         }
@@ -114,7 +138,7 @@ impl SoundCloudProvider {
             *self.client_id.lock().unwrap() = Some(id.clone());
             return Ok(id);
         }
-        let id = fetch_client_id(&self.client).await?;
+        let id = fetch().await?;
         self.save_client_id(&id);
         *self.client_id.lock().unwrap() = Some(id.clone());
         Ok(id)
@@ -440,5 +464,20 @@ mod tests {
         let id = "aBcD1234eFgH5678iJkL9012mNoP3456";
         assert_eq!(find_client_id(&format!("x={{client_id:\"{id}\",a:1}}")), Some(id.to_string()));
         assert_eq!(find_client_id("client_id:\"tooShort\""), None);
+    }
+
+    #[tokio::test]
+    async fn concurrent_client_id_requests_fetch_only_once() {
+        let provider = SoundCloudProvider::new().unwrap();
+        let fetches = std::sync::atomic::AtomicUsize::new(0);
+        let slow_fetch = || async {
+            fetches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::task::yield_now().await; // «долгая» добыча: второй запрос успевает прийти, пока она идёт
+            Ok("a".repeat(32))
+        };
+        let (first, second) = tokio::join!(provider.client_id_or_fetch(slow_fetch), provider.client_id_or_fetch(slow_fetch));
+        assert_eq!(first.unwrap(), "a".repeat(32));
+        assert_eq!(second.unwrap(), "a".repeat(32));
+        assert_eq!(fetches.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

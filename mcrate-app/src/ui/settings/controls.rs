@@ -9,10 +9,12 @@
 //!
 //! Всё рисуется самим кодом по ролям палитры, поэтому подстраивается под любую из 12 тем.
 
+use std::sync::Arc;
+
 use egui::epaint::Mesh;
 use egui::{
-    Align2, Color32, CursorIcon, FontFamily, FontId, Frame, Id, Margin, Painter, Pos2, Rect, Response, RichText, Sense, Shape, Stroke,
-    StrokeKind, Ui, Vec2, pos2, vec2,
+    Align2, Color32, CursorIcon, FontFamily, FontId, Frame, Galley, Id, Margin, Painter, Pos2, Rect, Response, RichText, Sense, Shape,
+    Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
 };
 use egui_material_icons::MaterialIcon;
 use egui_material_icons::icons as mi;
@@ -77,6 +79,8 @@ pub(crate) enum Trailing<'a> {
     Value(String),
     /// Только значение справа, без шеврона (строка-сведение).
     Label(String),
+    /// Строка-действие: справа ничего нет, строка нажимается (например, «Очистить кэш»).
+    Action,
     /// Переключатель. Нажатие на всю строку тоже переключает.
     Switch(&'a mut bool),
     /// Ряд чипов под названием (строка сама не нажимается, нажимаются чипы).
@@ -183,12 +187,42 @@ pub(crate) fn hint_text(ui: &mut Ui, theme: &Theme, text: &str) {
     });
 }
 
+/// Размеры строки, посчитанные заранее: подписи раскладываются до выделения места, от их высоты зависит высота строки.
+struct RowMeasure {
+    /// Отступ текста от левого края строки (с иконкой больше).
+    text_off: f32,
+    title_galley: Option<Arc<Galley>>,
+    sub_galley: Option<Arc<Galley>>,
+    title_h: f32,
+    sub_h: f32,
+    /// Положение каждого чипа (x, y, ширина) для рядов чипов, иначе пусто.
+    chip_slots: Vec<(f32, f32, f32)>,
+    /// Где начинается ряд чипов, считая от верха строки.
+    chips_top_rel: f32,
+    row_h: f32,
+    is_choice: bool,
+}
+
 /// Одна строка блока. Возвращает отклик, признак «нажали на действие» (для переключателя и чипов это
 /// `false`: они уже изменили своё значение внутри) и признак «строка нажимаемая» (для подсветки).
 fn row_ui(ui: &mut Ui, theme: &Theme, group_id: &str, index: usize, mut row: Row<'_>) -> (Response, bool, bool) {
-    let p = &theme.palette;
     let total_w = ui.available_width();
     let row_id = ui.scope_id().with(("settings_row", group_id, index));
+    let mut m = measure_row(ui, theme, &row, total_w);
+
+    let sense = if m.is_choice { Sense::hover() } else { Sense::click() };
+    let (rect, resp) = ui.allocate_exact_size(vec2(total_w, m.row_h), sense);
+    // Продавливание при нажатии, те же параметры, что у строки трека.
+    let shown = if m.is_choice { rect } else { squish(ui, resp.id, &resp, rect, 0.012, 0.06) };
+    paint_row_lead(ui.painter(), theme, shown, row.icon, &mut m);
+    let activated = paint_row_trailing(ui, theme, row_id, shown, &mut row, (&resp, &m));
+
+    if m.is_choice { (resp, false, false) } else { (resp.on_hover_cursor(CursorIcon::PointingHand), activated, true) }
+}
+
+/// Размеры строки `row` при ширине `total_w`: отступ текста, подписи, раскладка чипов и итоговая высота.
+fn measure_row(ui: &Ui, theme: &Theme, row: &Row<'_>, total_w: f32) -> RowMeasure {
+    let p = &theme.palette;
     let text_off = if row.icon.is_some() { 10.0 + ROW_ICON_TILE + 16.0 } else { 14.0 };
     let reserve = match row.trailing {
         Trailing::Switch(_) => 14.0 + 52.0 + 16.0,
@@ -222,17 +256,19 @@ fn row_ui(ui: &mut Ui, theme: &Theme, group_id: &str, index: usize, mut row: Row
         let block = title_h + if sub_h > 0.0 { 3.0 + sub_h } else { 0.0 };
         (block + 28.0).max(ROW_H)
     };
+    RowMeasure { text_off, title_galley, sub_galley, title_h, sub_h, chip_slots, chips_top_rel, row_h, is_choice }
+}
 
-    let sense = if is_choice { Sense::hover() } else { Sense::click() };
-    let (rect, resp) = ui.allocate_exact_size(vec2(total_w, row_h), sense);
-    // Продавливание при нажатии, те же параметры, что у строки трека.
-    let shown = if is_choice { rect } else { squish(ui, resp.id, &resp, rect, 0.012, 0.06) };
-    let painter = ui.painter();
+/// Левая часть строки: плитка с иконкой, название и пояснение. Подписи забираются из `m` (рисуются один раз).
+fn paint_row_lead(painter: &Painter, theme: &Theme, shown: Rect, icon: Option<MaterialIcon>, m: &mut RowMeasure) {
+    let p = &theme.palette;
     let cy = shown.center().y;
-    let text_x = shown.left() + text_off;
+    let text_x = shown.left() + m.text_off;
+    let (is_choice, title_h, sub_h) = (m.is_choice, m.title_h, m.sub_h);
+    let (title_galley, sub_galley) = (m.title_galley.take(), m.sub_galley.take());
 
     // Плитка с иконкой слева (у рядов чипов она на уровне названия).
-    if let Some(icon) = row.icon {
+    if let Some(icon) = icon {
         let icon_cy = if is_choice { shown.top() + 29.0 } else { cy };
         let tile = Rect::from_center_size(pos2(shown.left() + 10.0 + ROW_ICON_TILE * 0.5, icon_cy), vec2(ROW_ICON_TILE, ROW_ICON_TILE));
         painter.rect_filled(tile, theme.shape_radius(ShapeRole::Medium), p.surface_container_highest);
@@ -254,8 +290,15 @@ fn row_ui(ui: &mut Ui, theme: &Theme, group_id: &str, index: usize, mut row: Row
             painter.galley(pos2(text_x, top + title_h + 3.0), g, p.on_surface_variant);
         }
     }
+}
 
-    // Правая часть.
+/// Правая часть строки (шеврон, значение, переключатель, чипы). Возвращает «нажали на действие»:
+/// у переключателя `false`, он сам обработал нажатие.
+fn paint_row_trailing(ui: &Ui, theme: &Theme, row_id: Id, shown: Rect, row: &mut Row<'_>, (resp, m): (&Response, &RowMeasure)) -> bool {
+    let p = &theme.palette;
+    let painter = ui.painter();
+    let cy = shown.center().y;
+    let text_x = shown.left() + m.text_off;
     let right = shown.right() - 14.0;
     let mut activated = resp.clicked();
     match &mut row.trailing {
@@ -281,6 +324,7 @@ fn row_ui(ui: &mut Ui, theme: &Theme, group_id: &str, index: usize, mut row: Row
                 p.on_surface_variant,
             );
         }
+        Trailing::Action => {}
         Trailing::Switch(on) => {
             if activated {
                 **on = !**on;
@@ -290,10 +334,9 @@ fn row_ui(ui: &mut Ui, theme: &Theme, group_id: &str, index: usize, mut row: Row
             let (label, on_now) = (row.title.to_string(), **on);
             resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, true, on_now, label.clone()));
         }
-        Trailing::Choice(choice) => paint_choice(ui, theme, row_id, choice, &chip_slots, pos2(text_x, shown.top() + chips_top_rel)),
+        Trailing::Choice(choice) => paint_choice(ui, theme, row_id, choice, &m.chip_slots, pos2(text_x, shown.top() + m.chips_top_rel)),
     }
-
-    if is_choice { (resp, false, false) } else { (resp.on_hover_cursor(CursorIcon::PointingHand), activated, true) }
+    activated
 }
 
 /// Раскладка чипов ряда: положение каждого (x, y, ширина) относительно начала ряда и полная высота ряда чипов.
@@ -489,6 +532,19 @@ pub(crate) fn settings_tiles(ui: &mut Ui, theme: &Theme, tiles: &[Tile]) -> Opti
     clicked
 }
 
+/// Крупный бледный значок или текст у правого края плитки.
+fn paint_tile_glyph(painter: &Painter, theme: &Theme, rect: Rect, glyph: &Glyph) {
+    let p = &theme.palette;
+    let glyph_center = pos2(rect.right() - 64.0, rect.center().y);
+    let glyph_color = with_alpha(p.on_primary_container, 64);
+    match glyph {
+        Glyph::Symbol(icon) => paint_symbol(painter, *icon, glyph_center, 92.0, glyph_color),
+        Glyph::Text(text) => {
+            painter.text(glyph_center, Align2::CENTER_CENTER, *text, FontId::new(68.0, FontFamily::Proportional), glyph_color);
+        }
+    }
+}
+
 fn paint_tile(ui: &Ui, theme: &Theme, base: Rect, resp: &Response, tile: &Tile) {
     let p = &theme.palette;
     let rect = squish(ui, resp.id, resp, base, 0.02, 0.04);
@@ -503,15 +559,7 @@ fn paint_tile(ui: &Ui, theme: &Theme, base: Rect, resp: &Response, tile: &Tile) 
         with_alpha(p.primary_container, (k * 190.0).round() as u8)
     });
 
-    // Крупный бледный значок справа.
-    let glyph_center = pos2(rect.right() - 64.0, rect.center().y);
-    let glyph_color = with_alpha(p.on_primary_container, 64);
-    match &tile.glyph {
-        Glyph::Symbol(icon) => paint_symbol(painter, *icon, glyph_center, 92.0, glyph_color),
-        Glyph::Text(text) => {
-            painter.text(glyph_center, Align2::CENTER_CENTER, *text, FontId::new(68.0, FontFamily::Proportional), glyph_color);
-        }
-    }
+    paint_tile_glyph(painter, theme, rect, &tile.glyph);
 
     // Маленькая иконка слева сверху.
     let icon_tile = Rect::from_min_size(rect.min + vec2(16.0, 16.0), vec2(40.0, 40.0));

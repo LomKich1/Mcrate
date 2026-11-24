@@ -3,7 +3,7 @@
 use egui::{Align, Layout, Rect, Response, RichText, Sense, Shape, Ui, Vec2, layers::ShapeIdx, pos2, vec2};
 
 use super::anim::spring_step;
-use super::widgets::{ButtonKind, NAV_PRESS, NavItem, cover_tile, icon_button, nav_item, section_label, squish};
+use super::widgets::{IconButton, NAV_PRESS, NavItem, cover_tile, icon_button, nav_item, section_label, squish};
 use crate::app::{McrateApp, View};
 use crate::icons::Icon;
 use crate::theme::Theme;
@@ -32,19 +32,7 @@ impl McrateApp {
         // Храним весь ответ пункта (а не только прямоугольник): нужны id и нажатие для сжатия пилюли.
         let mut selected: Option<(usize, Response)> = None;
         let mut idx = 0usize;
-
-        for (view, icon, label) in [(View::Home, Icon::Home, "Главная"), (View::Collection, Icon::Library, "Библиотека")] {
-            // «Библиотека» подсвечена и на её подэкранах (в том числе «Ваши загрузки»).
-            let is_sel = if view == View::Collection { nav_view.is_collection() } else { nav_view == view };
-            let resp = nav_item(ui, theme, &NavItem { icon, label, selected: is_sel, enabled: true, trailing: None }, compact);
-            if is_sel {
-                selected = Some((idx, resp.clone()));
-            }
-            if resp.clicked() {
-                self.view = view;
-            }
-            idx += 1;
-        }
+        self.rail_main_items(ui, theme, compact, nav_view, (&mut selected, &mut idx));
 
         ui.add_space(10.0);
         if compact {
@@ -74,13 +62,39 @@ impl McrateApp {
     }
 }
 
+impl McrateApp {
+    /// Основные разделы рейки («Главная», «Библиотека»). Выбранный пункт кладёт в `selected` вместе с его номером,
+    /// `idx` продолжает нумерацию для следующих пунктов.
+    fn rail_main_items(
+        &mut self,
+        ui: &mut Ui,
+        theme: &Theme,
+        compact: bool,
+        nav_view: View,
+        (selected, idx): (&mut Option<(usize, Response)>, &mut usize),
+    ) {
+        for (view, icon, label) in [(View::Home, Icon::Home, "Главная"), (View::Collection, Icon::Library, "Библиотека")] {
+            // «Библиотека» подсвечена и на её подэкранах (в том числе «Ваши загрузки»).
+            let is_sel = if view == View::Collection { nav_view.is_collection() } else { nav_view == view };
+            let resp = nav_item(ui, theme, &NavItem { icon, label, selected: is_sel, enabled: true, trailing: None }, compact);
+            if is_sel {
+                *selected = Some((*idx, resp.clone()));
+            }
+            if resp.clicked() {
+                self.view = view;
+            }
+            *idx += 1;
+        }
+    }
+}
+
 /// Верх рейки: кнопка настроек (шестерёнка) стоит рядом со значком приложения. Возвращает true, если её нажали.
 fn rail_header(ui: &mut Ui, theme: &Theme, compact: bool, settings_active: bool) -> bool {
     let mut open_settings = false;
     if compact {
         // Узкая панель: шестерёнка, под ней значок приложения по центру.
         ui.vertical_centered(|ui| {
-            open_settings = icon_button(ui, theme, Icon::Settings, 40.0, ButtonKind::Plain, settings_active, "Настройки").clicked();
+            open_settings = icon_button(ui, theme, IconButton::new(Icon::Settings, 40.0, "Настройки").active(settings_active)).clicked();
             ui.add_space(4.0);
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
             cover_tile(ui, theme, rect, "mcrate", 13.0);
@@ -89,7 +103,7 @@ fn rail_header(ui: &mut Ui, theme: &Theme, compact: bool, settings_active: bool)
         let row_w = ui.available_width();
         ui.allocate_ui_with_layout(vec2(row_w, 44.0), Layout::left_to_right(Align::Center), |ui| {
             ui.add_space(2.0);
-            open_settings = icon_button(ui, theme, Icon::Settings, 40.0, ButtonKind::Plain, settings_active, "Настройки").clicked();
+            open_settings = icon_button(ui, theme, IconButton::new(Icon::Settings, 40.0, "Настройки").active(settings_active)).clicked();
             ui.add_space(2.0);
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::hover());
             cover_tile(ui, theme, rect, "mcrate", 12.0);
@@ -130,12 +144,7 @@ fn paint_selection_pill(ui: &mut Ui, theme: &Theme, compact: bool, pill_slot: Sh
         }
 
         let glass = theme.glass_active();
-        let compact_m3 = compact && !glass;
-        let indicator_size = if compact_m3 { Vec2::new(56.0, 32.0) } else { target.size() };
-        let indicator_left = target.center().x - indicator_size.x * 0.5;
-        let indicator_top = if compact_m3 { a.y + (target.height() - indicator_size.y) * 0.5 } else { a.y };
-        let rect = Rect::from_min_size(pos2(indicator_left, indicator_top), indicator_size);
-        let indicator_radius = if compact_m3 { 16.0 } else { 24.0 };
+        let (rect, indicator_radius) = indicator_shape(target, a.y, compact);
 
         if glass {
             // Liquid Glass: пилюля — настоящее стекло (эффекты мини-плеера, без заливки).
@@ -158,6 +167,24 @@ fn paint_selection_pill(ui: &mut Ui, theme: &Theme, compact: bool, pill_slot: Sh
     }
 }
 
+/// Диаметр круглой пилюли выбора в узкой рейке: как у кнопки настроек.
+const COMPACT_INDICATOR_DIAMETER: f32 = 40.0;
+/// Радиус скругления пилюли выбора в обычной рейке (пилюля повторяет форму пункта).
+const INDICATOR_RADIUS: f32 = 24.0;
+
+/// Прямоугольник и радиус пилюли выбора для пункта `target`, когда пружина довела её до высоты `y`.
+/// В узкой рейке это круг диаметром `COMPACT_INDICATOR_DIAMETER` по центру пункта (иконка остаётся в его центре),
+/// в обычной пилюля повторяет пункт целиком.
+fn indicator_shape(target: Rect, y: f32, compact: bool) -> (Rect, f32) {
+    if compact {
+        let size = Vec2::splat(COMPACT_INDICATOR_DIAMETER);
+        let top = y + (target.height() - size.y) * 0.5;
+        (Rect::from_min_size(pos2(target.center().x - size.x * 0.5, top), size), COMPACT_INDICATOR_DIAMETER * 0.5)
+    } else {
+        (Rect::from_min_size(pos2(target.left(), y), target.size()), INDICATOR_RADIUS)
+    }
+}
+
 /// Состояние пружинной анимации пилюли выбора.
 #[derive(Clone, Copy)]
 struct PillAnim {
@@ -165,4 +192,37 @@ struct PillAnim {
     y: f32,
     velocity: f32,
     initialized: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_indicator_is_a_circle_centered_on_the_item() {
+        let target = Rect::from_min_size(pos2(8.0, 100.0), vec2(56.0, 48.0));
+        let (rect, radius) = indicator_shape(target, 100.0, true);
+        assert_eq!(rect.size(), Vec2::splat(COMPACT_INDICATOR_DIAMETER));
+        assert_eq!(radius, COMPACT_INDICATOR_DIAMETER * 0.5, "радиус равен половине стороны, значит это круг");
+        assert!((rect.center().x - target.center().x).abs() < 1e-4);
+        assert!((rect.center().y - target.center().y).abs() < 1e-4);
+    }
+
+    #[test]
+    fn compact_indicator_follows_the_spring_position() {
+        let target = Rect::from_min_size(pos2(8.0, 100.0), vec2(56.0, 48.0));
+        // Пока пружина не дошла до цели (y выше), круг стоит выше на ту же величину.
+        let (rect, _) = indicator_shape(target, 70.0, true);
+        assert!((rect.center().y - (target.center().y - 30.0)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn regular_indicator_repeats_the_item() {
+        let target = Rect::from_min_size(pos2(16.0, 100.0), vec2(180.0, 48.0));
+        let (rect, radius) = indicator_shape(target, 90.0, false);
+        assert_eq!(rect.size(), target.size());
+        assert_eq!(rect.left(), target.left());
+        assert_eq!(rect.top(), 90.0);
+        assert_eq!(radius, INDICATOR_RADIUS);
+    }
 }

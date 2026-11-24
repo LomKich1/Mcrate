@@ -4,6 +4,7 @@
 
 use egui::scroll_area::{ScrollAreaOutput, ScrollSource};
 use egui::{Align, Event, Layout, Margin, MouseWheelUnit, Rect, ScrollArea, Ui, UiBuilder, pos2, vec2};
+use std::ops::Range;
 
 /// Размерный класс окна (в Material 3 это называется window size class).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -270,9 +271,92 @@ pub(crate) fn scroll_end_padding(ui: &mut Ui, bottom_inset: f32) {
     ui.add_space(16.0 + bottom_inset.max(0.0));
 }
 
+/// Какие строки однородного списка попадают в видимую полосу. `top`: верх первой строки, `pitch`: шаг строк
+/// (высота + зазор). Всегда есть хотя бы одна строка, если список не пуст: так зарезервированное место
+/// остаётся частью высоты страницы, и она не «плывёт» при прокрутке.
+fn visible_rows(top: f32, clip_top: f32, clip_bottom: f32, pitch: f32, count: usize) -> Range<usize> {
+    if count == 0 || pitch <= 0.0 {
+        return 0..0;
+    }
+    let first = (((clip_top - top) / pitch).floor().max(0.0) as usize).min(count - 1);
+    let last = (((clip_bottom - top) / pitch).ceil().max(0.0) as usize).clamp(first + 1, count);
+    first..last
+}
+
+/// Список из `count` строк высотой `row_h` внутри общей прокрутки, где над ним лежит другое содержимое
+/// (например, карточка коллекции, которая едет вместе со списком). `ScrollArea::show_rows` для этого не годится:
+/// у него своя область прокрутки. Здесь `draw` вызывается только для строк в видимой полосе; выше и ниже
+/// резервируется место, поэтому высота страницы и полоса прокрутки как у полного списка.
+/// Строки должны занимать ровно `row_h` по высоте.
+pub(crate) fn rows_in_view<R>(ui: &mut Ui, count: usize, row_h: f32, draw: impl FnOnce(&mut Ui, Range<usize>) -> R) -> R {
+    let spacing = ui.spacing().item_spacing.y;
+    let pitch = row_h + spacing;
+    let clip = ui.clip_rect();
+    let range = visible_rows(ui.cursor().top(), clip.top(), clip.bottom(), pitch, count);
+    ui.add_space(range.start as f32 * pitch);
+    let result = draw(ui, range.clone());
+    if range.end < count {
+        // Место под невидимыми строками ниже: явное выделение, оно точно входит в высоту содержимого прокрутки.
+        ui.allocate_space(vec2(1.0, (count - range.end) as f32 * pitch - spacing));
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visible_rows_cover_the_clip_and_never_go_empty() {
+        // Шаг 80, список начинается на y=100, окно показывает 300..700.
+        let r = visible_rows(100.0, 300.0, 700.0, 80.0, 50);
+        assert_eq!(r, 2..8);
+        // Окно выше списка: показываем начало.
+        assert_eq!(visible_rows(100.0, 0.0, 90.0, 80.0, 50), 0..1);
+        // Окно ниже конца списка: всё равно одна (последняя) строка.
+        assert_eq!(visible_rows(100.0, 9000.0, 9400.0, 80.0, 50), 49..50);
+        assert_eq!(visible_rows(100.0, 0.0, 100000.0, 80.0, 5), 0..5);
+        assert_eq!(visible_rows(100.0, 0.0, 400.0, 80.0, 0), 0..0);
+    }
+
+    #[test]
+    fn rows_in_view_keeps_page_height_at_any_scroll_offset() {
+        use egui::Sense;
+        const COUNT: usize = 200;
+        const ROW_H: f32 = 56.0;
+        let ctx = egui::Context::default();
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(500.0, 400.0));
+        let mut seen: Vec<(f32, usize)> = Vec::new();
+        for offset in [0.0, 137.0, 4000.0, 9000.0, 1.0e7] {
+            let (mut height, mut drawn) = (0.0, 0);
+            for _ in 0..3 {
+                let input = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
+                let output = ctx.run_ui(input, |ui| {
+                    let out =
+                        ScrollArea::vertical().id_salt("t").vertical_scroll_offset(offset).auto_shrink([false, false]).show(ui, |ui| {
+                            ui.allocate_space(vec2(100.0, 150.0)); // карточка над списком
+                            rows_in_view(ui, COUNT, ROW_H, |ui, range| {
+                                drawn = range.len();
+                                for _ in range {
+                                    ui.allocate_exact_size(vec2(100.0, ROW_H), Sense::hover());
+                                }
+                            });
+                        });
+                    height = out.content_size.y;
+                });
+                output.drop_without_applying_deltas();
+            }
+            seen.push((height, drawn));
+        }
+        let (h0, _) = seen[0];
+        let spacing = egui::Style::default().spacing.item_spacing.y;
+        let expected = 150.0 + spacing + COUNT as f32 * (ROW_H + spacing) - spacing;
+        for (h, drawn) in &seen {
+            assert!((h - h0).abs() < 0.5, "высота страницы меняется при прокрутке: {seen:?}");
+            assert!(*drawn >= 1 && *drawn < 20, "рисуется слишком много строк: {seen:?}");
+        }
+        assert!((h0 - expected).abs() < 1.5, "высота {h0}, ожидали около {expected}");
+    }
 
     #[test]
     fn breakpoints() {

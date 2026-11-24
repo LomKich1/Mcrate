@@ -24,3 +24,7 @@ LomKich1/sheduleappreload (ui/theme/AppTheme.kt) — проект того же 
 ## liquid-glass-generator
 - Автор: gdjohn4s (GitHub: imggion). Лицензия: MIT, © 2025 gdjohn4s — https://github.com/imggion/liquid-glass-generator
 - Алгоритм линзы (преломление купола и контура края, свечение края) портирован с GLSL на WGSL в `vendor/egui_glass/src/glass.wgsl`. Код сайта (Next.js) не используется.
+
+## Индикатор загрузки Material 3 Expressive
+- `mcrate-app/src/ui/widgets/loading_indicator/` портирован из `frust-material` (`loading_indicator.rs`, `shapes/*`, https://github.com/frust-rs/frust). Тот, в свою очередь, основан на Dart-пакете `material_new_shapes` (MIT, Agbama Gifted) и AndroidX `graphics-shapes` / Compose Material3 `LoadingIndicator.kt`, `MaterialShapes.kt` (Apache License 2.0, © The Android Open Source Project).
+- Перенесены алгоритмы `RoundedPolygon` и `Morph`, координаты фигур и параметры анимации. Лицензию самого `frust-material` проверьте и допишите сюда перед публикацией.

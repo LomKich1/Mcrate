@@ -39,20 +39,7 @@ fn search_bar_glass(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str) 
     let edit_id = ui.make_persistent_id(("mcrate_search_field", hint));
     let focused_before = ui.memory(|memory| memory.has_focus(edit_id));
     let hovered = outer.hovered();
-    let bg_alpha = if p.dark {
-        if hovered { 78 } else { 60 }
-    } else if hovered {
-        112
-    } else {
-        92
-    };
-    ui.painter().rect_filled(rect, 17.0, with_alpha(p.surface_container_high, bg_alpha));
-    if hovered {
-        ui.painter().line_segment(
-            [pos2(rect.left() + 18.0, rect.top() + 1.0), pos2(rect.right() - 18.0, rect.top() + 1.0)],
-            Stroke::new(0.8, with_alpha(Color32::WHITE, if p.dark { 32 } else { 70 })),
-        );
-    }
+    paint_glass_search_surface(ui, theme, rect, hovered);
 
     // Фиксированная геометрия: одинаковый вертикальный центр у лупы, текста и clear-кнопки.
     let response = ui
@@ -77,21 +64,7 @@ fn search_bar_glass(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str) 
             );
 
             if show_clear {
-                ui.add_space(8.0);
-                let (clear_base, clear_resp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
-                let clear_rect = squish(ui, clear_resp.id, &clear_resp, clear_base, 0.06, 0.06);
-                let color = if clear_resp.hovered() { p.on_surface } else { p.on_surface_variant };
-                if clear_resp.hovered() || clear_resp.is_pointer_button_down_on() {
-                    ui.painter().circle_filled(
-                        clear_rect.center(),
-                        12.0,
-                        with_alpha(p.on_surface, if clear_resp.is_pointer_button_down_on() { 34 } else { 20 }),
-                    );
-                }
-                icons::paint(theme, ui.painter(), Icon::Close, clear_rect.center(), 16.0, color);
-                if clear_resp.clicked() {
-                    value.clear();
-                }
+                glass_clear_button(ui, theme, value);
             }
             edit
         })
@@ -105,6 +78,45 @@ fn search_bar_glass(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str) 
     };
     ui.painter().rect_stroke(rect, 17.0, Stroke::new(if focused { 1.4 } else { 0.8 }, border), StrokeKind::Inside);
     response.accessible_name(hint)
+}
+
+/// Фон поля поиска в Liquid Glass: заливка и блик по верхней кромке при наведении.
+fn paint_glass_search_surface(ui: &Ui, theme: &Theme, rect: Rect, hovered: bool) {
+    let p = &theme.palette;
+    let bg_alpha = if p.dark {
+        if hovered { 78 } else { 60 }
+    } else if hovered {
+        112
+    } else {
+        92
+    };
+    ui.painter().rect_filled(rect, 17.0, with_alpha(p.surface_container_high, bg_alpha));
+    if hovered {
+        ui.painter().line_segment(
+            [pos2(rect.left() + 18.0, rect.top() + 1.0), pos2(rect.right() - 18.0, rect.top() + 1.0)],
+            Stroke::new(0.8, with_alpha(Color32::WHITE, if p.dark { 32 } else { 70 })),
+        );
+    }
+}
+
+/// Кнопка очистки справа в поле поиска Liquid Glass (круглая подсветка при наведении и нажатии).
+fn glass_clear_button(ui: &mut Ui, theme: &Theme, value: &mut String) {
+    let p = &theme.palette;
+    ui.add_space(8.0);
+    let (clear_base, clear_resp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
+    let clear_rect = squish(ui, clear_resp.id, &clear_resp, clear_base, 0.06, 0.06);
+    let color = if clear_resp.hovered() { p.on_surface } else { p.on_surface_variant };
+    if clear_resp.hovered() || clear_resp.is_pointer_button_down_on() {
+        ui.painter().circle_filled(
+            clear_rect.center(),
+            12.0,
+            with_alpha(p.on_surface, if clear_resp.is_pointer_button_down_on() { 34 } else { 20 }),
+        );
+    }
+    icons::paint(theme, ui.painter(), Icon::Close, clear_rect.center(), 16.0, color);
+    if clear_resp.clicked() {
+        value.clear();
+    }
 }
 
 /// Material 3: SearchBar собственной геометрии (поле 56 px, общая ось у лупы и редактора).
@@ -152,23 +164,36 @@ fn search_bar_m3(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str, max
         .accessible_name(hint);
 
     if show_clear {
-        let clear_rect = Rect::from_center_size(pos2(rect.right() - 32.0, rect.center().y), vec2(28.0, 28.0));
-        let clear_resp = ui.interact(clear_rect, ui.make_persistent_id(("mcrate_search_clear", hint)), Sense::click());
-        let clear_rect = squish(ui, clear_resp.id, &clear_resp, clear_rect, 0.06, 0.06);
-        let color = if clear_resp.hovered() { p.on_surface } else { p.on_surface_variant };
-        ripple::state_layer(ui, theme, ui.painter(), &clear_resp, clear_rect, 14.0);
-        let c = clear_rect.center();
-        let d = 4.0;
-        ui.painter().line_segment([pos2(c.x - d, c.y - d), pos2(c.x + d, c.y + d)], Stroke::new(1.6, color));
-        ui.painter().line_segment([pos2(c.x + d, c.y - d), pos2(c.x - d, c.y + d)], Stroke::new(1.6, color));
-        if clear_resp.clicked() {
-            value.clear();
-        }
-        clear_resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Очистить поиск"));
-        clear_resp.on_hover_text("Очистить поиск");
+        m3_clear_button(ui, theme, rect, hint, value);
     }
 
     let focused = focused_before || response.has_focus();
+    paint_m3_search_border(ui, theme, (rect, radius), (focused, hovered));
+    response
+}
+
+/// Кнопка очистки (крестик) справа в поле поиска Material 3. `rect`: всё поле поиска.
+fn m3_clear_button(ui: &mut Ui, theme: &Theme, rect: Rect, hint: &str, value: &mut String) {
+    let p = &theme.palette;
+    let clear_rect = Rect::from_center_size(pos2(rect.right() - 32.0, rect.center().y), vec2(28.0, 28.0));
+    let clear_resp = ui.interact(clear_rect, ui.make_persistent_id(("mcrate_search_clear", hint)), Sense::click());
+    let clear_rect = squish(ui, clear_resp.id, &clear_resp, clear_rect, 0.06, 0.06);
+    let color = if clear_resp.hovered() { p.on_surface } else { p.on_surface_variant };
+    ripple::state_layer(ui, theme, ui.painter(), &clear_resp, clear_rect, 14.0);
+    let c = clear_rect.center();
+    let d = 4.0;
+    ui.painter().line_segment([pos2(c.x - d, c.y - d), pos2(c.x + d, c.y + d)], Stroke::new(1.6, color));
+    ui.painter().line_segment([pos2(c.x + d, c.y - d), pos2(c.x - d, c.y + d)], Stroke::new(1.6, color));
+    if clear_resp.clicked() {
+        value.clear();
+    }
+    clear_resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "Очистить поиск"));
+    clear_resp.on_hover_text("Очистить поиск");
+}
+
+/// Обводка поля поиска Material 3: толще и ярче при фокусе, тонкая при наведении, без обводки в покое.
+fn paint_m3_search_border(ui: &Ui, theme: &Theme, (rect, radius): (Rect, u8), (focused, hovered): (bool, bool)) {
+    let p = &theme.palette;
     let border = if focused {
         p.primary
     } else if hovered {
@@ -191,5 +216,4 @@ fn search_bar_m3(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str, max
         ),
         StrokeKind::Inside,
     );
-    response
 }

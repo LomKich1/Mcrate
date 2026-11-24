@@ -143,6 +143,26 @@ pub fn surface<R>(theme: &Theme, ui: &mut Ui, role: Surface, add: impl FnOnce(&m
         return material3::surface(theme, ui, role, add);
     }
 
+    let style = glass_style(theme, role);
+    let margin = glass_margin(role);
+
+    // Не даём контейнеру стекла перезаписать палитру дочерних контролов приложения.
+    Glass::new(style)
+        .inner_margin(margin)
+        .preserve_theme(true)
+        .show(ui, |ui| {
+            match role {
+                Surface::Rail | Surface::Content => ui.set_min_size(ui.available_size()),
+                Surface::PlayerBar => ui.set_min_width(ui.available_width()),
+                Surface::Dialog => {}
+            }
+            add(ui)
+        })
+        .inner
+}
+
+/// Материал стеклянной поверхности `role`: пресет, цвет плёнки, размытие и преломление из настроек.
+fn glass_style(theme: &Theme, role: Surface) -> GlassStyle {
     let s = &theme.settings;
     let p = &theme.palette;
 
@@ -173,7 +193,7 @@ pub fn surface<R>(theme: &Theme, ui: &mut Ui, role: Surface, add: impl FnOnce(&m
         Surface::PlayerBar | Surface::Dialog => base.physical(1.50, 14.0, 1.2, 0.30, 0.38),
         Surface::Content => unreachable!("content layer is never glass"),
     };
-    let style = GlassStyle {
+    GlassStyle {
         blur: s.blur_radius * blur_scale,
         refraction: s.refraction * refraction_scale,
         corner_radius: match role {
@@ -185,26 +205,15 @@ pub fn surface<R>(theme: &Theme, ui: &mut Ui, role: Surface, add: impl FnOnce(&m
         // чистый блюр, при единице пользователь может сделать поверхность почти глухой.
         tint: with_alpha(tint_color, (s.glass_opacity.clamp(0.0, 1.0) * 255.0) as u8),
         ..base
-    };
+    }
+}
 
-    let margin = match role {
+/// Внутренние отступы стеклянной поверхности `role`.
+fn glass_margin(role: Surface) -> Margin {
+    match role {
         Surface::Rail => Margin::symmetric(12, 14),
         Surface::Content => Margin::same(20),
         Surface::PlayerBar => Margin::symmetric(24, 12),
         Surface::Dialog => Margin::same(24),
-    };
-
-    // Не даём контейнеру стекла перезаписать палитру дочерних контролов приложения.
-    Glass::new(style)
-        .inner_margin(margin)
-        .preserve_theme(true)
-        .show(ui, |ui| {
-            match role {
-                Surface::Rail | Surface::Content => ui.set_min_size(ui.available_size()),
-                Surface::PlayerBar => ui.set_min_width(ui.available_width()),
-                Surface::Dialog => {}
-            }
-            add(ui)
-        })
-        .inner
+    }
 }

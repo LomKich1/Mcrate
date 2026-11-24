@@ -12,6 +12,15 @@ use std::time::SystemTime;
 
 use mcrate_core::{ProviderKind, StreamSource, Track};
 
+/// Сводка по кэшу: сколько в нём файлов и сколько они занимают.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CacheStats {
+    /// Число файлов в папке (недокачанные `.part` тоже считаются).
+    pub files: usize,
+    /// Их общий размер в байтах.
+    pub bytes: u64,
+}
+
 /// Папка кэша и предел количества файлов. `Clone` нужен, чтобы отдать копию фоновой задаче.
 #[derive(Debug, Clone)]
 pub(crate) struct StreamCache {
@@ -41,7 +50,41 @@ impl StreamCache {
     /// Имя файла без расширения: `<сервис>-<id>`. Расширение до запроса ссылки неизвестно,
     /// поэтому кэш ищет файл по этой основе (`find`).
     pub(crate) fn stem(track: &Track) -> String {
-        format!("{}-{}", provider_name(track.provider), sanitize_id(&track.id))
+        Self::stem_of(track.provider, &track.id)
+    }
+
+    /// То же по сервису и id (когда самого `Track` под рукой нет, например у ключа предзагрузки).
+    pub(crate) fn stem_of(provider: ProviderKind, id: &str) -> String {
+        format!("{}-{}", provider_name(provider), sanitize_id(id))
+    }
+
+    /// Сколько файлов в кэше и сколько они занимают. Нет папки = кэш пуст.
+    pub(crate) fn stats(&self) -> CacheStats {
+        let mut stats = CacheStats::default();
+        let Ok(entries) = fs::read_dir(&self.dir) else { return stats };
+        for meta in entries.flatten().filter_map(|e| e.metadata().ok()).filter(|m| m.is_file()) {
+            stats.bytes += meta.len();
+            stats.files += 1;
+        }
+        stats
+    }
+
+    /// Удаляет скачанные треки, кроме тех, чьё имя без расширения (`stem`) есть в `keep`
+    /// (играющий и подготовленный следующий). Недокачанные `.part` не трогаем: их ещё пишет загрузка.
+    /// Ошибки удаления игнорируем (в Windows открытый плеером файл удалить нельзя). Возвращает, сколько удалено.
+    pub(crate) fn clear(&self, keep: &[String]) -> usize {
+        let Ok(entries) = fs::read_dir(&self.dir) else { return 0 };
+        let mut removed = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_file = entry.metadata().map(|m| m.is_file()).unwrap_or(false);
+            let is_part = path.extension().is_some_and(|e| e == "part");
+            let kept = path.file_stem().is_some_and(|s| keep.iter().any(|k| s.to_string_lossy() == k.as_str()));
+            if is_file && !is_part && !kept && fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+        removed
     }
 
     /// Ищет уже скачанный трек (с любым расширением). Найденный файл «освежаем»:
@@ -114,13 +157,7 @@ fn touch(path: &Path) {
 }
 
 fn provider_name(kind: ProviderKind) -> &'static str {
-    match kind {
-        ProviderKind::Yandex => "yandex",
-        ProviderKind::Vk => "vk",
-        ProviderKind::SoundCloud => "soundcloud",
-        ProviderKind::Spotify => "spotify",
-        ProviderKind::Local => "local",
-    }
+    kind.key() // то же имя, что в сохранённых данных ядра: имена файлов кэша не меняются
 }
 
 /// Делает id безопасным для имени файла: оставляет латиницу, цифры, `-` и `_`.
@@ -263,6 +300,31 @@ mod tests {
         assert_eq!(cache.find("soundcloud-7"), Some(path.clone()));
         let after = fs::metadata(&path).unwrap().modified().unwrap();
         assert!(after > before); // время изменения сдвинулось к «сейчас»
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stats_count_files_and_bytes() {
+        let dir = temp_dir("stats");
+        make_file(&dir, "a.m4a", 0);
+        make_file(&dir, "b.m4a.part", 0);
+        let cache = StreamCache::new(dir.clone(), 20);
+        assert_eq!(cache.stats(), CacheStats { files: 2, bytes: 2 });
+        assert_eq!(StreamCache::new(dir.join("нет такой"), 20).stats(), CacheStats::default());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clear_keeps_playing_and_unfinished_files() {
+        let dir = temp_dir("clear");
+        let playing = make_file(&dir, "soundcloud-1.m4a", 0);
+        let old = make_file(&dir, "soundcloud-2.m4a", 100);
+        let part = make_file(&dir, "soundcloud-3.m4a.part", 100);
+        let cache = StreamCache::new(dir.clone(), 20);
+        assert_eq!(cache.clear(&["soundcloud-1".to_string()]), 1);
+        assert!(playing.exists(), "играющий файл остался");
+        assert!(part.exists(), "недокачанный файл остался");
+        assert!(!old.exists(), "лишний файл удалён");
         let _ = fs::remove_dir_all(&dir);
     }
 }

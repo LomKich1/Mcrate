@@ -70,7 +70,7 @@ impl McrateApp {
             // Тот же список, что и в «Мои треки»: единый размер, цвет текущего трека и подсветка от курсора.
             // Номер в строке считается с нуля по порядку показа, а наружу уходит номер в библиотеке.
             let rows = items.iter().enumerate().map(|(row, (_, track))| (row, *track));
-            track_list(ui, theme, rows, |track| current_id == Some(track.id.as_str()), playing, "glide_home_quick")
+            track_list(ui, theme, rows, |track| current_id == Some(track.id.as_str()), playing)
         });
         clicked_row.map(|row| items[row].0)
     }
@@ -99,7 +99,7 @@ impl McrateApp {
         let rows = self.ctl.library.iter().enumerate().take(CHART_COUNT);
         let current_id = self.ctl.now.as_ref().map(|t| t.id.as_str());
         let playing = self.ctl.is_playing();
-        let play_index = track_list(ui, theme, rows, |track| current_id == Some(track.id.as_str()), playing, "glide_home_tracks");
+        let play_index = track_list(ui, theme, rows, |track| current_id == Some(track.id.as_str()), playing);
         if let Some(i) = play_index {
             self.play_library_from(i);
         }

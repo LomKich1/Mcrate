@@ -11,7 +11,7 @@ use egui::{Align, CursorIcon, Layout, Pos2, Rect, RichText, ScrollArea, Sense, S
 use super::anim::spring_step;
 use super::format::artists_text;
 use super::layout::cover_side;
-use super::widgets::{ButtonKind, cover_tile, icon_button};
+use super::widgets::{ButtonKind, IconButton, cover_tile, icon_button};
 use crate::app::{McrateApp, View};
 use crate::controller::provider_label;
 use crate::icons::Icon;
@@ -275,11 +275,8 @@ impl McrateApp {
         icon_button(
             &mut toggle_ui,
             theme,
-            Icon::Note,
-            TOGGLE_SIZE,
-            ButtonKind::Tonal,
-            false,
-            if lyrics_open { "Скрыть текст трека" } else { "Показать текст трека" },
+            IconButton::new(Icon::Note, TOGGLE_SIZE, if lyrics_open { "Скрыть текст трека" } else { "Показать текст трека" })
+                .kind(ButtonKind::Tonal),
         )
         .clicked()
     }

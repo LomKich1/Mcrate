@@ -4,7 +4,10 @@
 use async_trait::async_trait; // макрос, который разрешает async fn в трейте
 use std::path::PathBuf;
 use thiserror::Error; // макрос для удобного описания ошибок // PathBuf = путь к файлу (владеющий, как String для текста)
-pub mod secrets; // подключает файл secrets.rs как часть крейта
+pub mod history; // история прослушивания на диске
+pub mod paths;
+pub mod secrets; // подключает файл secrets.rs как часть крейта // где лежат файлы приложения
+pub use history::{HISTORY_MAX, History};
 
 /// Какой это сервис.
 /// `derive` автоматически даёт типу набор способностей:
@@ -17,6 +20,24 @@ pub enum ProviderKind {
     SoundCloud,
     Spotify,
     Local,
+}
+
+impl ProviderKind {
+    /// Короткое стабильное имя сервиса для имён файлов и сохранённых данных (не для показа пользователю).
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Yandex => "yandex",
+            Self::Vk => "vk",
+            Self::SoundCloud => "soundcloud",
+            Self::Spotify => "spotify",
+            Self::Local => "local",
+        }
+    }
+
+    /// Обратно: сервис по короткому имени (`None`, если такого нет).
+    pub fn from_key(key: &str) -> Option<Self> {
+        [Self::Yandex, Self::Vk, Self::SoundCloud, Self::Spotify, Self::Local].into_iter().find(|k| k.key() == key)
+    }
 }
 
 /// Один трек. `pub` значит «виден из других крейтов».

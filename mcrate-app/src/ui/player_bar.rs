@@ -5,7 +5,7 @@ use mcrate_audio::RepeatMode;
 
 use super::format::{artists_text, fmt_time};
 use super::layout::bar_columns;
-use super::widgets::{ButtonKind, cover_tile, elided, icon_button, loading_outline, slider_bar};
+use super::widgets::{ButtonKind, IconButton, cover_tile, elided, icon_button, loading_outline, slider_bar};
 use crate::app::{McrateApp, View};
 use crate::icons::Icon;
 use crate::theme::{Theme, with_alpha};
@@ -88,7 +88,12 @@ impl McrateApp {
 
     /// Центральная колонка: ряд кнопок сверху, строка перемотки снизу.
     fn pb_center(&mut self, ui: &mut Ui, theme: &Theme, rect: Rect) {
-        let p = &theme.palette;
+        self.pb_controls(ui, theme, rect);
+        self.pb_seek(ui, theme, rect);
+    }
+
+    /// Ряд кнопок: перемешать, назад, играть, вперёд, повтор.
+    fn pb_controls(&mut self, ui: &mut Ui, theme: &Theme, rect: Rect) {
         let cy_controls = rect.top() + CONTROLS_H / 2.0;
 
         // Диаметры кнопок слева направо: перемешать, назад, играть, вперёд, повтор.
@@ -103,23 +108,25 @@ impl McrateApp {
 
         let shuffle = self.ctl.queue.shuffle();
         if place_at(ui, centers[0], sizes[0], |ui| {
-            icon_button(ui, theme, Icon::Shuffle, sizes[0], ButtonKind::Plain, shuffle, "Перемешать")
+            icon_button(ui, theme, IconButton::new(Icon::Shuffle, sizes[0], "Перемешать").active(shuffle))
         })
         .clicked()
         {
             self.ctl.toggle_shuffle();
         }
-        if place_at(ui, centers[1], sizes[1], |ui| icon_button(ui, theme, Icon::Prev, sizes[1], ButtonKind::Plain, false, "Предыдущий"))
-            .clicked()
+        if place_at(ui, centers[1], sizes[1], |ui| icon_button(ui, theme, IconButton::new(Icon::Prev, sizes[1], "Предыдущий"))).clicked()
         {
             self.ctl.prev();
         }
         let (play_icon, tip) = if self.ctl.is_playing() { (Icon::Pause, "Пауза") } else { (Icon::Play, "Играть") };
-        if place_at(ui, centers[2], sizes[2], |ui| icon_button(ui, theme, play_icon, sizes[2], ButtonKind::Filled, false, tip)).clicked() {
+        if place_at(ui, centers[2], sizes[2], |ui| {
+            icon_button(ui, theme, IconButton::new(play_icon, sizes[2], tip).kind(ButtonKind::Filled))
+        })
+        .clicked()
+        {
             self.ctl.toggle_pause();
         }
-        if place_at(ui, centers[3], sizes[3], |ui| icon_button(ui, theme, Icon::Next, sizes[3], ButtonKind::Plain, false, "Следующий"))
-            .clicked()
+        if place_at(ui, centers[3], sizes[3], |ui| icon_button(ui, theme, IconButton::new(Icon::Next, sizes[3], "Следующий"))).clicked()
         {
             self.ctl.next();
         }
@@ -128,13 +135,16 @@ impl McrateApp {
             RepeatMode::All => (Icon::Repeat, true, "Повтор: все"),
             RepeatMode::One => (Icon::RepeatOne, true, "Повтор: один трек"),
         };
-        if place_at(ui, centers[4], sizes[4], |ui| icon_button(ui, theme, rep_icon, sizes[4], ButtonKind::Plain, rep_active, rep_tip))
+        if place_at(ui, centers[4], sizes[4], |ui| icon_button(ui, theme, IconButton::new(rep_icon, sizes[4], rep_tip).active(rep_active)))
             .clicked()
         {
             self.ctl.cycle_repeat();
         }
+    }
 
-        // Строка перемотки: время слева, полоса, длительность справа. Всё на одной линии cy.
+    /// Строка перемотки: время слева, полоса, длительность справа.
+    fn pb_seek(&mut self, ui: &mut Ui, theme: &Theme, rect: Rect) {
+        let p = &theme.palette;
         let dur = self.ctl.now.as_ref().map(|t| t.duration_secs as f32).unwrap_or(0.0);
         let pos = self.ctl.position().as_secs_f32().min(dur.max(0.0));
         let frac = self.seek_drag.unwrap_or(if dur > 0.0 { pos / dur } else { 0.0 });
@@ -223,7 +233,7 @@ impl McrateApp {
         }
         let muted = self.ctl.volume <= 0.001;
         let icon = if muted { Icon::VolumeMute } else { Icon::Volume };
-        if icon_button(ui, theme, icon, 36.0, ButtonKind::Plain, false, "Громкость").clicked() {
+        if icon_button(ui, theme, IconButton::new(icon, 36.0, "Громкость")).clicked() {
             if muted {
                 self.ctl.set_volume(self.volume_before_mute.max(0.2));
             } else {
@@ -255,7 +265,7 @@ mod tests {
             let mut x = column.center().x - row_w / 2.0;
             let cy = column.top() + CONTROLS_H / 2.0;
             for (d, icon) in sizes.iter().zip(icons) {
-                let r = place_at(ui, pos2(x + d / 2.0, cy), *d, |ui| icon_button(ui, &theme, icon, *d, ButtonKind::Plain, false, "t"));
+                let r = place_at(ui, pos2(x + d / 2.0, cy), *d, |ui| icon_button(ui, &theme, IconButton::new(icon, *d, "t")));
                 found.push(r.rect);
                 x += d + BTN_GAP;
             }

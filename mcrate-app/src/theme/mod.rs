@@ -182,6 +182,28 @@ impl Theme {
 
     /// Применить визуальный стиль к egui (цвета виджетов, шрифты, отступы).
     pub fn apply(&self, ctx: &Context) {
+        ctx.set_visuals(self.visuals());
+
+        // Типографика по шкале M3 (размеры в пикселях).
+        ctx.all_styles_mut(|style| {
+            use egui::{FontFamily::Proportional, FontId, TextStyle};
+            style.text_styles.insert(TextStyle::Heading, FontId::new(self.text_size(TextRole::HeadlineSmall), Proportional));
+            style.text_styles.insert(TextStyle::Body, FontId::new(self.text_size(TextRole::BodyMedium), Proportional));
+            style.text_styles.insert(TextStyle::Button, FontId::new(self.text_size(TextRole::LabelLarge), Proportional));
+            let small_size = if self.glass_active() { 12.0 } else { self.text_size(TextRole::BodySmall) };
+            style.text_styles.insert(TextStyle::Small, FontId::new(small_size, Proportional));
+            style.spacing.item_spacing = egui::vec2(10.0, 8.0);
+            style.spacing.button_padding = if self.glass_active() { egui::vec2(14.0, 10.0) } else { egui::vec2(16.0, 8.0) };
+            // Ближе к минимальной 44 pt зоне нажатия iOS, но без изменения геометрии
+            // кастомных плеерных контролов и без влияния на Material 3.
+            style.spacing.interact_size.y = if self.glass_active() { 44.0 } else { 40.0 };
+
+            style.spacing.scroll = Self::scroll_style();
+        });
+    }
+
+    /// Цвета и скругления egui-виджетов под текущую палитру и дизайн.
+    fn visuals(&self) -> egui::Visuals {
         let p = &self.palette;
         let mut v = if p.dark { egui::Visuals::dark() } else { egui::Visuals::light() };
 
@@ -239,45 +261,31 @@ impl Theme {
             }
         }
         w.open.corner_radius = pill;
+        v
+    }
 
-        ctx.set_visuals(v);
-
-        // Типографика по шкале M3 (размеры в пикселях).
-        ctx.all_styles_mut(|style| {
-            use egui::{FontFamily::Proportional, FontId, TextStyle};
-            style.text_styles.insert(TextStyle::Heading, FontId::new(self.text_size(TextRole::HeadlineSmall), Proportional));
-            style.text_styles.insert(TextStyle::Body, FontId::new(self.text_size(TextRole::BodyMedium), Proportional));
-            style.text_styles.insert(TextStyle::Button, FontId::new(self.text_size(TextRole::LabelLarge), Proportional));
-            let small_size = if self.glass_active() { 12.0 } else { self.text_size(TextRole::BodySmall) };
-            style.text_styles.insert(TextStyle::Small, FontId::new(small_size, Proportional));
-            style.spacing.item_spacing = egui::vec2(10.0, 8.0);
-            style.spacing.button_padding = if self.glass_active() { egui::vec2(14.0, 10.0) } else { egui::vec2(16.0, 8.0) };
-            // Ближе к минимальной 44 pt зоне нажатия iOS, но без изменения геометрии
-            // кастомных плеерных контролов и без влияния на Material 3.
-            style.spacing.interact_size.y = if self.glass_active() { 44.0 } else { 40.0 };
-
-            // Тонкий бегунок лежит в свободном правом поле и не перекрывает строки/карточки.
-            // Геометрия ScrollArea дополнительно отступает от верхнего и нижнего скруглений;
-            // отдельную тень для бегунка не рисуем, чтобы он оставался частью основной поверхности.
-            let mut scroll = egui::style::ScrollStyle::floating();
-            scroll.bar_width = 8.0;
-            scroll.floating_width = 3.0;
-            scroll.floating_allocated_width = 0.0;
-            scroll.handle_min_length = 30.0;
-            scroll.bar_inner_margin = 3.0;
-            scroll.bar_outer_margin = 0.0;
-            scroll.dormant_handle_opacity = 0.38;
-            scroll.active_handle_opacity = 0.72;
-            scroll.interact_handle_opacity = 1.0;
-            scroll.dormant_background_opacity = 0.0;
-            scroll.active_background_opacity = 0.12;
-            scroll.interact_background_opacity = 0.22;
-            // Встроенное «затухание» краёв ScrollArea (egui 0.37, по умолчанию 50% на 20 px) выключено:
-            // у горизонтальной полки оно затемняло правый край карточки до границы страницы, и дальше
-            // карточка выглядела светлее, как полоса-тень у края панели.
-            scroll.fade = egui::style::ScrollFadeStyle { strength: 0.0, size: 0.0 };
-            style.spacing.scroll = scroll;
-        });
+    /// Тонкий бегунок лежит в свободном правом поле и не перекрывает строки/карточки.
+    fn scroll_style() -> egui::style::ScrollStyle {
+        // Геометрия ScrollArea дополнительно отступает от верхнего и нижнего скруглений;
+        // отдельную тень для бегунка не рисуем, чтобы он оставался частью основной поверхности.
+        let mut scroll = egui::style::ScrollStyle::floating();
+        scroll.bar_width = 8.0;
+        scroll.floating_width = 3.0;
+        scroll.floating_allocated_width = 0.0;
+        scroll.handle_min_length = 30.0;
+        scroll.bar_inner_margin = 3.0;
+        scroll.bar_outer_margin = 0.0;
+        scroll.dormant_handle_opacity = 0.38;
+        scroll.active_handle_opacity = 0.72;
+        scroll.interact_handle_opacity = 1.0;
+        scroll.dormant_background_opacity = 0.0;
+        scroll.active_background_opacity = 0.12;
+        scroll.interact_background_opacity = 0.22;
+        // Встроенное «затухание» краёв ScrollArea (egui 0.37, по умолчанию 50% на 20 px) выключено:
+        // у горизонтальной полки оно затемняло правый край карточки до границы страницы, и дальше
+        // карточка выглядела светлее, как полоса-тень у края панели.
+        scroll.fade = egui::style::ScrollFadeStyle { strength: 0.0, size: 0.0 };
+        scroll
     }
 
     /// Фон окна: в M3 это цвет surface, в Liquid Glass это обои, сквозь которые видно стекло.

@@ -181,14 +181,32 @@ struct Layer {
     live: bool,
 }
 
+/// Входные данные одного шага анимации слоя (`Layer::step`).
+#[derive(Clone, Copy)]
+struct StepInput {
+    /// Время кадра в секундах.
+    dt: f32,
+    /// Курсор над элементом или фокус с клавиатуры.
+    active: bool,
+    /// Нажатие (или фокус с клавиатуры): слой плотнее и разрастается до краёв.
+    pressed: bool,
+    /// Позиция курсора; `None`: тянем кружок к центру элемента.
+    pointer: Option<Pos2>,
+    /// Текущий прямоугольник элемента.
+    rect: Rect,
+    /// Без плавности (`reduce_motion`): сразу в конечное состояние.
+    instant: bool,
+}
+
 impl Layer {
     fn new(key: u64, rect: Rect, center: Pos2) -> Self {
         Self { key, rect, center, grow: 0.0, fade: 0.0, press: 0.0, live: true }
     }
 
     /// Один шаг анимации. Возвращает true, пока что-то ещё движется (нужна перерисовка).
-    /// `pointer`: позиция курсора (None: тянем кружок к центру элемента, как при фокусе с клавиатуры).
-    fn step(&mut self, dt: f32, active: bool, pressed: bool, pointer: Option<Pos2>, rect: Rect, instant: bool) -> bool {
+    /// `input.pointer`: позиция курсора (None: тянем кружок к центру элемента, как при фокусе с клавиатуры).
+    fn step(&mut self, input: StepInput) -> bool {
+        let StepInput { dt, active, pressed, pointer, rect, instant } = input;
         // Экспоненциальное приближение к цели: быстрый старт и мягкое замедление, не зависит от частоты кадров.
         let k = |rate: f32| if instant { 1.0 } else { 1.0 - (-dt * rate).exp() };
         let mut moving = false;
@@ -288,7 +306,16 @@ fn pointer_pos(ui: &Ui) -> Option<Pos2> {
 /// Цвет и плотность единые для всего приложения: on_surface, 8% при наведении и 12% при нажатии.
 pub(crate) fn state_layer(ui: &Ui, theme: &Theme, painter: &Painter, resp: &Response, rect: Rect, corner: f32) {
     let tint = StateTint { color: theme.palette.on_surface, hover_alpha: STATE_LAYER_HOVER_ALPHA, press_alpha: STATE_LAYER_PRESS_ALPHA };
-    state_layer_colored(ui, theme, painter, resp, rect, corner, tint);
+    state_layer_colored(ui, theme, painter, resp, LayerArea { rect, corner }, tint);
+}
+
+/// Где рисуется слой состояния: прямоугольник элемента и радиус его углов.
+#[derive(Clone, Copy)]
+pub(crate) struct LayerArea {
+    /// Фактический (уже сжатый `squish`) прямоугольник элемента.
+    pub(crate) rect: Rect,
+    /// Радиус углов (для круглой кнопки половина стороны).
+    pub(crate) corner: f32,
 }
 
 /// Цвет слоя состояния и его плотность (0..255) при наведении и нажатии.
@@ -301,7 +328,8 @@ pub(crate) struct StateTint {
 
 /// Вариант слоя состояния с заданным цветом. Нужен для элементов на инверсных поверхностях
 /// (например, кнопка закрытия M3 snackbar), где on_surface не обеспечивает нужный контраст.
-pub(crate) fn state_layer_colored(ui: &Ui, theme: &Theme, painter: &Painter, resp: &Response, rect: Rect, corner: f32, tint: StateTint) {
+pub(crate) fn state_layer_colored(ui: &Ui, theme: &Theme, painter: &Painter, resp: &Response, area: LayerArea, tint: StateTint) {
+    let LayerArea { rect, corner } = area;
     let id: Id = resp.id.with("m3_ripple");
     let pressed = resp.is_pointer_button_down_on();
     let hovered = resp.hovered() || pressed;
@@ -319,7 +347,7 @@ pub(crate) fn state_layer_colored(ui: &Ui, theme: &Theme, painter: &Painter, res
     let reduce = theme.settings.reduce_motion;
     // Фокус с клавиатуры: плотность как при нажатии (M3: focus = 12%) и сразу весь элемент.
     let dense = pressed || focus_only;
-    let moving = l.step(dt, active, dense, pointer, rect, reduce);
+    let moving = l.step(StepInput { dt, active, pressed: dense, pointer, rect, instant: reduce });
     if l.live
         && let Some(shape) = l.shape(corner, tint.color, tint.hover_alpha, tint.press_alpha, false)
     {
@@ -366,6 +394,55 @@ impl Default for GlideRipple {
     }
 }
 
+impl GlideRipple {
+    /// Новая цель под курсором. После выхода курсора начинается новая сессия: подложка появляется сразу под
+    /// элементом, прежний кружок гаснет. Переход между соседними элементами меняет только цель пружины.
+    fn retarget(&mut self, key: u64, rect: Rect, pointer: Option<Pos2>) {
+        if !self.was_active || !self.cur.is_some_and(|l| l.live) {
+            // Новая сессия после выхода курсора: подложка появляется сразу под элементом.
+            // Переход между соседними элементами ниже меняет только цель пружины.
+            if let Some(old) = self.cur.take()
+                && old.live
+            {
+                self.fading.push(old);
+                if self.fading.len() > MAX_FADING {
+                    self.fading.remove(0);
+                }
+            }
+            self.cur = Some(Layer::new(key, rect, pointer.unwrap_or_else(|| rect.center())));
+            self.rect = rect;
+            self.rect_target = rect;
+            self.velocity_min = Vec2::ZERO;
+            self.velocity_max = Vec2::ZERO;
+            self.rect_initialized = true;
+        } else {
+            // Сохраняем текущее положение и скорость, меняем только конечный прямоугольник.
+            self.rect_target = rect;
+            if let Some(current) = self.cur.as_mut() {
+                current.key = key;
+            }
+        }
+    }
+
+    /// Пружинно анимирует обе границы прямоугольника независимо — подложка одновременно
+    /// скользит и меняет размер. При reduce_motion геометрия сразу ставится в конечную точку.
+    /// Возвращает `true`, пока что-то движется.
+    fn step_rect(&mut self, dt: f32, reduce: bool) -> bool {
+        let mut moving = false;
+        if reduce {
+            self.rect = self.rect_target;
+            self.velocity_min = Vec2::ZERO;
+            self.velocity_max = Vec2::ZERO;
+        } else {
+            moving |= spring_step(&mut self.rect.min.x, &mut self.velocity_min.x, self.rect_target.min.x, dt);
+            moving |= spring_step(&mut self.rect.min.y, &mut self.velocity_min.y, self.rect_target.min.y, dt);
+            moving |= spring_step(&mut self.rect.max.x, &mut self.velocity_max.x, self.rect_target.max.x, dt);
+            moving |= spring_step(&mut self.rect.max.y, &mut self.velocity_max.y, self.rect_target.max.y, dt);
+        }
+        moving
+    }
+}
+
 /// Подсветка одна на список (как `glide_end`): общий прямоугольник пружинно скользит между
 /// строками и карточками, а радиальный кружок остаётся привязан к курсору.
 /// После выхода из всей группы прежний кружок гаснет; фигуры кладутся в слот `glide_begin`.
@@ -383,60 +460,25 @@ pub(crate) fn glide_ripple(ui: &Ui, theme: &Theme, slot: ShapeIdx, salt: Id, tar
     let mut moving = false;
 
     if let Some((key, rect)) = target {
-        if !st.was_active || !st.cur.is_some_and(|l| l.live) {
-            // Новая сессия после выхода курсора: подложка появляется сразу под элементом.
-            // Переход между соседними элементами ниже меняет только цель пружины.
-            if let Some(old) = st.cur.take()
-                && old.live
-            {
-                st.fading.push(old);
-                if st.fading.len() > MAX_FADING {
-                    st.fading.remove(0);
-                }
-            }
-            st.cur = Some(Layer::new(key, rect, pointer.unwrap_or_else(|| rect.center())));
-            st.rect = rect;
-            st.rect_target = rect;
-            st.velocity_min = Vec2::ZERO;
-            st.velocity_max = Vec2::ZERO;
-            st.rect_initialized = true;
-        } else {
-            // Сохраняем текущее положение и скорость, меняем только конечный прямоугольник.
-            st.rect_target = rect;
-            if let Some(current) = st.cur.as_mut() {
-                current.key = key;
-            }
-        }
+        st.retarget(key, rect, pointer);
     }
 
     let active = target.is_some();
     st.was_active = active;
-
-    // Пружинно анимируем обе границы прямоугольника независимо — подложка одновременно
-    // скользит и меняет размер. При reduce_motion геометрия сразу ставится в конечную точку.
     if st.rect_initialized && active {
-        if reduce {
-            st.rect = st.rect_target;
-            st.velocity_min = Vec2::ZERO;
-            st.velocity_max = Vec2::ZERO;
-        } else {
-            moving |= spring_step(&mut st.rect.min.x, &mut st.velocity_min.x, st.rect_target.min.x, dt);
-            moving |= spring_step(&mut st.rect.min.y, &mut st.velocity_min.y, st.rect_target.min.y, dt);
-            moving |= spring_step(&mut st.rect.max.x, &mut st.velocity_max.x, st.rect_target.max.x, dt);
-            moving |= spring_step(&mut st.rect.max.y, &mut st.velocity_max.y, st.rect_target.max.y, dt);
-        }
+        moving |= st.step_rect(dt, reduce);
     }
 
     if let Some(l) = st.cur.as_mut() {
         let rect = if st.rect_initialized { st.rect } else { target.map(|(_, r)| r).unwrap_or(l.rect) };
-        moving |= l.step(dt, active, pressed, pointer, rect, reduce);
+        moving |= l.step(StepInput { dt, active, pressed, pointer, rect, instant: reduce });
         if !l.live {
             st.cur = None;
         }
     }
     for l in st.fading.iter_mut() {
         let r = l.rect;
-        moving |= l.step(dt, false, false, None, r, reduce);
+        moving |= l.step(StepInput { dt, active: false, pressed: false, pointer: None, rect: r, instant: reduce });
     }
     st.fading.retain(|l| l.live);
 

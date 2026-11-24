@@ -1,26 +1,52 @@
 //! Строка списка треков.
+//!
+//! Подсветка строки под курсором неподвижна и у каждой строки своя: обложка затемняется, поверх неё показывается
+//! кнопка воспроизведения; когда курсор уходит, всё так же плавно гаснет. Плашки под строкой нет ни в Material 3, ни в
+//! Liquid Glass (по просьбе владельца): при наведении выделяется только обложка.
+//! Те же слои включаются при нажатии (касание на Android: наведения там нет) и при фокусе с клавиатуры.
 
 use super::cover::cover_tile;
 use super::glide::squish;
-use crate::icons;
+use crate::icons::{self, Icon};
 use crate::theme::{ShapeRole, TextRole, Theme, with_alpha};
 use crate::ui::format::{artists_text, fmt_time};
-use egui::{Align2, CursorIcon, FontId, Rect, Response, Sense, Ui, Vec2, pos2, vec2};
+use egui::{Align2, Color32, CursorIcon, FontId, Id, Rect, Response, Sense, Ui, Vec2, pos2, vec2};
 use mcrate_core::Track;
+
+/// За сколько секунд подсветка строки появляется и гаснет.
+const HOVER_FADE_SECS: f32 = 0.16;
+/// Плотность чёрной подложки на обложке (0..255): под значком эквалайзера играющего трека и под кнопкой воспроизведения.
+const COVER_SCRIM_ALPHA: u8 = 150;
+/// Размер кнопки воспроизведения на обложке, доля стороны обложки.
+const COVER_PLAY_RATIO: f32 = 0.5;
+
+/// Что нужно для отрисовки строки, кроме геометрии.
+#[derive(Clone, Copy)]
+struct RowState {
+    is_current: bool,
+    is_playing: bool,
+    /// Насколько строка «включена» (0..1), см. `row_hover`.
+    hover: f32,
+    /// Время кадра для анимации эквалайзера.
+    time: f64,
+}
+
+/// Что сейчас играет относительно строки: от этого зависят подсветка, эквалайзер и кнопка на обложке.
+#[derive(Clone, Copy)]
+pub(crate) struct RowPlayback {
+    /// Строка это текущий трек.
+    pub is_current: bool,
+    /// Текущий трек сейчас звучит (не пауза).
+    pub is_playing: bool,
+    /// Время кадра для анимации эквалайзера.
+    pub time: f64,
+}
 
 /// Строка списка треков. В Material 3 двухстрочный элемент занимает 72 px;
 /// Liquid Glass сохраняет исходные 56 px для совместимости с прежней геометрией.
 /// Индекс выводится отдельной колонкой: он нужен для порядка в библиотеке и списка «Мои треки».
-pub(crate) fn track_row(
-    ui: &mut Ui,
-    theme: &Theme,
-    index: usize,
-    track: &Track,
-    is_current: bool,
-    is_playing: bool,
-    time: f64,
-) -> Response {
-    let p = &theme.palette;
+pub(crate) fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track, playback: RowPlayback) -> Response {
+    let RowPlayback { is_current, is_playing, time } = playback;
     let row_height = theme.list_item_height(2);
     let row_width = ui.available_width();
     // На узкой панели убираем номер и уменьшаем обложку, чтобы название и длительность
@@ -37,12 +63,32 @@ pub(crate) fn track_row(
         return resp; // не в кадре: ничего не считаем и не рисуем
     }
     let id = ui.scope_id().with(("track_row", &track.id));
+    let hover = row_hover(ui, theme, id.with(index), &resp);
     // Продавливание: содержимое строки чуть сжимается при нажатии. В Material 3 фон текущего трека
     // и слой подсветки остаются исходного размера (`row_rect`), сжимается только содержимое.
     let row_rect = rect;
     let rect = squish(ui, id, &resp, rect, 0.015, 0.07);
-    let painter = ui.painter();
+    paint_row_background(ui, theme, (rect, row_rect), &resp, is_current);
 
+    let cover_left = if show_index { 34.0 } else { 16.0 };
+    if show_index {
+        paint_row_index(ui, theme, rect, index);
+    }
+    let cover = Rect::from_min_size(pos2(rect.left() + cover_left, rect.center().y - cover_size * 0.5), Vec2::splat(cover_size));
+    paint_row_cover(ui, theme, cover, track, &RowState { is_current, is_playing, hover, time });
+    paint_row_text(ui, theme, rect, cover.right(), track, (compact, is_current));
+
+    let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
+    let accessible_label = format!("{} — {}", track.title, artists_text(track));
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, is_current, accessible_label.clone()));
+    resp
+}
+
+/// Фон строки: заливка при нажатии в Liquid Glass и подложка текущего трека. `rect`: содержимое (сжатое при нажатии),
+/// `row_rect`: исходный размер строки (на нём лежит подложка текущего трека в Material 3).
+fn paint_row_background(ui: &Ui, theme: &Theme, (rect, row_rect): (Rect, Rect), resp: &Response, is_current: bool) {
+    let p = &theme.palette;
+    let painter = ui.painter();
     if theme.glass_active() && resp.is_pointer_button_down_on() && !is_current {
         let radius = theme.shape_radius(ShapeRole::Large) as f32;
         painter.rect_filled(rect, radius, with_alpha(p.on_surface, 20));
@@ -60,27 +106,43 @@ pub(crate) fn track_row(
             painter.rect_filled(row_rect, theme.shape_radius(ShapeRole::Large), p.secondary_container);
         }
     }
+}
 
-    let cover_left = if show_index { 34.0 } else { 16.0 };
-    if show_index {
-        painter.text(
-            pos2(rect.left() + 26.0, rect.center().y),
-            Align2::RIGHT_CENTER,
-            format!("{}", index + 1),
-            FontId::proportional(12.5),
-            p.on_surface_variant,
-        );
-    }
-    let cover = Rect::from_min_size(pos2(rect.left() + cover_left, rect.center().y - cover_size * 0.5), Vec2::splat(cover_size));
+/// Номер строки в левой колонке.
+fn paint_row_index(ui: &Ui, theme: &Theme, rect: Rect, index: usize) {
+    ui.painter().text(
+        pos2(rect.left() + 26.0, rect.center().y),
+        Align2::RIGHT_CENTER,
+        format!("{}", index + 1),
+        FontId::proportional(12.5),
+        theme.palette.on_surface_variant,
+    );
+}
+
+/// Обложка и слои поверх неё: у текущего трека затемнение с эквалайзером (при наведении он сменяется кнопкой
+/// воспроизведения), у остальных затемнение и кнопка только при наведении.
+fn paint_row_cover(ui: &mut Ui, theme: &Theme, cover: Rect, track: &Track, state: &RowState) {
+    let RowState { is_current, is_playing, hover, time } = *state;
     let cover_radius = if theme.glass_active() { 12.0 } else { theme.shape_radius(ShapeRole::Medium) as f32 };
     cover_tile(ui, theme, cover, &track.id, cover_radius);
     let painter = ui.painter();
     if is_current {
-        painter.rect_filled(cover, 12.0, egui::Color32::from_black_alpha(110));
-        icons::paint_equalizer(painter, cover.center(), 18.0, egui::Color32::WHITE, time, is_playing);
+        painter.rect_filled(cover, 12.0, Color32::from_black_alpha(COVER_SCRIM_ALPHA));
+        // При наведении эквалайзер плавно сменяется кнопкой воспроизведения (клик по строке запускает трек заново).
+        let bars = with_alpha(Color32::WHITE, (255.0 * (1.0 - hover)).round() as u8);
+        icons::paint_equalizer(painter, cover.center(), 18.0, bars, time, is_playing);
+        paint_play_icon(ui, theme, cover, hover);
+    } else {
+        paint_cover_play(ui, theme, cover, cover_radius, hover);
     }
+}
 
-    let text_left = cover.right() + if compact { 10.0 } else { 14.0 };
+/// Название, исполнитель и длительность. `cover_right`: правый край обложки, от него идёт текст.
+/// `compact`: узкая панель (меньше отступы); `is_current`: название цветом выбранного элемента.
+fn paint_row_text(ui: &Ui, theme: &Theme, rect: Rect, cover_right: f32, track: &Track, (compact, is_current): (bool, bool)) {
+    let p = &theme.palette;
+    let painter = ui.painter();
+    let text_left = cover_right + if compact { 10.0 } else { 14.0 };
     let dur_x = rect.right() - if compact { 12.0 } else { 16.0 };
     let duration_gap = if compact { 44.0 } else { 56.0 };
     let clip = Rect::from_min_max(pos2(text_left, rect.top()), pos2((dur_x - duration_gap).max(text_left), rect.bottom()));
@@ -111,9 +173,28 @@ pub(crate) fn track_row(
         FontId::proportional(time_size),
         p.on_surface_variant,
     );
+}
 
-    let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
-    let accessible_label = format!("{} — {}", track.title, artists_text(track));
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, is_current, accessible_label.clone()));
-    resp
+/// Насколько строка «включена» (0..1): курсор над ней, нажатие или фокус с клавиатуры. Значение плавно растёт и спадает.
+/// `id` включает номер строки: один трек может стоять в списке дважды (история), а состояние у каждой строки своё.
+fn row_hover(ui: &Ui, theme: &Theme, id: Id, resp: &Response) -> f32 {
+    let active = resp.hovered() || resp.is_pointer_button_down_on() || resp.has_focus();
+    let secs = if theme.settings.reduce_motion { 0.0 } else { HOVER_FADE_SECS };
+    ui.ctx().animate_bool_with_time(id.with("hover"), active, secs)
+}
+
+/// Затемнение обложки и кнопка воспроизведения поверх неё для обычной строки; появляются и гаснут плавно (`hover`: 0..1).
+fn paint_cover_play(ui: &Ui, theme: &Theme, cover: Rect, radius: f32, hover: f32) {
+    if hover <= 0.0 {
+        return;
+    }
+    let painter = ui.painter();
+    painter.rect_filled(cover, radius, Color32::from_black_alpha((COVER_SCRIM_ALPHA as f32 * hover).round() as u8));
+    paint_play_icon(ui, theme, cover, hover);
+}
+
+/// Белая кнопка воспроизведения по центру обложки; `hover`: 0..1, прозрачность.
+fn paint_play_icon(ui: &Ui, theme: &Theme, cover: Rect, hover: f32) {
+    let icon = with_alpha(Color32::WHITE, (255.0 * hover).round() as u8);
+    icons::paint(theme, ui.painter(), Icon::Play, cover.center(), cover.height() * COVER_PLAY_RATIO, icon);
 }

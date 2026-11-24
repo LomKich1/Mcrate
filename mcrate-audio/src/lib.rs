@@ -5,6 +5,7 @@ pub mod queue;
 pub use queue::{PlayQueue, RepeatMode}; // чтобы писать mcrate_audio::PlayQueue
 pub mod engine;
 pub use engine::{PlaybackEngine, PlaybackEvent, PlaybackState};
+pub use stream_cache::CacheStats;
 mod crossfade; // кроссфейд: кривые и ход фейда (внутренний)
 mod gain; // усиление нормализации на уровне источника: у каждого трека своё (внутренний)
 mod growing_file; // чтение файла, который ещё докачивается (внутренний)
@@ -275,18 +276,6 @@ impl AudioPlayer {
         self.ensure_not_crossfading()?;
         let idle = self.idle_deck();
         let total = self.install_file(idle, path)?;
-        idle.player.set_volume(self.active_deck().player.volume());
-        Ok(total)
-    }
-
-    /// То же для докачиваемого файла (см. `play_stream`).
-    pub fn preload_stream(&self, part: &Path, dest: &Path, progress: &DownloadProgress) -> Result<Option<Duration>, AudioError> {
-        self.ensure_not_crossfading()?;
-        if progress.is_finished() && dest.exists() {
-            return self.preload_file(dest);
-        }
-        let idle = self.idle_deck();
-        let total = self.install_stream(idle, part, dest, progress)?;
         idle.player.set_volume(self.active_deck().player.volume());
         Ok(total)
     }
@@ -975,35 +964,6 @@ mod stream_tests {
         assert!(player.preload_file(&dir.0.join("нет-такого.wav")).is_err());
         assert!(player.has_preloaded(), "прежняя предзагрузка осталась");
         assert!(!player.is_finished(), "активный трек не тронут");
-    }
-
-    #[test]
-    fn preloaded_stream_keeps_seeking_after_switch() {
-        let Some(player) = device() else { return };
-        let dir = TempDir::new("preload-stream");
-        let a = wav_file(&dir, "a.wav", 30);
-        let part = dir.0.join("p.m4a.part");
-        let dest = dir.0.join("p.m4a");
-        File::create(&part).unwrap();
-        let progress = DownloadProgress::new();
-        let writer = spawn_writer(part.clone(), FMP4.to_vec(), progress.clone(), 2000, 1);
-        assert!(matches!(progress.wait_for_bytes(4000, Duration::from_secs(5)), Available::Data(_)));
-
-        player.play_file(&a).unwrap();
-        player.pause();
-        player.preload_stream(&part, &dest, &progress).unwrap();
-        assert!(player.has_preloaded());
-        assert!(player.idle_deck().ctx().is_some(), "данные докачки лежат в предзагруженной деке");
-        assert!(player.switch_to_preloaded());
-        assert!(player.active_deck().ctx().is_some(), "и переехали вместе с ней");
-
-        // перемотка работает через пересборку по данным уже новой активной деки
-        writer.join().unwrap();
-        player.seek(Duration::from_secs(2)).unwrap();
-        let pos = player.position();
-        assert!(pos >= Duration::from_secs(2) && pos < Duration::from_secs(3), "{pos:?}");
-        assert!(player.is_paused());
-        player.stop();
     }
 
     #[test]

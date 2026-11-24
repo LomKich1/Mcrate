@@ -47,11 +47,17 @@ impl SplitPage {
     }
 }
 
+/// Встанут ли колонки рядом при такой ширине области. Заранее это нужно экранам, у которых от раскладки
+/// зависит шапка (она рисуется раньше самой страницы).
+pub(in crate::ui) fn split_is_wide(available_width: f32) -> bool {
+    available_width.min(PAGE_MAX_WIDTH) >= SPLIT_MIN_WIDTH
+}
+
 /// Страница в две колонки. `main_align`: выравнивание основного блока в широкой раскладке,
 /// `narrow_gap`: отступ между блоками в узкой. Внутри вызывают `page.side(..)`, затем `page.main(..)`.
 pub(in crate::ui) fn split_page(ui: &mut Ui, main_align: Align, narrow_gap: f32, body: impl FnOnce(&mut Ui, &SplitPage)) {
     centered_column(ui, PAGE_MAX_WIDTH, |ui| {
-        let wide = ui.available_width() >= SPLIT_MIN_WIDTH;
+        let wide = split_is_wide(ui.available_width());
         let page = SplitPage { wide, available_height: ui.available_height(), main_align, narrow_gap };
         if wide {
             ui.horizontal_top(|ui| body(ui, &page));

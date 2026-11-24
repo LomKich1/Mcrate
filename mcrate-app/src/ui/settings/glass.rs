@@ -1,5 +1,5 @@
 //! Настройки в Liquid Glass: главный список разделов и подэкраны «Оформление», «Окно», «О приложении».
-//! Здесь же общие для обеих тем блоки выбора оформления: `design_card`, `glass_options`, `theme_menu`.
+//! Здесь же общие для обеих тем блоки выбора оформления: `design_cards`, `glass_options`, `theme_menu`.
 
 use egui::collapsing_header::CollapsingState;
 use egui::{Color32, CornerRadius, CursorIcon, FontId, Margin, Rect, RichText, Sense, Stroke, Ui, Vec2, pos2, vec2};
@@ -68,14 +68,7 @@ impl McrateApp {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 bleed_clip(ui, self.bleed.below_header());
                 group_title(ui, theme, "Дизайн");
-                let w = ((ui.available_width() - 14.0) / 2.0).min(340.0);
-                ui.horizontal(|ui| {
-                    for (design, name) in [(Design::Material3, "Material 3"), (Design::LiquidGlass, "Liquid Glass")] {
-                        if design_card(ui, theme, design, name, self.settings.design == design, w).clicked() {
-                            self.settings.design = design;
-                        }
-                    }
-                });
+                design_cards(ui, theme, &mut self.settings.design);
 
                 ui.add_space(10.0);
                 if self.settings.design == Design::LiquidGlass {
@@ -94,26 +87,7 @@ impl McrateApp {
                 theme_menu(ui, theme, &mut self.settings);
                 if self.settings.theme == ThemePreset::Custom {
                     ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        let dark = self.settings.dark;
-                        let kind = |on: bool| {
-                            if on {
-                                ButtonKind::Filled
-                            } else if theme.glass_active() {
-                                ButtonKind::Tonal
-                            } else {
-                                ButtonKind::Outlined
-                            }
-                        };
-                        if pill_button(ui, theme, "Светлая", None, kind(!dark)).clicked() {
-                            self.settings.dark = false;
-                        }
-                        if pill_button(ui, theme, "Тёмная", None, kind(dark)).clicked() {
-                            self.settings.dark = true;
-                        }
-                        ui.label("Цвет:");
-                        ui.color_edit_button_srgb(&mut self.settings.accent);
-                    });
+                    custom_theme_row(ui, theme, &mut self.settings);
                 }
                 ui.add_space(4.0);
                 ui.label(
@@ -458,11 +432,73 @@ pub(super) fn group_title(ui: &mut Ui, theme: &Theme, text: &str) {
     ui.add_space(4.0);
 }
 
+/// Ряд «Светлая / Тёмная / Цвет» для темы «Свой цвет».
+fn custom_theme_row(ui: &mut Ui, theme: &Theme, settings: &mut GraphicsSettings) {
+    ui.horizontal(|ui| {
+        let dark = settings.dark;
+        let kind = |on: bool| {
+            if on {
+                ButtonKind::Filled
+            } else if theme.glass_active() {
+                ButtonKind::Tonal
+            } else {
+                ButtonKind::Outlined
+            }
+        };
+        if pill_button(ui, theme, "Светлая", None, kind(!dark)).clicked() {
+            settings.dark = false;
+        }
+        if pill_button(ui, theme, "Тёмная", None, kind(dark)).clicked() {
+            settings.dark = true;
+        }
+        ui.label("Цвет:");
+        ui.color_edit_button_srgb(&mut settings.accent);
+    });
+}
+
+/// Зазор между карточками выбора дизайна.
+const DESIGN_CARD_GAP: f32 = 14.0;
+/// Максимальная ширина одной карточки выбора дизайна.
+const DESIGN_CARD_MAX_WIDTH: f32 = 340.0;
+/// Высота карточки выбора дизайна.
+const DESIGN_CARD_HEIGHT: f32 = 150.0;
+
+/// Ряд из двух карточек выбора дизайна (Material 3 и Liquid Glass): нажатие меняет `*current`.
+pub(super) fn design_cards(ui: &mut Ui, theme: &Theme, current: &mut Design) {
+    let w = ((ui.available_width() - DESIGN_CARD_GAP) / 2.0).min(DESIGN_CARD_MAX_WIDTH);
+    ui.horizontal(|ui| {
+        for (design, name) in [(Design::Material3, "Material 3"), (Design::LiquidGlass, "Liquid Glass")] {
+            if design_card(ui, theme, design, name, *current == design, w).clicked() {
+                *current = design;
+            }
+        }
+    });
+}
+
 /// Карточка выбора дизайна с мини-превью.
-pub(super) fn design_card(ui: &mut Ui, theme: &Theme, design: Design, name: &str, selected: bool, width: f32) -> egui::Response {
+fn design_card(ui: &mut Ui, theme: &Theme, design: Design, name: &str, selected: bool, width: f32) -> egui::Response {
     let p = &theme.palette;
-    let (base_rect, resp) = ui.allocate_exact_size(vec2(width, 150.0), Sense::click());
+    let (base_rect, resp) = ui.allocate_exact_size(vec2(width, DESIGN_CARD_HEIGHT), Sense::click());
     let rect = squish(ui, resp.id, &resp, base_rect, 0.025, 0.045);
+    paint_design_card_frame(ui, theme, rect, &resp, selected);
+    let painter = ui.painter();
+
+    let pv = Rect::from_min_max(rect.min + vec2(12.0, 12.0), pos2(rect.right() - 12.0, rect.bottom() - 42.0));
+    match design {
+        Design::Material3 => paint_preview_m3(painter, theme, pv),
+        Design::LiquidGlass => paint_preview_glass(painter, theme, pv),
+    }
+
+    painter.text(pos2(rect.left() + 16.0, rect.bottom() - 20.0), egui::Align2::LEFT_CENTER, name, FontId::proportional(15.0), p.on_surface);
+    if selected {
+        painter.circle_filled(pos2(rect.right() - 22.0, rect.bottom() - 20.0), 6.0, p.primary);
+    }
+    resp.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// Фон и рамка карточки выбора дизайна: в Liquid Glass контур и подсветка наведения, в Material 3 заливка и слой состояния.
+fn paint_design_card_frame(ui: &Ui, theme: &Theme, rect: Rect, resp: &egui::Response, selected: bool) {
+    let p = &theme.palette;
     let painter = ui.painter();
     let shape = if theme.glass_active() { 18.0 } else { theme.shape_radius(ShapeRole::Large) as f32 };
     if theme.glass_active() {
@@ -480,75 +516,67 @@ pub(super) fn design_card(ui: &mut Ui, theme: &Theme, design: Design, name: &str
         if selected {
             painter.rect_stroke(rect, shape, egui::Stroke::new(2.5, p.primary), egui::StrokeKind::Inside);
         }
-        state_layer(ui, theme, painter, &resp, rect, shape);
+        state_layer(ui, theme, painter, resp, rect, shape);
     }
+}
 
-    let pv = Rect::from_min_max(rect.min + vec2(12.0, 12.0), pos2(rect.right() - 12.0, rect.bottom() - 42.0));
+/// Мини-превью окна в стиле Material 3: меню, панель и плеер на плотных поверхностях.
+fn paint_preview_m3(painter: &egui::Painter, theme: &Theme, pv: Rect) {
+    let p = &theme.palette;
+    let extra_small = theme.shape_radius(ShapeRole::ExtraSmall) as f32;
+    let small = theme.shape_radius(ShapeRole::Small) as f32;
+    let medium = theme.shape_radius(ShapeRole::Medium) as f32;
+    painter.rect_filled(pv, medium, p.surface);
+    painter.rect_filled(Rect::from_min_size(pv.min + vec2(8.0, 10.0), vec2(pv.width() * 0.22, 14.0)), extra_small, p.secondary_container);
+    let pane = Rect::from_min_max(pos2(pv.left() + pv.width() * 0.28, pv.top() + 8.0), pos2(pv.right() - 8.0, pv.bottom() - 26.0));
+    painter.rect_filled(pane, small, p.surface_container_low);
+    let bar = Rect::from_min_max(pos2(pv.left() + 10.0, pv.bottom() - 20.0), pos2(pv.right() - 10.0, pv.bottom() - 6.0));
+    painter.rect_filled(bar, extra_small, p.surface_container_highest);
+    painter.circle_filled(pos2(bar.center().x, bar.center().y), 5.0, p.primary);
+}
+
+/// Мини-превью окна в стиле Liquid Glass: цветные пятна «обоев» и три стеклянные панели с линзой поверх них.
+fn paint_preview_glass(painter: &egui::Painter, theme: &Theme, pv: Rect) {
+    let p = &theme.palette;
     let r = 12.0;
-    match design {
-        Design::Material3 => {
-            let extra_small = theme.shape_radius(ShapeRole::ExtraSmall) as f32;
-            let small = theme.shape_radius(ShapeRole::Small) as f32;
-            let medium = theme.shape_radius(ShapeRole::Medium) as f32;
-            painter.rect_filled(pv, medium, p.surface);
-            painter.rect_filled(
-                Rect::from_min_size(pv.min + vec2(8.0, 10.0), vec2(pv.width() * 0.22, 14.0)),
-                extra_small,
-                p.secondary_container,
-            );
-            let pane = Rect::from_min_max(pos2(pv.left() + pv.width() * 0.28, pv.top() + 8.0), pos2(pv.right() - 8.0, pv.bottom() - 26.0));
-            painter.rect_filled(pane, small, p.surface_container_low);
-            let bar = Rect::from_min_max(pos2(pv.left() + 10.0, pv.bottom() - 20.0), pos2(pv.right() - 10.0, pv.bottom() - 6.0));
-            painter.rect_filled(bar, extra_small, p.surface_container_highest);
-            painter.circle_filled(pos2(bar.center().x, bar.center().y), 5.0, p.primary);
-        }
-        Design::LiquidGlass => {
-            // Пятна «обоев»: (положение в долях превью, радиус, цвет).
-            let blobs = [
-                (pos2(0.10, 0.18), 40.0, p.primary),
-                (pos2(0.90, 0.28), 34.0, p.tertiary_container),
-                (pos2(0.55, 1.00), 40.0, p.secondary_container),
-            ];
-            // Рисует пятна; scale > 1 даёт «линзу»: те же пятна, но крупнее и мягче
-            // (так выглядит преломление и блюр, когда стекло лежит поверх картинки).
-            let draw_blobs = |pt: &egui::Painter, focus: egui::Pos2, scale: f32, soft: bool| {
-                for (f, radius, color) in blobs {
-                    let c = pv.min + vec2(pv.width() * f.x, pv.height() * f.y);
-                    let c = focus + (c - focus) * scale;
-                    if soft {
-                        // несколько слоёв с убывающей прозрачностью = размытый край
-                        for (k, a) in [(1.35_f32, 40_u8), (1.15, 70), (0.95, 110)] {
-                            pt.circle_filled(c, radius * scale * k, with_alpha(color, a));
-                        }
-                    } else {
-                        pt.circle_filled(c, radius, color);
-                    }
+    // Пятна «обоев»: (положение в долях превью, радиус, цвет).
+    let blobs = [
+        (pos2(0.10, 0.18), 40.0, p.primary),
+        (pos2(0.90, 0.28), 34.0, p.tertiary_container),
+        (pos2(0.55, 1.00), 40.0, p.secondary_container),
+    ];
+    // Рисует пятна; scale > 1 даёт «линзу»: те же пятна, но крупнее и мягче
+    // (так выглядит преломление и блюр, когда стекло лежит поверх картинки).
+    let draw_blobs = |pt: &egui::Painter, focus: egui::Pos2, scale: f32, soft: bool| {
+        for (f, radius, color) in blobs {
+            let c = pv.min + vec2(pv.width() * f.x, pv.height() * f.y);
+            let c = focus + (c - focus) * scale;
+            if soft {
+                // несколько слоёв с убывающей прозрачностью = размытый край
+                for (k, a) in [(1.35_f32, 40_u8), (1.15, 70), (0.95, 110)] {
+                    pt.circle_filled(c, radius * scale * k, with_alpha(color, a));
                 }
-            };
-            let clip = painter.with_clip_rect(pv);
-            painter.rect_filled(pv, r, p.surface_container_lowest);
-            draw_blobs(&clip, pv.center(), 1.0, false);
-
-            let glass = |rr: Rect, rad: f32| {
-                // Внутри панели: фон закрашен заново, поверх увеличенные мягкие пятна («линза»).
-                let lens = painter.with_clip_rect(rr.intersect(pv));
-                painter.rect_filled(rr, rad, p.surface_container_lowest);
-                draw_blobs(&lens, rr.center(), 1.3, true);
-                // Плёнка стекла и контур: светлее сверху-слева, темнее снизу-справа.
-                painter.rect_filled(rr, rad, Color32::from_white_alpha(if p.dark { 26 } else { 90 }));
-                painter.rect_stroke(rr, rad, egui::Stroke::new(1.0, Color32::from_white_alpha(70)), egui::StrokeKind::Inside);
-                let spec = Rect::from_min_size(rr.min + vec2(rad * 0.6, 2.0), vec2((rr.width() - rad * 1.2).max(4.0), 2.5));
-                painter.rect_filled(spec, 1.25, Color32::from_white_alpha(120)); // блик по верхней кромке
-            };
-            glass(Rect::from_min_size(pv.min + vec2(8.0, 8.0), vec2(pv.width() * 0.24, pv.height() - 38.0)), 9.0);
-            glass(Rect::from_min_max(pos2(pv.left() + pv.width() * 0.32, pv.top() + 8.0), pos2(pv.right() - 8.0, pv.bottom() - 32.0)), 9.0);
-            glass(Rect::from_min_max(pos2(pv.left() + 10.0, pv.bottom() - 24.0), pos2(pv.right() - 10.0, pv.bottom() - 8.0)), 8.0);
+            } else {
+                pt.circle_filled(c, radius, color);
+            }
         }
-    }
+    };
+    let clip = painter.with_clip_rect(pv);
+    painter.rect_filled(pv, r, p.surface_container_lowest);
+    draw_blobs(&clip, pv.center(), 1.0, false);
 
-    painter.text(pos2(rect.left() + 16.0, rect.bottom() - 20.0), egui::Align2::LEFT_CENTER, name, FontId::proportional(15.0), p.on_surface);
-    if selected {
-        painter.circle_filled(pos2(rect.right() - 22.0, rect.bottom() - 20.0), 6.0, p.primary);
-    }
-    resp.on_hover_cursor(CursorIcon::PointingHand)
+    let glass = |rr: Rect, rad: f32| {
+        // Внутри панели: фон закрашен заново, поверх увеличенные мягкие пятна («линза»).
+        let lens = painter.with_clip_rect(rr.intersect(pv));
+        painter.rect_filled(rr, rad, p.surface_container_lowest);
+        draw_blobs(&lens, rr.center(), 1.3, true);
+        // Плёнка стекла и контур: светлее сверху-слева, темнее снизу-справа.
+        painter.rect_filled(rr, rad, Color32::from_white_alpha(if p.dark { 26 } else { 90 }));
+        painter.rect_stroke(rr, rad, egui::Stroke::new(1.0, Color32::from_white_alpha(70)), egui::StrokeKind::Inside);
+        let spec = Rect::from_min_size(rr.min + vec2(rad * 0.6, 2.0), vec2((rr.width() - rad * 1.2).max(4.0), 2.5));
+        painter.rect_filled(spec, 1.25, Color32::from_white_alpha(120)); // блик по верхней кромке
+    };
+    glass(Rect::from_min_size(pv.min + vec2(8.0, 8.0), vec2(pv.width() * 0.24, pv.height() - 38.0)), 9.0);
+    glass(Rect::from_min_max(pos2(pv.left() + pv.width() * 0.32, pv.top() + 8.0), pos2(pv.right() - 8.0, pv.bottom() - 32.0)), 9.0);
+    glass(Rect::from_min_max(pos2(pv.left() + 10.0, pv.bottom() - 24.0), pos2(pv.right() - 10.0, pv.bottom() - 8.0)), 8.0);
 }

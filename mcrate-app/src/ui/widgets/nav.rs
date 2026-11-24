@@ -5,7 +5,7 @@ use crate::icons::{self, Icon};
 use crate::settings::Design;
 use crate::theme::{TextRole, Theme, with_alpha};
 use crate::ui::ripple;
-use egui::{Align2, Color32, CursorIcon, FontId, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
+use egui::{Align2, Color32, CursorIcon, FontId, Rect, Response, Sense, Stroke, StrokeKind, Ui, pos2, vec2};
 
 /// Интерполяция sRGBA для плавного изменения цвета текста навигации.
 fn mix_color(from: Color32, to: Color32, t: f32) -> Color32 {
@@ -38,16 +38,27 @@ pub(crate) struct NavItem<'a> {
 /// Пункт навигации (ширина = вся доступная, высота 48, форма «таблетка»).
 /// `compact`: только иконка по центру (узкая панель), подпись показывается во всплывающей подсказке.
 pub(crate) fn nav_item(ui: &mut Ui, theme: &Theme, item: &NavItem, compact: bool) -> Response {
-    let NavItem { icon, label, selected, enabled, trailing } = *item;
-    let p = &theme.palette;
+    let NavItem { label, selected, enabled, .. } = *item;
     let size = vec2(ui.available_width(), 48.0);
     let sense = if enabled { Sense::click() } else { Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     let id = resp.id;
     // Вдавливание строго равномерное (одинаково по ширине и высоте): разные коэффициенты давали ощущение наклона.
     let rect = if enabled { squish(ui, id, &resp, rect, NAV_PRESS, NAV_PRESS) } else { rect };
-    let painter = ui.painter();
+    paint_nav_highlight(ui, theme, &resp, rect, (enabled, selected));
+    let fg = nav_foreground(ui, theme, &resp, (enabled, selected));
+    paint_nav_content(ui, theme, item, (rect, size.x), fg, compact);
+    let resp = if compact { resp.on_hover_text(label) } else { resp };
+    let resp = if enabled { resp.on_hover_cursor(CursorIcon::PointingHand) } else { resp };
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, enabled, selected, label));
+    resp
+}
 
+/// Подсветка пункта: у Liquid Glass лёгкий hover-glow, у Material 3 слой состояния; плюс рамка при фокусе с клавиатуры.
+fn paint_nav_highlight(ui: &Ui, theme: &Theme, resp: &Response, rect: Rect, (enabled, selected): (bool, bool)) {
+    let p = &theme.palette;
+    let id = resp.id;
+    let painter = ui.painter();
     // Выбранную капсулу рисует rail.rs. Для остальных пунктов Liquid Glass добавляет
     // лишь лёгкий hover-glow, чтобы не наслаивать вторую стеклянную поверхность.
     if theme.glass_active() && enabled && !selected {
@@ -62,7 +73,7 @@ pub(crate) fn nav_item(ui: &mut Ui, theme: &Theme, item: &NavItem, compact: bool
     } else if enabled && !selected {
         // У выбранного пункта слой не рисуем: он уже подсвечен пилюлей (rail.rs).
         // M3: кружок от курсора при наведении, при нажатии разрастается до краёв пункта.
-        ripple::state_layer(ui, theme, painter, &resp, rect, 24.0);
+        ripple::state_layer(ui, theme, painter, resp, rect, 24.0);
     }
     if resp.has_focus() {
         painter.rect_stroke(
@@ -72,8 +83,12 @@ pub(crate) fn nav_item(ui: &mut Ui, theme: &Theme, item: &NavItem, compact: bool
             StrokeKind::Inside,
         );
     }
+}
 
-    let fg = if !enabled {
+/// Цвет иконки и текста пункта: у недоступного бледный, у выбранного и наведённого плавно переходит к основному.
+fn nav_foreground(ui: &Ui, theme: &Theme, resp: &Response, (enabled, selected): (bool, bool)) -> Color32 {
+    let p = &theme.palette;
+    if !enabled {
         with_alpha(p.on_surface_variant, 120)
     } else {
         // Как в CSS-примере: активный и наведённый пункты плавно переходят
@@ -84,16 +99,21 @@ pub(crate) fn nav_item(ui: &mut Ui, theme: &Theme, item: &NavItem, compact: bool
         };
         let emphasized = selected || resp.hovered();
         let emphasized_fg = if selected { selected_fg } else { p.on_surface };
-        let t = ui.ctx().animate_bool_with_time(id.with("emphasis"), emphasized, 0.3);
+        let t = ui.ctx().animate_bool_with_time(resp.id.with("emphasis"), emphasized, 0.3);
         mix_color(p.on_surface_variant, emphasized_fg, t)
-    };
+    }
+}
 
+/// Иконка, подпись и мелкая надпись справа. `size_x`: полная ширина пункта до вдавливания (от неё масштаб глифов).
+fn paint_nav_content(ui: &Ui, theme: &Theme, item: &NavItem, (rect, size_x): (Rect, f32), fg: Color32, compact: bool) {
+    let NavItem { icon, label, enabled, trailing, .. } = *item;
+    let painter = ui.painter();
     // Фон выбранного пункта рисует rail.rs: пилюля, которая плавно скользит между пунктами.
-    let glyph_scale = if enabled { (rect.width() / size.x).clamp(0.8, 1.0) } else { 1.0 };
+    let glyph_scale = if enabled { (rect.width() / size_x).clamp(0.8, 1.0) } else { 1.0 };
     if compact {
         icons::paint(theme, painter, icon, rect.center(), 24.0 * glyph_scale, fg);
     } else {
-        let icon_center = rect.center() + vec2((28.0 - size.x * 0.5) * glyph_scale, 0.0);
+        let icon_center = rect.center() + vec2((28.0 - size_x * 0.5) * glyph_scale, 0.0);
         icons::paint(theme, painter, icon, icon_center, 24.0 * glyph_scale, fg);
         let label_size = if theme.glass_active() { 15.0 } else { theme.text_size(TextRole::LabelLarge) };
         painter.text(
@@ -113,10 +133,6 @@ pub(crate) fn nav_item(ui: &mut Ui, theme: &Theme, item: &NavItem, compact: bool
             );
         }
     }
-    let resp = if compact { resp.on_hover_text(label) } else { resp };
-    let resp = if enabled { resp.on_hover_cursor(CursorIcon::PointingHand) } else { resp };
-    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, enabled, selected, label));
-    resp
 }
 
 /// Маленький заголовок группы (например «Сервисы»).

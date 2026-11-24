@@ -37,46 +37,13 @@ pub(super) struct ShelfSpec<'a> {
 /// Полка: заголовок с подписью, справа две круглые стрелки, под ними ряд карточек, который
 /// прокручивается стрелками (плавно), колесом при зажатом Shift или перетаскиванием.
 pub(super) fn shelf(ui: &mut Ui, theme: &Theme, bleed: Bleed, spec: &ShelfSpec, add_cards: impl FnOnce(&mut Ui)) {
-    let ShelfSpec { id, title, subtitle } = *spec;
-    let p = &theme.palette;
+    let id = spec.id;
     let sid = ui.scope_id().with(("shelf", id));
     let mut st: ShelfState = ui.ctx().data_mut(|d| d.get_temp(sid)).unwrap_or_default();
     let now = ui.input(|i| i.time);
 
-    // Шапка: текст слева, стрелки справа.
-    let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), 64.0), Sense::hover());
-    let text_rect = Rect::from_min_max(head.min, pos2((head.right() - 100.0).max(head.left() + 80.0), head.bottom()));
-    ui.scope_builder(UiBuilder::new().max_rect(text_rect), |ui| {
-        ui.add(egui::Label::new(RichText::new(title).size(22.0).strong()).truncate());
-        ui.add(egui::Label::new(RichText::new(subtitle).size(13.0).color(p.on_surface_variant)).truncate());
-    });
-    let arrows = Rect::from_min_max(pos2(head.right() - 92.0, head.top()), pos2(head.right(), head.bottom() - 8.0));
-    let mut step = 0.0_f32;
-    ui.scope_builder(UiBuilder::new().max_rect(arrows).layout(Layout::right_to_left(Align::Center)), |ui| {
-        // right_to_left: первой добавленная стрелка окажется правее.
-        if arrow_button(ui, theme, true, st.offset < st.max - 1.0).clicked() {
-            step = 1.0;
-        }
-        if arrow_button(ui, theme, false, st.offset > 1.0).clicked() {
-            step = -1.0;
-        }
-    });
-    if step != 0.0 {
-        let to = (st.offset + step * SHELF_STEP).clamp(0.0, st.max.max(0.0));
-        st.anim = Some((st.offset, to, now));
-    }
-
-    // Пока идёт анимация стрелки, сами задаём смещение (с замедлением к концу); иначе прокруткой управляет пользователь.
-    let mut forced = None;
-    if let Some((from, to, t0)) = st.anim {
-        let k = ((now - t0) / 0.28).clamp(0.0, 1.0) as f32;
-        forced = Some(from + (to - from) * (1.0 - (1.0 - k).powi(3)));
-        if k >= 1.0 {
-            st.anim = None;
-        } else {
-            ui.ctx().request_repaint();
-        }
-    }
+    shelf_header(ui, theme, spec, &mut st, now);
+    let forced = shelf_forced_offset(ui, &mut st, now);
 
     let mut area = ScrollArea::horizontal()
         .id_salt(id)
@@ -109,6 +76,48 @@ pub(super) fn shelf(ui: &mut Ui, theme: &Theme, bleed: Bleed, spec: &ShelfSpec, 
     st.offset = out.state.clamped_offset().x;
     st.max = (out.content_size.x - out.inner_rect.width()).max(0.0);
     ui.ctx().data_mut(|d| d.insert_temp(sid, st));
+}
+
+/// Шапка полки: текст слева, стрелки справа. Нажатая стрелка запускает анимацию прокрутки (`st.anim`).
+fn shelf_header(ui: &mut Ui, theme: &Theme, spec: &ShelfSpec, st: &mut ShelfState, now: f64) {
+    let ShelfSpec { title, subtitle, .. } = *spec;
+    let p = &theme.palette;
+    let (head, _) = ui.allocate_exact_size(vec2(ui.available_width(), 64.0), Sense::hover());
+    let text_rect = Rect::from_min_max(head.min, pos2((head.right() - 100.0).max(head.left() + 80.0), head.bottom()));
+    ui.scope_builder(UiBuilder::new().max_rect(text_rect), |ui| {
+        ui.add(egui::Label::new(RichText::new(title).size(22.0).strong()).truncate());
+        ui.add(egui::Label::new(RichText::new(subtitle).size(13.0).color(p.on_surface_variant)).truncate());
+    });
+    let arrows = Rect::from_min_max(pos2(head.right() - 92.0, head.top()), pos2(head.right(), head.bottom() - 8.0));
+    let mut step = 0.0_f32;
+    ui.scope_builder(UiBuilder::new().max_rect(arrows).layout(Layout::right_to_left(Align::Center)), |ui| {
+        // right_to_left: первой добавленная стрелка окажется правее.
+        if arrow_button(ui, theme, true, st.offset < st.max - 1.0).clicked() {
+            step = 1.0;
+        }
+        if arrow_button(ui, theme, false, st.offset > 1.0).clicked() {
+            step = -1.0;
+        }
+    });
+    if step != 0.0 {
+        let to = (st.offset + step * SHELF_STEP).clamp(0.0, st.max.max(0.0));
+        st.anim = Some((st.offset, to, now));
+    }
+}
+
+/// Пока идёт анимация стрелки, сами задаём смещение (с замедлением к концу); иначе прокруткой управляет пользователь.
+fn shelf_forced_offset(ui: &Ui, st: &mut ShelfState, now: f64) -> Option<f32> {
+    let mut forced = None;
+    if let Some((from, to, t0)) = st.anim {
+        let k = ((now - t0) / 0.28).clamp(0.0, 1.0) as f32;
+        forced = Some(from + (to - from) * (1.0 - (1.0 - k).powi(3)));
+        if k >= 1.0 {
+            st.anim = None;
+        } else {
+            ui.ctx().request_repaint();
+        }
+    }
+    forced
 }
 
 /// Круглая кнопка-стрелка полки. Если прокручивать некуда, она бледная и не нажимается.

@@ -140,23 +140,36 @@ impl WaveSim {
         }
         let dt = ((inp.now - self.t_prev) as f32).clamp(0.0, 0.05);
         if !self.started {
-            // Первый кадр: запоминаем исходное состояние, чтобы не пускать лишний импульс.
-            self.started = true;
-            self.t_prev = inp.now;
-            self.was_playing = inp.playing;
-            self.track_key = inp.track_id.map_or(0, key_of);
-            self.play = if inp.playing { 1.0 } else { 0.0 };
-            self.has_progress = inp.progress.is_some();
-            self.progress = inp.progress.unwrap_or(0.0);
+            self.start(inp);
             return;
         }
         self.t_prev = inp.now;
         if dt <= 0.0 {
             return;
         }
-        let (w, h) = (inp.size.x, inp.size.y);
+        self.step_playback(inp, dt);
+        self.step_track_change(inp, dt);
+        self.step_phase(dt);
+        self.step_progress(inp, dt);
+        self.step_spectrum(inp, dt);
+        self.step_pointer(inp, dt);
+        self.age(dt);
+    }
 
-        // 1. Воспроизведение: импульс от центра и плавный разгон/затухание.
+    /// Первый кадр: запоминаем исходное состояние, чтобы не пускать лишний импульс.
+    fn start(&mut self, inp: &WaveInput) {
+        self.started = true;
+        self.t_prev = inp.now;
+        self.was_playing = inp.playing;
+        self.track_key = inp.track_id.map_or(0, key_of);
+        self.play = if inp.playing { 1.0 } else { 0.0 };
+        self.has_progress = inp.progress.is_some();
+        self.progress = inp.progress.unwrap_or(0.0);
+    }
+
+    /// 1. Воспроизведение: импульс от центра и плавный разгон/затухание.
+    fn step_playback(&mut self, inp: &WaveInput, dt: f32) {
+        let (w, h) = (inp.size.x, inp.size.y);
         if inp.playing != self.was_playing {
             self.was_playing = inp.playing;
             if inp.playing {
@@ -169,8 +182,11 @@ impl WaveSim {
         let target = if inp.playing { 1.0 } else { 0.0 };
         let rate = if inp.playing { 2.0 } else { 1.1 }; // разгоняется быстрее, чем затихает
         self.play += (target - self.play) * smooth(dt, rate);
+    }
 
-        // 2. Смена трека: импульс слева и перелепка формы.
+    /// 2. Смена трека: импульс слева и перелепка формы.
+    fn step_track_change(&mut self, inp: &WaveInput, dt: f32) {
+        let h = inp.size.y;
         let key = inp.track_id.map_or(0, key_of);
         if key != self.track_key {
             self.track_key = key;
@@ -181,18 +197,24 @@ impl WaveSim {
             }
         }
         self.morph += (self.morph_target - self.morph) * smooth(dt, 1.6);
+    }
 
-        // 3. Фаза: скорость растёт от паузы к игре и от возбуждения.
+    /// 3. Фаза: скорость растёт от паузы к игре и от возбуждения.
+    fn step_phase(&mut self, dt: f32) {
         let speed = IDLE_SPEED + (PLAY_SPEED - IDLE_SPEED) * self.play + 0.9 * self.excite + 0.5 * self.energy;
         self.phase += (speed * dt) as f64;
+    }
 
-        // 4. Прогресс (сглажен, чтобы блик не прыгал при перемотке).
+    /// 4. Прогресс (сглажен, чтобы блик не прыгал при перемотке).
+    fn step_progress(&mut self, inp: &WaveInput, dt: f32) {
         self.has_progress = inp.progress.is_some();
         if let Some(p) = inp.progress {
             self.progress += (p - self.progress) * smooth(dt, 10.0);
         }
+    }
 
-        // 4б. Спектр: у каждой полосы быстрая атака и медленный спад (как у линии на экране «Сейчас играет»).
+    /// 4б. Спектр: у каждой полосы быстрая атака и медленный спад (как у линии на экране «Сейчас играет»).
+    fn step_spectrum(&mut self, inp: &WaveInput, dt: f32) {
         // Не играет: цель 0, уровни плавно гаснут (в паузе движок мог оставить последний кадр).
         let live = if inp.playing { inp.spectrum } else { None };
         if self.bands.len() != VISUALIZER_POINTS {
@@ -216,8 +238,10 @@ impl WaveSim {
         self.bass = bass_sum / BASS_BANDS as f32;
         // Сильный бас будоражит волну (потолок 0.5: чтобы постоянная громкая музыка не держала её в «шторме»).
         self.excite = self.excite.max((self.bass * 0.6).min(0.5));
+    }
 
-        // 5. Курсор.
+    /// 5. Курсор: плавное следование, скорость, наведение, нажатие и импульс клика.
+    fn step_pointer(&mut self, inp: &WaveInput, dt: f32) {
         match inp.pointer {
             Some(p) => {
                 if self.hover < 0.02 {
@@ -246,8 +270,10 @@ impl WaveSim {
             self.excite = self.excite.max(0.75);
         }
         self.was_pressed = inp.pressed;
+    }
 
-        // 6. Старение.
+    /// 6. Старение: затухание возбуждения и снятие отживших импульсов.
+    fn age(&mut self, dt: f32) {
         self.excite *= (-dt * 1.1).exp();
         for p in &mut self.pulses {
             p.age += dt;
@@ -416,8 +442,20 @@ struct Ring {
     power: f32,
 }
 
+/// Два цвета волны: ленты и точки идут от `base` к `accent` по мере подсветки.
+#[derive(Clone, Copy)]
+pub(crate) struct WaveColors {
+    pub base: Color32,
+    pub accent: Color32,
+}
+
 /// Рисует волну в `rect`. `step`: брать каждую `step`-ю точку (1 = все; в закадровом проходе стекла 3).
-pub(crate) fn paint(painter: &Painter, rect: Rect, sim: &WaveSim, table: &WaveTable, base: Color32, accent: Color32, step: usize) {
+///
+/// Длиннее 60 строк намеренно: это численный горячий цикл по тысячам точек за кадр, где точка зависит от десятка общих
+/// величин кадра (размах, подсветка, курсор, кольца, голова воспроизведения). Разрез потребовал бы структуры на кадр и
+/// вызова функции на каждую точку; порядок вычислений здесь влияет на вид, поэтому цикл не дробим.
+pub(crate) fn paint(painter: &Painter, rect: Rect, sim: &WaveSim, table: &WaveTable, colors: WaveColors, step: usize) {
+    let WaveColors { base, accent } = colors;
     let (w, h) = (rect.width(), rect.height());
     let cols = table.cols;
     // Размах: пауза спокойнее, игра и возбуждение выше. Верхняя граница держит ленты в холсте.
