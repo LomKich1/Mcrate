@@ -39,7 +39,7 @@ use crate::visualizer::{VisualizerFeed, VisualizerFrame};
 use crate::{AudioError, AudioPlayer, PlayQueue, RepeatMode};
 
 /// Сколько последних скачанных онлайн-треков хранить в кэше (остальные удаляются).
-const MAX_CACHED_TRACKS: usize = 20;
+const MAX_CACHED_TRACKS: usize = 200;
 
 /// Сколько байт должно быть скачано, чтобы начать играть, не дожидаясь конца: 128 КБ это
 /// около 6 с звука AAC 160 кбит/с (на интернете от ~25 КБ/с докачка успевает за воспроизведением).

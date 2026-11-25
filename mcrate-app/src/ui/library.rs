@@ -190,7 +190,6 @@ impl McrateApp {
         }
 
         let mut clicked: Option<usize> = None;
-        let row_height = theme.list_item_height(2);
         let end_inset = self.bottom_inset;
         apply_list_gap(ui, theme); // до rows_in_view: он считает шаг строк по этому отступу
         // Область прокрутки доходит до нижнего края контентной панели, а не до рассчитанной по доступной высоте
@@ -203,10 +202,8 @@ impl McrateApp {
             egui::ScrollArea::vertical().id_salt("uploads_playlist_tracks").auto_shrink([false, false]).show(ui, |ui| {
                 centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
                     let is_current = |track: &Track| current_id.as_deref() == Some(track.id.as_str());
-                    rows_in_view(ui, count, row_height, |ui, range| {
-                        let rows = range.map(|i| (i, &self.filtered[i]));
-                        clicked = track_list(ui, theme, rows, count, is_current, playing);
-                    });
+                    let rows = (0..count).map(|i| (i, &self.filtered[i]));
+                    clicked = track_list(ui, theme, rows, count, is_current, playing);
                 });
                 scroll_end_padding(ui, end_inset);
             });

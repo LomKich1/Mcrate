@@ -27,7 +27,7 @@ use crate::icons::{self, Icon};
 use crate::theme::Theme;
 
 /// Сколько последних треков показываем внизу главного экрана раздела.
-const RECENT_COUNT: usize = 3;
+const RECENT_COUNT: usize = 10;
 /// Подпись под названием заглушки (в шапке и на карточке).
 const STUB_SUBTITLE: &str = "Коллекция Mcrate";
 
