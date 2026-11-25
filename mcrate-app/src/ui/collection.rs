@@ -21,7 +21,7 @@ use super::layout::{
 };
 use super::playlists::{PlaylistDialog, playlist_row, tracks_count_text};
 use super::settings::controls::{Row, Trailing, settings_group};
-use super::widgets::{ButtonKind, pill_button};
+use super::widgets::{ButtonKind, COLLAGE_MAX_TILES, SEGMENT_GAP, SegmentPos, apply_list_gap, pill_button, playlist_cover};
 use crate::app::{McrateApp, View};
 use crate::icons::{self, Icon};
 use crate::theme::Theme;
@@ -30,6 +30,10 @@ use crate::theme::Theme;
 const RECENT_COUNT: usize = 3;
 /// Подпись под названием заглушки (в шапке и на карточке).
 const STUB_SUBTITLE: &str = "Коллекция Mcrate";
+
+/// Сторона обложки плейлиста на его экране и скругление её внешних углов.
+const PLAYLIST_COVER_SIZE: f32 = 96.0;
+const PLAYLIST_COVER_RADIUS: f32 = 14.0;
 
 /// Кнопки экрана плейлиста.
 #[derive(Clone, Copy)]
@@ -227,9 +231,11 @@ impl McrateApp {
                                 "Создайте первый и собирайте в него любимые треки.",
                             );
                         }
-                        ui.spacing_mut().item_spacing.y = 0.0;
-                        for playlist in playlists {
-                            if playlist_row(ui, theme, playlist, None) {
+                        // Material 3: сегментированный список (зазор и крупные углы у краёв), Liquid Glass: строки встык.
+                        ui.spacing_mut().item_spacing.y = if theme.glass_active() { 0.0 } else { SEGMENT_GAP };
+                        let count = playlists.len();
+                        for (index, playlist) in playlists.iter().enumerate() {
+                            if playlist_row(ui, theme, playlist, None, Some(SegmentPos { index, count })) {
                                 open = Some(playlist.id);
                             }
                         }
@@ -258,27 +264,37 @@ impl McrateApp {
             return;
         };
         let (id, name, count) = (playlist.id, playlist.name.clone(), playlist.tracks.len());
+        // В обложку идут только первые треки: копируются они, а не весь список (в нём могут быть тысячи).
+        let cover_tracks: Vec<Track> = playlist.tracks.iter().take(COLLAGE_MAX_TILES).cloned().collect();
         let mut back = false;
         let mut action = None;
         let mut clicked = None;
         centered_column(ui, f32::INFINITY, |ui| {
             let p = &theme.palette;
             back = back_header(ui, theme, &name);
-            ui.add_space(2.0);
-            ui.label(RichText::new(tracks_count_text(count)).color(p.on_surface_variant));
-            ui.add_space(8.0);
+            ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.add_enabled_ui(count > 0, |ui| {
-                    if pill_button(ui, theme, "Слушать", Some(Icon::Play), ButtonKind::Filled).clicked() {
-                        action = Some(PlaylistAction::Play);
-                    }
+                let (cover, _) = ui.allocate_exact_size(Vec2::splat(PLAYLIST_COVER_SIZE), Sense::hover());
+                let first = &cover_tracks[..cover_tracks.len().min(COLLAGE_MAX_TILES)];
+                playlist_cover(ui, theme, cover, (&name, first), PLAYLIST_COVER_RADIUS);
+                ui.add_space(14.0);
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(tracks_count_text(count)).color(p.on_surface_variant));
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.add_enabled_ui(count > 0, |ui| {
+                            if pill_button(ui, theme, "Слушать", Some(Icon::Play), ButtonKind::Filled).clicked() {
+                                action = Some(PlaylistAction::Play);
+                            }
+                        });
+                        if pill_button(ui, theme, "Переименовать", None, ButtonKind::Tonal).clicked() {
+                            action = Some(PlaylistAction::Rename);
+                        }
+                        if pill_button(ui, theme, "Удалить", None, ButtonKind::Tonal).clicked() {
+                            action = Some(PlaylistAction::Delete);
+                        }
+                    });
                 });
-                if pill_button(ui, theme, "Переименовать", None, ButtonKind::Tonal).clicked() {
-                    action = Some(PlaylistAction::Rename);
-                }
-                if pill_button(ui, theme, "Удалить", None, ButtonKind::Tonal).clicked() {
-                    action = Some(PlaylistAction::Delete);
-                }
             });
             ui.add_space(6.0);
             pane_scroll(ui, self.bleed.below_header(), ScrollArea::vertical().auto_shrink([false, false]), |area, ui| {
@@ -364,11 +380,12 @@ impl McrateApp {
     /// Любой список треков в общей прокрутке: рисуются только видимые строки. Возвращает номер строки, по которой кликнули.
     fn track_rows_in_view(&self, ui: &mut Ui, theme: &Theme, items: &[Track]) -> Option<usize> {
         centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
+            apply_list_gap(ui, theme);
             let current = self.ctl.now.as_ref().map(|t| (t.id.clone(), t.provider));
             let playing = self.ctl.is_playing();
             let is_current = |track: &Track| same_track_as(current.as_ref(), track);
             rows_in_view(ui, items.len(), theme.list_item_height(2), |ui, range| {
-                track_list(ui, theme, range.map(|i| (i, &items[i])), is_current, playing)
+                track_list(ui, theme, range.map(|i| (i, &items[i])), items.len(), is_current, playing)
             })
         })
     }
@@ -376,10 +393,11 @@ impl McrateApp {
     /// Список треков из истории; возвращает номер строки, по которой кликнули.
     fn history_rows(&self, ui: &mut Ui, theme: &Theme, items: &[Track]) -> Option<usize> {
         centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
+            apply_list_gap(ui, theme);
             let current = self.ctl.now.as_ref().map(|t| (t.id.clone(), t.provider));
             let playing = self.ctl.is_playing();
             let is_current = |track: &Track| same_track_as(current.as_ref(), track);
-            track_list(ui, theme, items.iter().enumerate(), is_current, playing)
+            track_list(ui, theme, items.iter().enumerate(), items.len(), is_current, playing)
         })
     }
 }

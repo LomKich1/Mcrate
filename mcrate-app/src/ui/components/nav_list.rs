@@ -4,33 +4,33 @@ use crate::app::View;
 use crate::icons::{self, Icon};
 use crate::theme::{TextRole, Theme, with_alpha};
 use crate::ui::metrics::{MENU_CORNER, NAV_ROW_H};
-use crate::ui::widgets::{glide_begin, glide_end, squish};
+use crate::ui::ripple::{LayerArea, press_sparkles};
+use crate::ui::widgets::{glide_begin, squish};
 use egui::{CornerRadius, CursorIcon, FontId, Margin, Sense, Ui, pos2, vec2};
+
+/// Скругление волны нажатия на строке Liquid Glass.
+const GLASS_ROW_CORNER: f32 = 14.0;
 
 /// Список строк-переходов (главный экран настроек и экран «Библиотека»). Возвращает вид, на который нажали.
 /// Material 3: все строки лежат в одном тональном блоке со скруглением MENU_CORNER, как список в меню тем
-/// (`theme_menu`): без зазоров между строками, у строки при наведении своя скруглённая подсветка, шеврона нет.
+/// (`theme_menu`): без зазоров между строк, шеврона нет. Подсветки при наведении нет: при нажатии от места нажатия
+/// расходятся тёмные крапинки (`ripple::press_sparkles`).
 /// Liquid Glass: отдельные строки, как раньше. `max_width` ограничивает ширину (700 в настройках).
 pub(in crate::ui) fn nav_list(ui: &mut Ui, theme: &Theme, rows: &[(View, &str, String)], max_width: f32, chevron: bool) -> Option<View> {
     let width = ui.available_width().min(max_width);
     let mut clicked = None;
     if theme.glass_active() {
-        // Одинаковый плотный список для обеих тем: без разделителей и промежутков.
-        // Подсветка glide скользит между строками так же, как в списках треков.
+        // Плотный список: без разделителей и промежутков. Подсветки при наведении нет, при нажатии расходится волна.
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            let glide_slot = glide_begin(ui);
-            let mut hovered = None;
-            for (i, (view, title, subtitle)) in rows.iter().enumerate() {
+            for (view, title, subtitle) in rows {
+                let wave_slot = glide_begin(ui);
                 let resp = glass_nav_row(ui, theme, title, subtitle, width, chevron);
-                if resp.hovered() {
-                    hovered = Some((i as u64, resp.rect));
-                }
+                press_sparkles(ui, theme, wave_slot, &resp, LayerArea { rect: resp.rect, corner: GLASS_ROW_CORNER });
                 if resp.clicked() {
                     clicked = Some(*view);
                 }
             }
-            glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_glass_nav_list"), hovered, 14.0);
         });
         return clicked;
     }
@@ -44,27 +44,22 @@ pub(in crate::ui) fn nav_list(ui: &mut Ui, theme: &Theme, rows: &[(View, &str, S
             .inner_margin(Margin::ZERO)
             .show(ui, |ui| {
                 ui.set_width(width);
-                // Слой под подсветку резервируем до строк, чтобы текст рисовался поверх неё.
-                let glide_slot = glide_begin(ui);
-                let mut hovered = None;
-                for (i, (view, title, subtitle)) in rows.iter().enumerate() {
+                for (view, title, subtitle) in rows {
+                    // Слой под волну резервируем до строки, чтобы текст рисовался поверх неё. Радиус волны равен
+                    // скруглению блока: у первой и последней строки внешние углы волны совпадают с углами блока.
+                    let wave_slot = glide_begin(ui);
                     let resp = m3_nav_row(ui, theme, title, subtitle);
-                    if resp.hovered() {
-                        hovered = Some((i as u64, resp.rect));
-                    }
+                    press_sparkles(ui, theme, wave_slot, &resp, LayerArea { rect: resp.rect, corner: MENU_CORNER as f32 });
                     if resp.clicked() {
                         clicked = Some(*view);
                     }
                 }
-                // Та же скользящая подсветка, что в списке треков (ui/widgets/glide.rs). Радиус равен скруглению
-                // блока: у первой и последней строки внешние углы подсветки совпадают с углами блока.
-                glide_end(ui, theme, glide_slot, ui.scope_id().with("glide_nav_list"), hovered, MENU_CORNER as f32);
             });
     });
     clicked
 }
 
-/// Строка внутри тонального блока Material 3: название и подпись. Подсветку рисует `glide_end` в `nav_list`.
+/// Строка внутри тонального блока Material 3: название и подпись. Волну нажатия рисует `nav_list`.
 fn m3_nav_row(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), NAV_ROW_H), Sense::click());
     // Продавливание при нажатии, те же параметры, что у строки трека (`track_row`).
@@ -90,8 +85,6 @@ fn glass_nav_row(ui: &mut Ui, theme: &Theme, title: &str, subtitle: &str, width:
     let (base_rect, resp) = ui.allocate_exact_size(vec2(width, NAV_ROW_H), Sense::click());
     let rect = squish(ui, resp.id, &resp, base_rect, 0.015, 0.07);
     let painter = ui.painter();
-    // Стеклянная поверхность выбранной строки рисуется единым анимированным слоем
-    // в nav_list/glide_end, чтобы она плавно перемещалась между пунктами.
     painter.text(
         pos2(rect.left() + 18.0, rect.center().y - 10.0),
         egui::Align2::LEFT_CENTER,

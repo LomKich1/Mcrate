@@ -11,6 +11,7 @@ use crate::controller::LikeKey;
 use crate::icons::{self, Icon};
 use crate::theme::{ShapeRole, TextRole, Theme, with_alpha};
 use crate::ui::playlists::PlaylistDialog;
+use crate::ui::ripple;
 use egui::{Align2, Area, Color32, Context, FontId, Frame, Id, Key, Margin, Order, Pos2, Rect, Sense, Shadow, Stroke, Ui, vec2};
 use mcrate_core::Track;
 use std::collections::HashSet;
@@ -30,9 +31,8 @@ const ITEM_ICON_SIZE: f32 = 20.0;
 const ITEM_LABEL_INSET: f32 = ITEM_ICON_INSET + ITEM_ICON_SIZE + 12.0;
 /// Зазор между кнопкой «три точки» и меню.
 const ANCHOR_GAP: f32 = 4.0;
-/// Прозрачность слоя наведения и нажатия на пункте (Material 3: 8 % и 12 % от 255).
+/// Прозрачность слоя наведения на пункте (Material 3: 8 % от 255); нажатие рисует `ripple`.
 const HOVER_ALPHA: u8 = 20;
-const PRESS_ALPHA: u8 = 31;
 /// Заливка карточки меню в Liquid Glass: чуть просвечивает.
 const GLASS_FILL_ALPHA: u8 = 235;
 /// Тень карточки меню Material 3 (уровень 2): смещение вниз, размытие и плотность.
@@ -194,11 +194,10 @@ fn glass_frame(theme: &Theme) -> Frame {
 fn menu_item(ui: &mut Ui, theme: &Theme, icon: Icon, label: &str) -> bool {
     let p = &theme.palette;
     let (rect, resp) = ui.allocate_exact_size(vec2(MENU_WIDTH, ITEM_HEIGHT), Sense::click());
-    if resp.is_pointer_button_down_on() {
-        ui.painter().rect_filled(rect, 0.0, with_alpha(p.on_surface, PRESS_ALPHA));
-    } else if resp.hovered() {
+    if resp.hovered() && !resp.is_pointer_button_down_on() {
         ui.painter().rect_filled(rect, 0.0, with_alpha(p.on_surface, HOVER_ALPHA));
     }
+    ripple::state_layer(ui, theme, ui.painter(), &resp, rect, 0.0);
     let icon_center = Pos2::new(rect.left() + ITEM_ICON_INSET + ITEM_ICON_SIZE / 2.0, rect.center().y);
     icons::paint(theme, ui.painter(), icon, icon_center, ITEM_ICON_SIZE, p.on_surface_variant);
     ui.painter().text(

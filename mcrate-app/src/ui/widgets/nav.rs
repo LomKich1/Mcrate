@@ -70,9 +70,9 @@ fn paint_nav_highlight(ui: &Ui, theme: &Theme, resp: &Response, rect: Rect, (ena
                 with_alpha(p.on_surface, (t * if resp.is_pointer_button_down_on() { 32.0 } else { 20.0 }) as u8),
             );
         }
-    } else if enabled && !selected {
-        // У выбранного пункта слой не рисуем: он уже подсвечен пилюлей (rail.rs).
-        // M3: кружок от курсора при наведении, при нажатии разрастается до краёв пункта.
+    }
+    if enabled {
+        // Ripple и у выбранного пункта: тап сразу делает его выбранным, иначе эффект оборвётся.
         ripple::state_layer(ui, theme, painter, resp, rect, 24.0);
     }
     if resp.has_focus() {

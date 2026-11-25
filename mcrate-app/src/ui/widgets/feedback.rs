@@ -20,7 +20,7 @@ pub(crate) fn status_snackbar(ui: &mut Ui, theme: &Theme, message: &str) -> bool
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let (base_rect, response) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click());
                     let rect = squish(ui, response.id, &response, base_rect, 0.06, 0.06);
-                    let tint = ripple::StateTint { color: p.inverse_on_surface, hover_alpha: 20, press_alpha: 31 };
+                    let tint = ripple::StateTint { color: p.inverse_on_surface, alpha: 150 };
                     ripple::state_layer_colored(ui, theme, ui.painter(), &response, ripple::LayerArea { rect, corner: 15.0 }, tint);
                     icons::paint(theme, ui.painter(), Icon::Close, rect.center(), 18.0, p.inverse_primary);
                     ui.add(

@@ -3,8 +3,12 @@
 use super::shelf::SHELF_HOVER_KEY;
 use crate::icons::{self, Icon};
 use crate::theme::{Theme, with_alpha};
-use crate::ui::widgets::{cover_tile, elided, squish};
+use crate::ui::ripple;
+use crate::ui::widgets::{COVER_SCRIM_ALPHA, cover_tile, elided, row_hover, squish};
 use egui::{Color32, CursorIcon, FontId, Id, Rect, Response, Sense, Stroke, Ui, Vec2, pos2, vec2};
+
+/// Размер кнопки воспроизведения на обложке карточки, доля стороны обложки (у строки трека 0,5: там обложка мелкая).
+const PLAY_RATIO: f32 = 0.34;
 
 /// Что показать на карточке полки.
 pub(super) struct MediaCard<'a> {
@@ -78,26 +82,28 @@ pub(super) fn media_card(ui: &mut Ui, theme: &Theme, card: &MediaCard, is_curren
         painter.rect_stroke(cover, cover_radius, Stroke::new(0.8, with_alpha(p.on_surface, 36)), egui::StrokeKind::Inside);
     }
 
+    // Как у строк треков: при наведении обложка плавно темнеет, по центру плавно появляется кнопка воспроизведения,
+    // когда курсор уходит, всё так же гаснет. У играющего карточка затемнена всегда, эквалайзер сменяется кнопкой.
+    let hover = row_hover(ui, theme, resp.id, &resp);
+    let scrim = if is_current { 1.0 } else { hover };
+    if scrim > 0.0 {
+        let shade = Color32::from_black_alpha((COVER_SCRIM_ALPHA as f32 * scrim).round() as u8);
+        if card.round {
+            painter.circle_filled(cover.center(), side / 2.0, shade); // rect_filled с радиусом в полстороны даёт полосу
+        } else {
+            painter.rect_filled(cover, cover_radius, shade);
+        }
+    }
     if is_current {
-        painter.rect_filled(cover, cover_radius, Color32::from_black_alpha(if glass { 84 } else { 100 }));
-        icons::paint_equalizer(painter, cover.center(), 32.0, Color32::WHITE, time, is_playing);
+        let bars = with_alpha(Color32::WHITE, (255.0 * (1.0 - hover)).round() as u8);
+        icons::paint_equalizer(painter, cover.center(), 32.0, bars, time, is_playing);
         if glass {
             painter.rect_stroke(cover, cover_radius, Stroke::new(1.4, with_alpha(p.primary, 210)), egui::StrokeKind::Inside);
         }
-    } else if resp.hovered() {
-        // Для Liquid Glass — компактная круглая prominent-кнопка поверх обложки;
-        // в M3 оставляем квадратную FAB.
-        if glass {
-            let fab = Rect::from_min_size(pos2(cover.right() - 42.0, cover.bottom() - 42.0), Vec2::splat(34.0));
-            painter.circle_filled(fab.center() + vec2(0.0, 1.0), 17.0, Color32::from_black_alpha(46));
-            painter.circle_filled(fab.center(), 17.0, with_alpha(p.surface_container_high, 218));
-            painter.circle_stroke(fab.center(), 16.5, Stroke::new(0.9, with_alpha(p.on_surface, 70)));
-            icons::paint(theme, painter, Icon::Play, fab.center(), 21.0, p.on_surface);
-        } else {
-            let fab = Rect::from_min_size(pos2(cover.right() - 8.0 - 40.0, cover.bottom() - 8.0 - 40.0), Vec2::splat(40.0));
-            painter.rect_filled(fab, 12.0, p.primary_container);
-            icons::paint(theme, painter, Icon::Play, fab.center(), 26.0, p.on_primary_container);
-        }
+    }
+    if hover > 0.0 {
+        let icon = with_alpha(Color32::WHITE, (255.0 * hover).round() as u8);
+        icons::paint(theme, painter, Icon::Play, cover.center(), cover.height() * PLAY_RATIO, icon);
     }
 
     let text_w = rect.width() - pad * 2.0 - 4.0;
@@ -107,6 +113,9 @@ pub(super) fn media_card(ui: &mut Ui, theme: &Theme, card: &MediaCard, is_curren
     let tx = rect.left() + pad + 2.0;
     painter.galley(pos2(tx, ty), title.clone(), on_container);
     painter.galley(pos2(tx, ty + title.size().y + 2.0), sub, on_variant);
+
+    // Ripple поверх обложки: она занимает почти всю карточку, и под ней крапинок не было бы видно.
+    ripple::state_layer(ui, theme, ui.painter(), &resp, rect, radius);
 
     // В M3 отдельного слоя наведения у карточки нет: меняются только курсор и кнопка воспроизведения поверх обложки.
     resp.on_hover_cursor(CursorIcon::PointingHand)

@@ -20,8 +20,8 @@ use egui_material_icons::MaterialIcon;
 use egui_material_icons::icons as mi;
 
 use crate::theme::{ShapeRole, TextRole, Theme, with_alpha};
-use crate::ui::ripple::state_layer;
-use crate::ui::widgets::{glide_begin, glide_end, squish};
+use crate::ui::ripple::{LayerArea, press_sparkles, state_layer};
+use crate::ui::widgets::{SEGMENT_GAP, SegmentPos, glide_begin, ripple_corner, segment_radius, segment_shape, squish};
 
 /// Рисует глиф Material Symbols по центру точки. Поправка вверх на 5% размера нужна потому, что
 /// строка шрифта иконок центрируется по метрикам шрифта, а не по самому рисунку (так же в `icons::paint`).
@@ -115,6 +115,8 @@ impl<'a> Row<'a> {
 
 /// Минимальная высота строки блока.
 const ROW_H: f32 = 60.0;
+/// Отступ содержимого строки от краёв её плашки по горизонтали.
+const ROW_INSET: f32 = 8.0;
 /// Сторона плитки с иконкой слева в строке.
 const ROW_ICON_TILE: f32 = 38.0;
 const CHIP_H: f32 = 40.0;
@@ -123,39 +125,31 @@ const CHIP_GAP: f32 = 8.0;
 const CHIPS_WIDE_MIN_WIDTH: f32 = 900.0;
 const CHIPS_GROUP_MAX_WIDTH: f32 = 560.0;
 
-/// Тональный блок со строками. Возвращает номер строки, на которую нажали (переключатели и чипы
-/// сами меняют своё значение и сюда не попадают). `id` отличает блоки друг от друга
-/// (подсветка при наведении скользит между строками ВНУТРИ блока, как в списках треков).
+/// Сегментированный список строк (Material 3): каждая строка на своей плашке, зазор между плашками, крупные углы у
+/// первой сверху и у последней снизу, мелкие на стыках (`widgets::segment`). Возвращает номер строки, на которую нажали (переключатели и чипы
+/// сами меняют своё значение и сюда не попадают). `id` отличает блоки друг от друга.
+/// Подсветки при наведении нет; при нажатии на строку от места нажатия расходятся тёмные крапинки (`ripple::press_sparkles`).
 pub(crate) fn settings_group(ui: &mut Ui, theme: &Theme, id: &str, rows: Vec<Row<'_>>) -> Option<usize> {
-    let p = &theme.palette;
     let mut clicked = None;
-    let radius = theme.shape_radius(ShapeRole::ExtraLarge);
+    let count = rows.len();
 
     ui.scope(|ui| {
-        // Строки идут встык, без разделителей: их отделяет только скользящая подсветка.
-        ui.spacing_mut().item_spacing.y = 0.0;
-        Frame::new()
-            .fill(p.surface_container_high)
-            .corner_radius(radius)
-            // Отступ 8 px нужен, чтобы подсветка строки (со своим скруглением) не торчала за углы блока.
-            .inner_margin(Margin::same(8))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                // Слой под подсветку резервируем до строк: текст рисуется поверх неё.
-                let glide_slot = glide_begin(ui);
-                let mut hovered = None;
-                for (i, row) in rows.into_iter().enumerate() {
-                    let (resp, activated, interactive) = row_ui(ui, theme, id, i, row);
-                    if interactive && resp.hovered() {
-                        hovered = Some((i as u64, resp.rect));
-                    }
-                    if activated {
-                        clicked = Some(i);
-                    }
-                }
-                // Слой состояния M3: 8% цвета контента под курсором.
-                glide_end(ui, theme, glide_slot, ui.scope_id().with(("settings_glide", id)), hovered, 20.0);
-            });
+        ui.spacing_mut().item_spacing.y = SEGMENT_GAP;
+        ui.set_width(ui.available_width());
+        for (i, row) in rows.into_iter().enumerate() {
+            // Слои под строкой резервируем до неё: плашка (самый нижний), затем волна нажатия; текст рисуется поверх.
+            let bg_slot = glide_begin(ui);
+            let wave_slot = glide_begin(ui);
+            let (resp, activated, interactive) = row_ui(ui, theme, id, i, row);
+            let radius = segment_radius(theme, SegmentPos { index: i, count });
+            ui.painter().set(bg_slot, segment_shape(resp.rect, radius, theme.palette.surface_container_high));
+            if interactive {
+                press_sparkles(ui, theme, wave_slot, &resp, LayerArea { rect: resp.rect, corner: ripple_corner(radius) });
+            }
+            if activated {
+                clicked = Some(i);
+            }
+        }
     });
     clicked
 }
@@ -208,12 +202,14 @@ struct RowMeasure {
 fn row_ui(ui: &mut Ui, theme: &Theme, group_id: &str, index: usize, mut row: Row<'_>) -> (Response, bool, bool) {
     let total_w = ui.available_width();
     let row_id = ui.scope_id().with(("settings_row", group_id, index));
-    let mut m = measure_row(ui, theme, &row, total_w);
+    // Плашка занимает всю ширину, содержимое отступает от её краёв на `ROW_INSET`.
+    let mut m = measure_row(ui, theme, &row, total_w - ROW_INSET * 2.0);
 
     let sense = if m.is_choice { Sense::hover() } else { Sense::click() };
     let (rect, resp) = ui.allocate_exact_size(vec2(total_w, m.row_h), sense);
     // Продавливание при нажатии, те же параметры, что у строки трека.
     let shown = if m.is_choice { rect } else { squish(ui, resp.id, &resp, rect, 0.012, 0.06) };
+    let shown = shown.shrink2(vec2(ROW_INSET, 0.0));
     paint_row_lead(ui.painter(), theme, shown, row.icon, &mut m);
     let activated = paint_row_trailing(ui, theme, row_id, shown, &mut row, (&resp, &m));
 
@@ -398,7 +394,7 @@ fn paint_chip(ui: &Ui, theme: &Theme, rect: Rect, resp: &Response, chip: &Chip<'
     painter.rect_filled(rect, radius, fill);
     let fg = if chip.locked { with_alpha(fg, 130) } else { fg };
     if !chip.locked {
-        // Слой состояния: кружок от курсора (ripple.rs).
+        // Нажатие: тёмные крапинки от точки нажатия (ripple.rs).
         state_layer(ui, theme, painter, resp, rect, radius);
     }
     let font = FontId::proportional(theme.text_size(TextRole::LabelLarge));

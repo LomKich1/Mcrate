@@ -4,7 +4,7 @@ use crate::app::{McrateApp, View};
 use crate::theme::{ShapeRole, TextRole, Theme};
 use crate::ui::components::track_list;
 use crate::ui::layout::{TRACK_LIST_MAX_WIDTH, centered_column};
-use crate::ui::widgets::{ButtonKind, pill_button};
+use crate::ui::widgets::{ButtonKind, apply_list_gap, pill_button};
 use egui::{Align, Layout, RichText, Ui};
 use mcrate_core::Track;
 
@@ -70,7 +70,8 @@ impl McrateApp {
             // Тот же список, что и в «Мои треки»: единый размер, цвет текущего трека и подсветка от курсора.
             // Номер в строке считается с нуля по порядку показа, а наружу уходит номер в библиотеке.
             let rows = items.iter().enumerate().map(|(row, (_, track))| (row, *track));
-            track_list(ui, theme, rows, |track| current_id == Some(track.id.as_str()), playing)
+            apply_list_gap(ui, theme);
+            track_list(ui, theme, rows, items.len(), |track| current_id == Some(track.id.as_str()), playing)
         });
         clicked_row.map(|row| items[row].0)
     }
@@ -96,10 +97,12 @@ impl McrateApp {
         ui.add_space(10.0);
         ui.spacing_mut().item_spacing.y = 4.0;
 
+        apply_list_gap(ui, theme);
         let rows = self.ctl.library.iter().enumerate().take(CHART_COUNT);
+        let total = self.ctl.library.len().min(CHART_COUNT);
         let current_id = self.ctl.now.as_ref().map(|t| t.id.as_str());
         let playing = self.ctl.is_playing();
-        let play_index = track_list(ui, theme, rows, |track| current_id == Some(track.id.as_str()), playing);
+        let play_index = track_list(ui, theme, rows, total, |track| current_id == Some(track.id.as_str()), playing);
         if let Some(i) = play_index {
             self.play_library_from(i);
         }

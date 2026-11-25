@@ -5,6 +5,7 @@ use mcrate_audio::RepeatMode;
 
 use super::format::{artists_text, fmt_time};
 use super::layout::bar_columns;
+use super::ripple;
 use super::widgets::{ButtonKind, IconButton, cover_tile, elided, icon_button, like_button, loading_outline, place_at, slider_bar};
 use crate::app::{McrateApp, View};
 use crate::icons::Icon;
@@ -207,9 +208,10 @@ impl McrateApp {
         let e = t * t * (3.0 - 2.0 * t); // smoothstep: плавный старт и остановка
         let (rect, resp) = ui.allocate_exact_size(Vec2::splat(36.0), Sense::click());
         let pressed = resp.is_pointer_button_down_on();
-        if resp.hovered() || pressed {
-            ui.painter().circle_filled(rect.center(), 18.0, with_alpha(p.on_surface, if pressed { 32 } else { 20 }));
+        if resp.hovered() && !pressed {
+            ui.painter().circle_filled(rect.center(), 18.0, with_alpha(p.on_surface, 20));
         }
+        ripple::state_layer(ui, theme, ui.painter(), &resp, rect, 18.0);
         let (s, c) = (e * std::f32::consts::PI).sin_cos();
         let pts: Vec<Pos2> = [vec2(-7.0, 3.5), vec2(0.0, -3.5), vec2(7.0, 3.5)]
             .iter()

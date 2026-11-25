@@ -106,13 +106,10 @@ fn glass_clear_button(ui: &mut Ui, theme: &Theme, value: &mut String) {
     let (clear_base, clear_resp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
     let clear_rect = squish(ui, clear_resp.id, &clear_resp, clear_base, 0.06, 0.06);
     let color = if clear_resp.hovered() { p.on_surface } else { p.on_surface_variant };
-    if clear_resp.hovered() || clear_resp.is_pointer_button_down_on() {
-        ui.painter().circle_filled(
-            clear_rect.center(),
-            12.0,
-            with_alpha(p.on_surface, if clear_resp.is_pointer_button_down_on() { 34 } else { 20 }),
-        );
+    if clear_resp.hovered() && !clear_resp.is_pointer_button_down_on() {
+        ui.painter().circle_filled(clear_rect.center(), 12.0, with_alpha(p.on_surface, 20));
     }
+    ripple::state_layer(ui, theme, ui.painter(), &clear_resp, clear_rect, 14.0);
     icons::paint(theme, ui.painter(), Icon::Close, clear_rect.center(), 16.0, color);
     if clear_resp.clicked() {
         value.clear();

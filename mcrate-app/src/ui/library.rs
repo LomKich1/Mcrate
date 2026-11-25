@@ -1,14 +1,15 @@
 //! Экран «Ваши загрузки» (раньше «Моя музыка»): свои файлы (LocalProvider). Подэкран раздела «Библиотека».
 
-use egui::{Align, RichText, Sense, Ui, Vec2};
+use egui::{Align, Layout, Rect, RichText, Sense, Ui, UiBuilder, Vec2, pos2};
 
 use super::components::{
     EmptyText, SIDE_COVER_SIZE, SplitPage, TitleRow, empty_state_top_space, empty_state_with, narrow_title_shown, split_page,
     title_scroll_page, title_search_row, track_list,
 };
 use super::format::tracks_word;
-use super::layout::{TRACK_LIST_MAX_WIDTH, centered_column, rows_in_view};
-use super::widgets::{ButtonKind, cover_tile, error_banner, pill_button, status_snackbar};
+use super::layout::{TRACK_LIST_MAX_WIDTH, centered_column, rows_in_view, scroll_end_padding};
+use super::window_layout::EDGE;
+use super::widgets::{ButtonKind, apply_list_gap, cover_tile, error_banner, pill_button, status_snackbar};
 use crate::app::{McrateApp, View};
 use crate::icons::Icon;
 use crate::theme::Theme;
@@ -190,20 +191,26 @@ impl McrateApp {
 
         let mut clicked: Option<usize> = None;
         let row_height = theme.list_item_height(2);
-        egui::ScrollArea::vertical().id_salt("uploads_playlist_tracks").auto_shrink([false, false]).show_rows(
-            ui,
-            row_height,
-            count,
-            |ui, range| {
+        let end_inset = self.bottom_inset;
+        apply_list_gap(ui, theme); // до rows_in_view: он считает шаг строк по этому отступу
+        // Область прокрутки доходит до нижнего края контентной панели, а не до рассчитанной по доступной высоте
+        // (та заканчивалась заметно выше мини-плеера, и строки пропадали, не дойдя до него). Плеер лежит поверх
+        // панели, строки уходят под него; нижний запас (`scroll_end_padding`) позволяет прокрутить последнюю строку выше.
+        let pane_bottom = ui.ctx().content_rect().bottom() - EDGE;
+        let free = ui.available_rect_before_wrap();
+        let area = Rect::from_min_max(free.min, pos2(free.max.x, pane_bottom.max(free.min.y)));
+        ui.scope_builder(UiBuilder::new().max_rect(area).layout(Layout::top_down(Align::Min)), |ui| {
+            egui::ScrollArea::vertical().id_salt("uploads_playlist_tracks").auto_shrink([false, false]).show(ui, |ui| {
                 centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
-                    let rows = range.map(|i| (i, &self.filtered[i]));
                     let is_current = |track: &Track| current_id.as_deref() == Some(track.id.as_str());
-                    if let Some(i) = track_list(ui, theme, rows, is_current, playing) {
-                        clicked = Some(i);
-                    }
+                    rows_in_view(ui, count, row_height, |ui, range| {
+                        let rows = range.map(|i| (i, &self.filtered[i]));
+                        clicked = track_list(ui, theme, rows, count, is_current, playing);
+                    });
                 });
-            },
-        );
+                scroll_end_padding(ui, end_inset);
+            });
+        });
 
         if let Some(i) = clicked {
             let items = self.filtered.clone();
@@ -247,10 +254,11 @@ impl McrateApp {
     /// Возвращает номер строки, по которой кликнули.
     fn uploads_rows_in_view(&self, ui: &mut Ui, theme: &Theme, current_id: &Option<String>, playing: bool) -> Option<usize> {
         centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
+            apply_list_gap(ui, theme);
             rows_in_view(ui, self.filtered.len(), theme.list_item_height(2), |ui, range| {
                 let rows = range.map(|i| (i, &self.filtered[i]));
                 let is_current = |track: &Track| current_id.as_deref() == Some(track.id.as_str());
-                track_list(ui, theme, rows, is_current, playing)
+                track_list(ui, theme, rows, self.filtered.len(), is_current, playing)
             })
         })
     }

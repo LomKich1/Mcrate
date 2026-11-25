@@ -16,7 +16,7 @@ use crate::theme::Theme;
 use crate::ui::components::{TitleRow, empty_state, same_track_as, title_search_row, track_list};
 use crate::ui::format::tracks_word;
 use crate::ui::layout::{TRACK_LIST_MAX_WIDTH, bleed_clip, centered_column, pane_scroll, scroll_end_padding};
-use crate::ui::widgets::{error_banner, loading_indicator};
+use crate::ui::widgets::{apply_list_gap, error_banner, loading_indicator};
 use mcrate_core::Track;
 
 /// Размер индикатора загрузки по умолчанию в M3: 48 dp.
@@ -128,7 +128,8 @@ impl McrateApp {
             let playing = self.ctl.is_playing();
             let is_current = |track: &Track| same_track_as(current.as_ref(), track);
             let rows = self.ctl.sc.results.iter().enumerate();
-            let clicked = track_list(ui, theme, rows, is_current, playing);
+            apply_list_gap(ui, theme);
+            let clicked = track_list(ui, theme, rows, count, is_current, playing);
 
             if let Some(i) = clicked {
                 // Очередь = все найденные треки, старт с выбранного (как в «Ваших загрузках»).

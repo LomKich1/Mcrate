@@ -4,11 +4,12 @@
 
 use super::components::{ConfirmDialog, DialogChoice, TextDialog, confirm_dialog, modal_card, text_dialog};
 use super::format::tracks_word;
-use super::widgets::{ButtonKind, pill_button};
+use super::ripple;
+use super::widgets::{ButtonKind, COLLAGE_MAX_TILES, SegmentPos, pill_button, playlist_cover, ripple_corner, segment_radius};
 use crate::app::{McrateApp, View};
-use crate::icons::{self, Icon};
+use crate::icons::Icon;
 use crate::theme::{TextRole, Theme, with_alpha};
-use egui::{Align, Align2, Context, FontId, Layout, Pos2, RichText, ScrollArea, Sense, Ui, vec2};
+use egui::{Align, Align2, Context, FontId, Layout, Pos2, Rect, RichText, ScrollArea, Sense, Ui, Vec2, vec2};
 use mcrate_core::{Playlist, Track};
 
 /// Ширина окна выбора плейлиста: окно заметное, но не на весь экран (Material 3 допускает до 560 px).
@@ -19,11 +20,13 @@ const PICKER_LIST_HEIGHT: f32 = 320.0;
 const PICKER_ROW_HEIGHT: f32 = 60.0;
 /// Отступ значка и текста от краёв строки.
 const PICKER_ROW_INSET: f32 = 12.0;
-/// Размер значка плейлиста в строке.
-const PICKER_ICON_SIZE: f32 = 24.0;
-/// Прозрачность слоя наведения и нажатия на строке (8 % и 12 % от 255).
+/// На сколько больше `PICKER_ROW_INSET` отступ в сегментированной строке (углы крупнее).
+const SEGMENT_EXTRA_INSET: f32 = 4.0;
+/// Сторона обложки плейлиста в строке и скругление её внешних углов.
+const ROW_COVER_SIZE: f32 = 44.0;
+const ROW_COVER_RADIUS: f32 = 8.0;
+/// Прозрачность слоя наведения на строке (8 % от 255); нажатие рисует `ripple`.
 const HOVER_ALPHA: u8 = 20;
-const PRESS_ALPHA: u8 = 31;
 
 /// Какое окно плейлистов открыто.
 pub(crate) enum PlaylistDialog {
@@ -153,7 +156,7 @@ fn pick_body(ui: &mut Ui, theme: &Theme, playlists: &[Playlist], track: &Track) 
             ui.spacing_mut().item_spacing.y = 0.0;
             for playlist in playlists {
                 let already = playlist.tracks.iter().any(|t| t.provider == track.provider && t.id == track.id);
-                if playlist_row(ui, theme, playlist, already.then_some("Уже добавлен")) {
+                if playlist_row(ui, theme, playlist, already.then_some("Уже добавлен"), None) {
                     chosen = Some(PickChoice::Add(playlist.id));
                 }
             }
@@ -174,23 +177,37 @@ fn pick_body(ui: &mut Ui, theme: &Theme, playlists: &[Playlist], track: &Track) 
 }
 
 /// Строка плейлиста (в окне выбора и в списке плейлистов): значок, название и «N треков». Если задана `note`, строка
-/// неактивна и справа написана эта заметка («Уже добавлен»). Возвращает true, если по активной строке кликнули.
-pub(crate) fn playlist_row(ui: &mut Ui, theme: &Theme, playlist: &Playlist, note: Option<&str>) -> bool {
+/// неактивна и справа написана эта заметка («Уже добавлен»). `segment`: место строки в сегментированном списке
+/// (Material 3: плашка с зазором и крупными углами у краёв группы); `None`: плоская строка, как в окне выбора.
+/// Возвращает true, если по активной строке кликнули.
+pub(crate) fn playlist_row(ui: &mut Ui, theme: &Theme, playlist: &Playlist, note: Option<&str>, segment: Option<SegmentPos>) -> bool {
     let already = note.is_some();
     let p = &theme.palette;
     let sense = if already { Sense::hover() } else { Sense::click() };
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), PICKER_ROW_HEIGHT), sense);
-    if !already {
-        if resp.is_pointer_button_down_on() {
-            ui.painter().rect_filled(rect, theme.shape_radius(crate::theme::ShapeRole::Medium), with_alpha(p.on_surface, PRESS_ALPHA));
-        } else if resp.hovered() {
-            ui.painter().rect_filled(rect, theme.shape_radius(crate::theme::ShapeRole::Medium), with_alpha(p.on_surface, HOVER_ALPHA));
-        }
+    let segment = segment.filter(|_| !theme.glass_active());
+    let radius = match segment {
+        Some(pos) => segment_radius(theme, pos),
+        None => egui::CornerRadius::same(theme.shape_radius(crate::theme::ShapeRole::Medium)),
+    };
+    if segment.is_some() {
+        ui.painter().rect_filled(rect, radius, p.surface_container_high);
     }
+    if !already {
+        if resp.hovered() && !resp.is_pointer_button_down_on() {
+            ui.painter().rect_filled(rect, radius, with_alpha(p.on_surface, HOVER_ALPHA));
+        }
+        ripple::state_layer(ui, theme, ui.painter(), &resp, rect, ripple_corner(radius));
+    }
+    // У сегмента крупные углы: содержимое отодвигаем, чтобы обложка не упиралась в скругление.
+    let inset = PICKER_ROW_INSET + if segment.is_some() { SEGMENT_EXTRA_INSET } else { 0.0 };
     let faded = |c: egui::Color32| if already { with_alpha(c, 110) } else { c };
-    let icon_center = Pos2::new(rect.left() + PICKER_ROW_INSET + PICKER_ICON_SIZE / 2.0, rect.center().y);
-    icons::paint(theme, ui.painter(), Icon::Queue, icon_center, PICKER_ICON_SIZE, faded(p.on_surface_variant));
-    let text_left = rect.left() + PICKER_ROW_INSET + PICKER_ICON_SIZE + 14.0;
+    let cover = Rect::from_center_size(
+        Pos2::new(rect.left() + inset + ROW_COVER_SIZE / 2.0, rect.center().y),
+        Vec2::splat(ROW_COVER_SIZE),
+    );
+    playlist_cover(ui, theme, cover, (&playlist.name, &playlist.tracks[..playlist.tracks.len().min(COLLAGE_MAX_TILES)]), ROW_COVER_RADIUS);
+    let text_left = cover.right() + 14.0;
     let clipped = ui
         .painter()
         .with_clip_rect(egui::Rect::from_min_max(Pos2::new(text_left, rect.top()), Pos2::new(rect.right() - 90.0, rect.bottom())));
@@ -210,7 +227,7 @@ pub(crate) fn playlist_row(ui: &mut Ui, theme: &Theme, playlist: &Playlist, note
     );
     if let Some(note) = note {
         ui.painter().text(
-            Pos2::new(rect.right() - PICKER_ROW_INSET, rect.center().y),
+            Pos2::new(rect.right() - inset, rect.center().y),
             Align2::RIGHT_CENTER,
             note,
             FontId::proportional(theme.text_size(TextRole::LabelMedium)),

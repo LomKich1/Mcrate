@@ -2,7 +2,6 @@
 
 use crate::theme::Theme;
 use crate::ui::anim::{PRESS, cubic_bezier, spring_step};
-use crate::ui::ripple;
 use egui::{Id, Pos2, Rect, Response, Shape, Ui, Vec2, layers::ShapeIdx, pos2, vec2};
 
 /// Плавное «сжатие» при нажатии (в демо `scale(.88, .94)` у кнопки): прямоугольник уменьшается
@@ -103,13 +102,8 @@ fn glide_step(g: &mut Glide, has_target: bool, dt: f32) -> bool {
 /// строку пружина получает новую цель, сохраняя текущую скорость — даже при быстрых
 /// перемещениях курсора она не телепортируется и не начинает движение с нуля.
 ///
-/// Material 3: подсветка растёт кружком из точки, куда навели курсор, и едет за ним (см. `ripple.rs`);
-/// цвет и плотность единые, поэтому отдельного варианта «плоский слой» нет. Liquid Glass: стеклянная подложка.
+/// Только Liquid Glass: стеклянная подложка. В Material 3 скользящей подсветки нет (нажатие рисует `ripple.rs`).
 pub(crate) fn glide_end(ui: &Ui, theme: &Theme, slot: ShapeIdx, salt: Id, target: Option<(u64, Rect)>, radius: f32) {
-    if !theme.glass_active() {
-        ripple::glide_ripple(ui, theme, slot, salt, target, radius);
-        return;
-    }
     let dt = ui.input(|i| i.stable_dt).clamp(0.0, 0.064);
     let mut g: Glide = ui.ctx().data_mut(|d| d.get_temp(salt)).unwrap_or_default();
 

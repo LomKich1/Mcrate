@@ -8,9 +8,11 @@
 use super::buttons::{IconButton, icon_button, like_button, place_at};
 use super::cover::cover_tile;
 use super::glide::squish;
+use super::segment::{SegmentPos, ripple_corner, segment_radius, segment_shape, track_plate};
 use crate::icons::{self, Icon};
 use crate::theme::{ShapeRole, TextRole, Theme, with_alpha};
 use crate::ui::format::{artists_text, fmt_time};
+use crate::ui::ripple::{self, LayerArea};
 use crate::ui::track_menu::{is_liked, request_like, request_menu};
 use egui::{Align2, Color32, CursorIcon, FontId, Id, Rect, Response, Sense, Ui, Vec2, pos2, vec2};
 use mcrate_core::Track;
@@ -18,7 +20,7 @@ use mcrate_core::Track;
 /// За сколько секунд подсветка строки появляется и гаснет.
 const HOVER_FADE_SECS: f32 = 0.16;
 /// Плотность чёрной подложки на обложке (0..255): под значком эквалайзера играющего трека и под кнопкой воспроизведения.
-const COVER_SCRIM_ALPHA: u8 = 150;
+pub(crate) const COVER_SCRIM_ALPHA: u8 = 150;
 /// Размер кнопки воспроизведения на обложке, доля стороны обложки.
 const COVER_PLAY_RATIO: f32 = 0.5;
 /// Диаметр кнопки «три точки» (меню действий трека) и её отступ от правого края строки.
@@ -56,7 +58,7 @@ pub(crate) struct RowPlayback {
 /// Строка списка треков. В Material 3 двухстрочный элемент занимает 72 px;
 /// Liquid Glass сохраняет исходные 56 px для совместимости с прежней геометрией.
 /// Индекс выводится отдельной колонкой: он нужен для порядка в библиотеке и списка «Мои треки».
-pub(crate) fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track, playback: RowPlayback) -> Response {
+pub(crate) fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track, playback: RowPlayback, pos: SegmentPos) -> Response {
     let RowPlayback { is_current, is_playing, time } = playback;
     let row_height = theme.list_item_height(2);
     let row_width = ui.available_width();
@@ -71,11 +73,17 @@ pub(crate) fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track,
     if !ui.is_rect_visible(rect) {
         return resp; // не в кадре: ничего не считаем и не рисуем
     }
+    // Плашка строки (только Material 3, сегментированный список): слот резервируем первым, чтобы плашка лежала под
+    // волной нажатия и содержимым, и рисуем по исходному прямоугольнику (сжимается только содержимое).
+    let segment = (!theme.glass_active()).then(|| segment_radius(theme, pos));
+    if let Some(radius) = segment {
+        ui.painter().add(segment_shape(track_plate(rect), radius, theme.palette.surface_container_high));
+    }
     let id = ui.scope_id().with(("track_row", &track.id));
     let hover = row_hover(ui, theme, id.with(index), &resp);
     // Продавливание: содержимое строки чуть сжимается при нажатии (слой подсветки M3 остаётся исходного размера).
     let rect = squish(ui, id, &resp, rect, 0.015, 0.07);
-    paint_row_background(ui, theme, rect, &resp);
+    let ripple_slot = ripple::reserve_slot(ui);
 
     let cover_left = if show_index { 34.0 } else { 16.0 };
     if show_index {
@@ -88,19 +96,12 @@ pub(crate) fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track,
     paint_row_text(ui, theme, rect, cover.right(), track, (compact, is_current, buttons_slot));
     paint_row_buttons(ui, theme, rect, track, show_like);
 
+    let corner = segment.map_or_else(|| theme.shape_radius(ShapeRole::Large) as f32, ripple_corner);
+    ripple::press_sparkles(ui, theme, ripple_slot, &resp, LayerArea { rect, corner });
     let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
     let accessible_label = format!("{} — {}", track.title, artists_text(track));
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, is_current, accessible_label.clone()));
     resp
-}
-
-/// Фон строки: заливка при нажатии в Liquid Glass. Плашки под играющим треком нет (по просьбе владельца):
-/// играющий трек отличают название цветом акцента и эквалайзер на обложке. `rect`: содержимое (сжатое при нажатии).
-fn paint_row_background(ui: &Ui, theme: &Theme, rect: Rect, resp: &Response) {
-    if theme.glass_active() && resp.is_pointer_button_down_on() {
-        let radius = theme.shape_radius(ShapeRole::Large) as f32;
-        ui.painter().rect_filled(rect, radius, with_alpha(theme.palette.on_surface, 20));
-    }
 }
 
 /// Номер строки в левой колонке.
@@ -196,9 +197,10 @@ fn paint_row_buttons(ui: &mut Ui, theme: &Theme, rect: Rect, track: &Track, show
     }
 }
 
+/// Общая и для карточек полок (`home/media_card.rs`): у них та же подсветка обложки при наведении.
 /// Насколько строка «включена» (0..1): курсор над ней, нажатие или фокус с клавиатуры. Значение плавно растёт и спадает.
 /// `id` включает номер строки: один трек может стоять в списке дважды (история), а состояние у каждой строки своё.
-fn row_hover(ui: &Ui, theme: &Theme, id: Id, resp: &Response) -> f32 {
+pub(crate) fn row_hover(ui: &Ui, theme: &Theme, id: Id, resp: &Response) -> f32 {
     let active = resp.hovered() || resp.is_pointer_button_down_on() || resp.has_focus();
     let secs = if theme.settings.reduce_motion { 0.0 } else { HOVER_FADE_SECS };
     ui.ctx().animate_bool_with_time(id.with("hover"), active, secs)
