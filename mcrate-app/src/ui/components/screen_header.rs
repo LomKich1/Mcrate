@@ -115,17 +115,4 @@ fn reveal_title(ui: &mut Ui, theme: &Theme, title_rect: Rect, (title, subtitle):
     });
 }
 
-/// Шапка без поиска: кнопка «назад» и заголовок с подписью, который проявляется так же, как в
-/// `title_search_row` (`title_shown`: 0 = названия нет, 1 = показано целиком). Возвращает `true`, если нажали «назад».
-pub(in crate::ui) fn back_title_row(ui: &mut Ui, theme: &Theme, (title, subtitle): (&str, &str), title_shown: f32) -> bool {
-    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
-    let back_clicked = back_button(ui, theme, row);
-    let shown = title_shown.clamp(0.0, 1.0);
-    if shown > 0.0 {
-        let x = row.left() + BACK_W;
-        let title_w = (row.right() - x).clamp(80.0, 360.0);
-        let title_rect = Rect::from_min_size(pos2(x, row.top() + 2.0), vec2(title_w, ROW_H - 2.0));
-        reveal_title(ui, theme, title_rect, (title, subtitle), shown);
-    }
-    back_clicked
-}
+

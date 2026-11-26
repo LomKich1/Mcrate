@@ -292,7 +292,16 @@ pub(crate) fn rows_in_view<R>(ui: &mut Ui, count: usize, row_h: f32, draw: impl 
     let spacing = ui.spacing().item_spacing.y;
     let pitch = row_h + spacing;
     let clip = ui.clip_rect();
-    let range = visible_rows(ui.cursor().top(), clip.top(), clip.bottom(), pitch, count);
+    let mut range = visible_rows(ui.cursor().top(), clip.top(), clip.bottom(), pitch, count);
+    // Когда строка сжимается по высоте, следующая за ней строка может войти в viewport раньше обычного.
+    if crate::ui::thanos::has_active_removal(ui.ctx()) {
+        if range.start > 0 {
+            range.start -= 1;
+        }
+        if range.end < count {
+            range.end += 1;
+        }
+    }
     ui.add_space(range.start as f32 * pitch);
     let result = draw(ui, range.clone());
     if range.end < count {

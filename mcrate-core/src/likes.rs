@@ -38,6 +38,17 @@ impl Likes {
         save_or_log(&self.path, "понравившиеся", &serialize(&self.items));
         liked
     }
+
+    /// Убирает трек из понравившихся и сохраняет список. Возвращает `true`, если запись была найдена.
+    pub fn remove(&mut self, provider: ProviderKind, id: &str) -> bool {
+        let before = self.items.len();
+        self.items.retain(|track| !(track.provider == provider && track.id == id));
+        let removed = self.items.len() != before;
+        if removed {
+            save_or_log(&self.path, "понравившиеся", &serialize(&self.items));
+        }
+        removed
+    }
 }
 
 fn toggle_in(items: &mut Vec<Track>, track: &Track) -> bool {
@@ -108,6 +119,21 @@ mod tests {
         assert_eq!(reopened.items()[0].id, "799");
         assert!(!reopened.contains(ProviderKind::Local, "5"));
         assert_eq!(reopened.items()[0].artists, ["А", "Б"]);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn remove_like_persists_and_does_not_touch_same_id_from_other_provider() {
+        let path = temp_file("likes", "remove");
+        let mut likes = Likes::open(Some(path.clone()));
+        likes.toggle(&track("same", ProviderKind::SoundCloud));
+        likes.toggle(&track("same", ProviderKind::Vk));
+
+        assert!(likes.remove(ProviderKind::SoundCloud, "same"));
+        assert!(!likes.remove(ProviderKind::SoundCloud, "same"));
+        let reopened = Likes::open(Some(path.clone()));
+        assert_eq!(reopened.items().len(), 1);
+        assert!(reopened.contains(ProviderKind::Vk, "same"));
         cleanup(&path);
     }
 

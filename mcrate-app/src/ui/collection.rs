@@ -1,21 +1,18 @@
 //! Раздел «Библиотека»: главный экран-список и его подэкраны.
 //!
 //! Главный экран (`View::Collection`): строки-переходы «Понравившиеся», «Плейлисты», «Скачанные»,
-//! «Ваши загрузки» и внизу блок «Недавно слушали» (последние 3 трека + «Смотреть все»).
-//! «Ваши загрузки» это экран своих файлов (`View::Library`, ui/library.rs). «Понравившиеся», «Плейлисты» и один
-//! плейлист (`View::CollectionPlaylist`) настоящие экраны; окна плейлистов лежат в `ui/playlists.rs`.
-//! «Скачанные» пока заглушка: у скачанных нет списка (кэш движка хранит только последние 20 треков и списком
-//! не отдаётся). История хранится на диске (`Controller::history`).
+//! «Ваши загрузки» и внизу блок «Недавно слушали» (последние `RECENT_COUNT` треков + «Смотреть все»).
+//! «Ваши загрузки» и «Скачанные» — два варианта общей страницы коллекции (`ui/library.rs`):
+//! первый показывает локальные файлы, второй — постоянные онлайн-загрузки с меткой сервиса на обложке.
+//! «Понравившиеся», «Плейлисты» и один плейлист (`View::CollectionPlaylist`) лежат здесь;
+//! история хранится на диске (`Controller::history`).
 
-use egui::{Align, RichText, ScrollArea, Sense, Ui, Vec2};
+use egui::{RichText, ScrollArea, Sense, Ui, Vec2};
 use mcrate_core::Track;
 
 use egui_material_icons::icons as mi;
 
-use super::components::{
-    SIDE_COVER_SIZE, SplitPage, back_header, back_title_row, empty_state, empty_state_top_space, narrow_title_shown, nav_list,
-    same_track_as, split_page, title_scroll_page, track_list,
-};
+use super::components::{back_header, empty_state, empty_state_top_space, nav_list, same_track_as, track_list};
 use super::layout::{
     SETTINGS_CONTENT_MAX_WIDTH, TRACK_LIST_MAX_WIDTH, centered_column, pane_scroll, rows_in_view, scroll_end_padding,
 };
@@ -23,14 +20,11 @@ use super::playlists::{PlaylistDialog, playlist_row, tracks_count_text};
 use super::settings::controls::{Row, Trailing, settings_group};
 use super::widgets::{ButtonKind, COLLAGE_MAX_TILES, SEGMENT_GAP, SegmentPos, apply_list_gap, pill_button, playlist_cover};
 use crate::app::{McrateApp, View};
-use crate::icons::{self, Icon};
+use crate::icons::Icon;
 use crate::theme::Theme;
 
 /// Сколько последних треков показываем внизу главного экрана раздела.
 const RECENT_COUNT: usize = 10;
-/// Подпись под названием заглушки (в шапке и на карточке).
-const STUB_SUBTITLE: &str = "Коллекция Mcrate";
-
 /// Сторона обложки плейлиста на его экране и скругление её внешних углов.
 const PLAYLIST_COVER_SIZE: f32 = 96.0;
 const PLAYLIST_COVER_RADIUS: f32 = 14.0;
@@ -42,24 +36,6 @@ enum PlaylistAction {
     Rename,
     Delete,
 }
-
-/// Содержимое заглушки подэкрана коллекции.
-struct Stub {
-    /// Ключ общей прокрутки узкой страницы (уникален для экрана: по нему шапка читает смещение).
-    key: &'static str,
-    title: &'static str,
-    icon: Icon,
-    headline: &'static str,
-    text: &'static str,
-}
-
-const DOWNLOADED_STUB: Stub = Stub {
-    key: "collection_downloaded_scroll",
-    title: "Скачанные",
-    icon: Icon::Folder,
-    headline: "Списка скачанных пока нет",
-    text: "Движок временно кэширует последние 20 онлайн-треков, но списком их не отдаёт. Постоянные загрузки появятся позже.",
-};
 
 impl McrateApp {
     /// Главный экран раздела «Библиотека».
@@ -84,6 +60,7 @@ impl McrateApp {
         let uploads = format!("Своих файлов: {}", self.ctl.library.len());
         let liked = tracks_count_text(self.ctl.likes.items().len());
         let playlists = format!("Плейлистов: {}", self.ctl.playlists.list().len());
+        let downloaded = tracks_count_text(self.ctl.downloaded.len());
         let views = [View::CollectionLiked, View::CollectionPlaylists, View::CollectionDownloaded, View::Library];
         // Меню шириной 700 и с тем же видом пунктов, что на экране настроек.
         centered_column(ui, SETTINGS_CONTENT_MAX_WIDTH, |ui| {
@@ -91,7 +68,7 @@ impl McrateApp {
                 let rows = [
                     (views[0], "Понравившиеся", liked),
                     (views[1], "Плейлисты", playlists),
-                    (views[2], "Скачанные", "Скоро".to_string()),
+                    (views[2], "Скачанные", downloaded),
                     (views[3], "Ваши загрузки", uploads),
                 ];
                 if let Some(view) = nav_list(ui, theme, &rows, SETTINGS_CONTENT_MAX_WIDTH, true) {
@@ -101,7 +78,7 @@ impl McrateApp {
                 let rows = vec![
                     Row::new(mi::ICON_FAVORITE, "Понравившиеся", Trailing::Value(liked)),
                     Row::new(mi::ICON_QUEUE_MUSIC, "Плейлисты", Trailing::Value(playlists)),
-                    Row::new(mi::ICON_DOWNLOAD, "Скачанные", Trailing::Value("Скоро".into())),
+                    Row::new(mi::ICON_DOWNLOAD, "Скачанные", Trailing::Value(downloaded)),
                     Row::new(mi::ICON_FOLDER, "Ваши загрузки", Trailing::Value(uploads)),
                 ];
                 if let Some(i) = settings_group(ui, theme, "collection", rows) {
@@ -328,43 +305,6 @@ impl McrateApp {
         }
     }
 
-    pub(crate) fn collection_downloaded_view(&mut self, ui: &mut Ui, theme: &Theme) {
-        self.collection_stub(ui, theme, &DOWNLOADED_STUB);
-    }
-
-    /// Пустой экран коллекции в той же двухколоночной компоновке, что и страницы плейлистов.
-    /// Liquid Glass сохраняет прежнюю компактную заглушку под шапкой «Библиотека». Material 3 использует тот же
-    /// левый блок и правую область, что и «Ваши загрузки»: на узком окне блок и сообщение едут одной прокруткой,
-    /// а название экрана появляется в шапке, когда уезжает карточка (на широком окне названия в шапке нет).
-    fn collection_stub(&mut self, ui: &mut Ui, theme: &Theme, stub: &Stub) {
-        centered_column(ui, f32::INFINITY, |ui| {
-            if theme.glass_active() {
-                if back_header(ui, theme, "Библиотека") {
-                    self.view = View::Collection;
-                }
-                ui.add_space(14.0);
-                let top = empty_state_top_space(ui.available_height(), self.bottom_inset);
-                empty_state(ui, theme, top, stub.icon, stub.headline, stub.text);
-                return;
-            }
-            let title_shown = narrow_title_shown(ui, stub.key);
-            if back_title_row(ui, theme, (stub.title, STUB_SUBTITLE), title_shown) {
-                self.view = View::Collection;
-            }
-            ui.add_space(14.0);
-
-            let bleed = self.bleed.below_header();
-            let bottom_inset = self.bottom_inset;
-            split_page(ui, Align::Center, 24.0, |ui, page| {
-                if page.wide {
-                    stub_wide(ui, theme, page, stub);
-                } else {
-                    title_scroll_page(ui, bleed, bottom_inset, stub.key, |ui| stub_narrow(ui, theme, page, stub));
-                }
-            });
-        });
-    }
-
     /// Вся история в общей прокрутке: рисуются только видимые строки (`layout::rows_in_view`), а не все 700.
     /// Возвращает номер строки, по которой кликнули.
     fn history_rows_in_view(&self, ui: &mut Ui, theme: &Theme) -> Option<usize> {
@@ -396,51 +336,3 @@ impl McrateApp {
     }
 }
 
-/// Заглушка в широкой раскладке: слева крупная карточка с названием, справа сообщение.
-fn stub_wide(ui: &mut Ui, theme: &Theme, page: &SplitPage, stub: &Stub) {
-    let p = &theme.palette;
-    page.side(ui, |ui| {
-        ui.add_space(12.0);
-        let (rect, _) = ui.allocate_exact_size(Vec2::splat(SIDE_COVER_SIZE), Sense::hover());
-        ui.painter().rect_filled(rect, theme.shape_radius(crate::theme::ShapeRole::Large), p.surface_container_high);
-        icons::paint(theme, ui.painter(), stub.icon, rect.center(), 104.0, p.on_surface_variant);
-        ui.add_space(18.0);
-        ui.label(RichText::new(stub.title).size(theme.text_size(crate::theme::TextRole::HeadlineSmall)).strong());
-        ui.add_space(6.0);
-        ui.label(RichText::new(STUB_SUBTITLE).size(13.0).color(p.on_surface_variant));
-        ui.add_space(8.0);
-        ui.label(RichText::new("Пока нет сохранённых элементов").size(13.0).color(p.on_surface_variant));
-    });
-    page.main(ui, |ui| {
-        ui.add_space((ui.available_height() * 0.24).max(20.0));
-        let (rect, _) = ui.allocate_exact_size(Vec2::splat(64.0), Sense::hover());
-        icons::paint(theme, ui.painter(), stub.icon, rect.center(), 42.0, p.on_surface_variant);
-        ui.add_space(12.0);
-        ui.label(RichText::new(stub.headline).size(20.0).strong());
-        ui.add_space(5.0);
-        ui.add(egui::Label::new(RichText::new(stub.text).size(14.0).color(p.on_surface_variant)).wrap());
-    });
-}
-
-/// Заглушка в узкой раскладке: компактная карточка сверху, сообщение под ней.
-fn stub_narrow(ui: &mut Ui, theme: &Theme, page: &SplitPage, stub: &Stub) {
-    let p = &theme.palette;
-    page.side(ui, |ui| {
-        ui.horizontal(|ui| {
-            let (rect, _) = ui.allocate_exact_size(Vec2::splat(88.0), Sense::hover());
-            ui.painter().rect_filled(rect, theme.shape_radius(crate::theme::ShapeRole::Medium), p.surface_container_high);
-            icons::paint(theme, ui.painter(), stub.icon, rect.center(), 42.0, p.on_surface_variant);
-            ui.add_space(14.0);
-            ui.vertical(|ui| {
-                ui.label(RichText::new(stub.title).size(theme.text_size(crate::theme::TextRole::TitleLarge)).strong());
-                ui.label(RichText::new(STUB_SUBTITLE).size(13.0).color(p.on_surface_variant));
-            });
-        });
-    });
-    page.main(ui, |ui| {
-        ui.vertical_centered(|ui| {
-            ui.label(RichText::new(stub.headline).size(20.0).strong());
-            ui.add(egui::Label::new(RichText::new(stub.text).size(14.0).color(p.on_surface_variant)).wrap());
-        });
-    });
-}

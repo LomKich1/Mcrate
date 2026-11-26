@@ -22,6 +22,7 @@ pub(crate) mod settings;
 pub(crate) mod shortcuts;
 pub(crate) mod soundcloud;
 pub(crate) mod track_menu;
+pub(crate) mod thanos;
 pub(crate) mod transition;
 pub(crate) mod wave;
 pub(crate) mod widgets;

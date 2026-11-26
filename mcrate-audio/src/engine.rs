@@ -20,7 +20,7 @@
 //! композиция загружается обычным путём только после конца текущей. Онлайн-предзагрузка идёт в
 //! отдельном слоте (`preload_request`) и не мешает загрузке текущего трека.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,7 +34,7 @@ use mcrate_net::{DownloadProgress, StreamDownloader};
 use crate::crossfade::fit as fit_crossfade;
 use crate::loudness::{self, Loudness, Measured};
 use crate::normalize::{Normalizer, PlaybackSettings, TrackKey};
-use crate::stream_cache::{CacheStats, StreamCache, part_path};
+use crate::stream_cache::{CacheStats, DownloadStore, StreamCache, part_path};
 use crate::visualizer::{VisualizerFeed, VisualizerFrame};
 use crate::{AudioError, AudioPlayer, PlayQueue, RepeatMode};
 
@@ -70,6 +70,10 @@ enum Command {
     Stop,
     /// Очистить кэш скачанных треков (кроме играющего и следующего).
     ClearCache,
+    /// Сохранить трек в постоянную папку загрузок.
+    DownloadTrack(Track),
+    /// Внутренняя: пользовательская загрузка завершилась.
+    DownloadFinished { track: Track, result: Result<PathBuf, String> },
     Shutdown,
     /// Внутренняя: фоновая загрузка закончилась. `request` = номер запроса, на который это ответ.
     /// Эту команду шлёт сам движок (из фоновой задачи), UI её не видит.
@@ -124,6 +128,10 @@ pub enum PlaybackEvent {
         track: Track,
         reason: String,
     }, // трек пропущен
+    /// Началась отдельная загрузка трека в постоянную папку (не влияет на воспроизведение).
+    DownloadStarted(Track),
+    /// Отдельная загрузка завершилась: путь к файлу или причина ошибки.
+    DownloadFinished { track: Track, result: Result<PathBuf, String> },
     QueueEnded,
     Error(String), // нефатальная ошибка (например, не удалась перемотка)
 }
@@ -184,14 +192,16 @@ pub struct PlaybackEngine {
     visualizer: VisualizerFeed,
     /// Тот же кэш, что у потока движка: из него UI читает размер (папка лежит на диске, гонок нет).
     cache: StreamCache,
+    /// Постоянное хранилище пользовательских загрузок.
+    downloads: DownloadStore,
     thread: Option<JoinHandle<()>>,
 }
 
 impl PlaybackEngine {
-    /// Запускает поток движка. `providers`: сервисы, у которых он будет просить звук.
-    /// Скачанные онлайн-треки кэшируются в `%TEMP%\mcrate\stream\` (не больше 20 штук).
+    /// Запускает поток движка. Сначала ищет постоянные загрузки (`%APPDATA%\Mcrate\downloads`), затем
+    /// временный кэш (`%TEMP%\mcrate\stream`), и только потом обращается к сервису.
     pub fn new(providers: Vec<Arc<dyn MusicProvider>>) -> Result<Self, AudioError> {
-        Self::with_stream_cache(providers, StreamCache::default_dir())
+        Self::with_stores(providers, StreamCache::default_dir(), DownloadStore::default_dir())
     }
 
     /// Папка кэша по умолчанию (`%TEMP%\mcrate\stream`), когда самого движка ещё нет (примеры, проверки).
@@ -202,6 +212,31 @@ impl PlaybackEngine {
     /// Папка, куда этот движок складывает скачанные онлайн-треки.
     pub fn cache_dir(&self) -> &Path {
         self.cache.dir()
+    }
+
+    /// Папка постоянных загрузок пользователя.
+    pub fn downloads_dir(&self) -> &Path {
+        self.downloads.dir()
+    }
+
+    /// Метаданные треков, для которых в папке загрузок есть готовый аудиофайл.
+    pub fn downloaded_tracks(&self) -> Vec<Track> {
+        self.downloads.tracks()
+    }
+
+    /// Читает постоянные загрузки без запуска аудиодвижка (например, когда нет устройства вывода).
+    pub fn list_downloaded_tracks() -> Vec<Track> {
+        DownloadStore::new(DownloadStore::default_dir()).tracks()
+    }
+
+    /// Удаляет постоянную загрузку, используя тот же индекс, что и поток движка.
+    pub fn remove_downloaded_track(&self, track: &Track) -> Result<(), String> {
+        self.downloads.remove(track)
+    }
+
+    /// Удаляет загрузку, когда сам аудиодвижок не удалось запустить.
+    pub fn remove_downloaded_track_from_disk(track: &Track) -> Result<(), String> {
+        DownloadStore::new(DownloadStore::default_dir()).remove(track)
     }
 
     /// Сколько онлайн-треков и байт сейчас в кэше.
@@ -220,8 +255,17 @@ impl PlaybackEngine {
         self.send(Command::ClearCache);
     }
 
-    /// То же, что `new`, но папку кэша скачанных треков задаёшь сам (нужно тестам и примерам).
+    /// Скачать онлайн-трек в постоянную папку, не меняя очередь и текущее воспроизведение.
+    pub fn download_track(&self, track: Track) {
+        self.send(Command::DownloadTrack(track));
+    }
+
+    /// То же, что `new`, но папку временного кэша задаёшь сам (нужно тестам и примерам).
     pub fn with_stream_cache(providers: Vec<Arc<dyn MusicProvider>>, cache_dir: PathBuf) -> Result<Self, AudioError> {
+        Self::with_stores(providers, cache_dir, DownloadStore::default_dir())
+    }
+
+    fn with_stores(providers: Vec<Arc<dyn MusicProvider>>, cache_dir: PathBuf, downloads_dir: PathBuf) -> Result<Self, AudioError> {
         let (cmd_tx, cmd_rx) = mpsc::channel();
         let (evt_tx, evt_rx) = mpsc::channel();
         let (init_tx, init_rx) = mpsc::channel::<Result<(), String>>();
@@ -234,6 +278,8 @@ impl PlaybackEngine {
         let worker_tx = cmd_tx.clone();
         let cache = StreamCache::new(cache_dir, MAX_CACHED_TRACKS);
         let worker_cache = cache.clone();
+        let downloads = DownloadStore::new(downloads_dir);
+        let worker_downloads = downloads.clone();
 
         // `move` отдаёт замыканию владение переменными: оно работает в другом потоке
         let handle = thread::spawn(move || {
@@ -268,6 +314,7 @@ impl PlaybackEngine {
                 // ошибка всплывёт при первой попытке сыграть онлайн-трек
                 downloader: StreamDownloader::new().map(Arc::new).map_err(|e| e.to_string()),
                 cache: worker_cache,
+                downloads: worker_downloads,
                 commands_tx: worker_tx,
                 queue: PlayQueue::new(),
                 state: thread_state,
@@ -291,13 +338,15 @@ impl PlaybackEngine {
                 preload_request: 0,
                 preload_task: None,
                 preload_analysis: None,
+                downloads_in_progress: HashSet::new(),
+                download_tasks: HashMap::new(),
             }
             .run(cmd_rx);
         });
 
         // Ждём, пока поток сообщит, удалось ли открыть звук
         match init_rx.recv() {
-            Ok(Ok(())) => Ok(Self { commands: cmd_tx, events: evt_rx, state, visualizer, cache, thread: Some(handle) }),
+            Ok(Ok(())) => Ok(Self { commands: cmd_tx, events: evt_rx, state, visualizer, cache, downloads, thread: Some(handle) }),
             Ok(Err(msg)) => Err(AudioError::Engine(msg)),
             Err(_) => Err(AudioError::Engine("поток движка завершился при запуске".to_string())),
         }
@@ -476,6 +525,7 @@ struct Worker {
     providers: HashMap<ProviderKind, Arc<dyn MusicProvider>>,
     downloader: Result<Arc<StreamDownloader>, String>,
     cache: StreamCache,
+    downloads: DownloadStore,
     commands_tx: mpsc::Sender<Command>, // для ответов фоновых задач самому себе
     queue: PlayQueue<Track>,
     state: Arc<Mutex<PlaybackState>>,
@@ -499,6 +549,8 @@ struct Worker {
     preload_request: u64,                              // номер запроса предзагрузки; растёт при каждом запуске и сбросе
     preload_task: Option<tokio::task::JoinHandle<()>>, // ручка фоновой загрузки следующего трека
     preload_analysis: Option<Arc<AtomicBool>>,         // Some = идёт замер следующего трека; внутри флаг отмены
+    downloads_in_progress: HashSet<TrackKey>,          // не запускаем две пользовательские загрузки одного трека
+    download_tasks: HashMap<TrackKey, tokio::task::JoinHandle<()>>,
 }
 
 impl Worker {
@@ -618,6 +670,8 @@ impl Worker {
             }
             Command::Stop => self.set_idle(),
             Command::ClearCache => self.clear_cache(),
+            Command::DownloadTrack(track) => self.start_download(track),
+            Command::DownloadFinished { track, result } => self.on_download_finished(track, result),
             Command::LoadFinished { request, result } => self.on_load_finished(request, result),
             Command::StreamReady { request, part, dest, progress } => self.on_stream_ready(request, part, dest, progress),
             Command::StreamComplete { request, path } => self.on_stream_complete(request, path),
@@ -625,6 +679,49 @@ impl Worker {
             Command::PreloadFinished { request, result } => self.on_preload_finished(request, result),
             Command::Shutdown => {} // обрабатывается в run()
         }
+    }
+
+    /// Начать отдельную загрузку трека, не меняя текущую очередь и звук.
+    fn start_download(&mut self, track: Track) {
+        let key = key_of(&track);
+        if !self.downloads_in_progress.insert(key.clone()) {
+            return; // повторный клик не запускает второй запрос того же трека
+        }
+        let Some(provider) = self.providers.get(&track.provider).cloned() else {
+            self.downloads_in_progress.remove(&key);
+            self.emit(PlaybackEvent::DownloadFinished { track, result: Err("провайдер не подключён".to_string()) });
+            return;
+        };
+        let downloader = match &self.downloader {
+            Ok(downloader) => Arc::clone(downloader),
+            Err(error) => {
+                self.downloads_in_progress.remove(&key);
+                self.emit(PlaybackEvent::DownloadFinished { track, result: Err(format!("сетевой клиент не создан: {error}")) });
+                return;
+            }
+        };
+        self.emit(PlaybackEvent::DownloadStarted(track.clone()));
+        let guard = TrackDownloadGuard { tx: self.commands_tx.clone(), track: track.clone(), sent: false };
+        let task = self.runtime.spawn(run_track_download(
+            provider,
+            downloader,
+            self.cache.clone(),
+            self.downloads.clone(),
+            track,
+            guard,
+        ));
+        self.download_tasks.insert(key, task);
+    }
+
+    /// Освобождает слот и передаёт результат приложению.
+    fn on_download_finished(&mut self, track: Track, result: Result<PathBuf, String>) {
+        let key = key_of(&track);
+        self.downloads_in_progress.remove(&key);
+        self.download_tasks.remove(&key);
+        if result.is_ok() {
+            self.downloads.remember(&track);
+        }
+        self.emit(PlaybackEvent::DownloadFinished { track, result });
     }
 
     /// Запуск трека по команде пользователя (или когда прошлый доиграл): счётчик неудач с нуля.
@@ -721,7 +818,7 @@ impl Worker {
         let guard = LoadGuard { tx: self.commands_tx.clone(), request, sent: false, preload: false };
         let cache = self.cache.clone();
         let task_track = track.clone();
-        let handle = self.runtime.spawn(run_load(provider, downloader, cache, task_track, guard));
+        let handle = self.runtime.spawn(run_load(provider, downloader, cache, self.downloads.clone(), task_track, guard));
         self.load_task = Some(handle);
 
         self.emit(PlaybackEvent::Loading(track.clone()));
@@ -761,7 +858,7 @@ impl Worker {
                 }
                 Err(e) => {
                     // Файл из нашего кэша мог скачаться битым: удаляем, чтобы не играть его снова
-                    if self.cache.contains(&path) {
+                    if self.cache.contains(&path) || self.downloads.contains(&path) {
                         let _ = fs::remove_file(&path);
                     }
                     Err(e.to_string())
@@ -1064,7 +1161,7 @@ impl Worker {
             }
         };
         let guard = LoadGuard { tx: self.commands_tx.clone(), request: self.preload_request, sent: false, preload: true };
-        let handle = self.runtime.spawn(run_load(provider, downloader, self.cache.clone(), track, guard));
+        let handle = self.runtime.spawn(run_load(provider, downloader, self.cache.clone(), self.downloads.clone(), track, guard));
         self.preload_task = Some(handle);
         self.preload = Some(Preload { key, kind, state: PreloadState::Loading });
     }
@@ -1281,9 +1378,98 @@ impl Drop for DownloadGuard {
     }
 }
 
+/// Сторож пользовательской загрузки: сообщает движку результат даже при панике фоновой задачи.
+struct TrackDownloadGuard {
+    tx: mpsc::Sender<Command>,
+    track: Track,
+    sent: bool,
+}
+
+impl TrackDownloadGuard {
+    fn finish(mut self, result: Result<PathBuf, String>) {
+        self.sent = true;
+        let _ = self.tx.send(Command::DownloadFinished { track: self.track.clone(), result });
+    }
+}
+
+impl Drop for TrackDownloadGuard {
+    fn drop(&mut self) {
+        if !self.sent {
+            let _ = self.tx.send(Command::DownloadFinished { track: self.track.clone(), result: Err("загрузка прервана".to_string()) });
+        }
+    }
+}
+
+/// Запускает независимую пользовательскую загрузку. Она не занимает слот воспроизведения.
+async fn run_track_download(
+    provider: Arc<dyn MusicProvider>,
+    downloader: Arc<StreamDownloader>,
+    cache: StreamCache,
+    downloads: DownloadStore,
+    track: Track,
+    guard: TrackDownloadGuard,
+) {
+    let result = save_online_track(provider, downloader, cache, downloads, &track).await;
+    guard.finish(result);
+}
+
+/// Сохраняет онлайн-трек в постоянное хранилище. Повторно сеть не использует:
+/// если трек уже скачан — возвращает путь, если есть в кэше — переносит его.
+async fn save_online_track(
+    provider: Arc<dyn MusicProvider>,
+    downloader: Arc<StreamDownloader>,
+    cache: StreamCache,
+    downloads: DownloadStore,
+    track: &Track,
+) -> Result<PathBuf, String> {
+    let stem = StreamCache::stem(track);
+    if let Some(path) = downloads.find(&stem) {
+        return Ok(path);
+    }
+    if let Some(path) = cache.find(&stem) {
+        return downloads.adopt_cache_file(&path, &stem);
+    }
+
+    let source = match provider.get_stream(track).await.map_err(|e| e.to_string())? {
+        StreamSource::LocalFile(path) => return downloads.import_file(&path, &stem),
+        source => source,
+    };
+
+    let dest = downloads.prepare_target(&stem, &source)?;
+    let part = part_path(&dest);
+    let progress = DownloadProgress::new();
+    if let Err(error) = downloader.download_progressive(&source, &part, &progress).await {
+        let _ = fs::remove_file(&part);
+        return Err(error.to_string());
+    }
+    let size = match fs::metadata(&part) {
+        Ok(metadata) => metadata.len(),
+        Err(error) => {
+            let _ = fs::remove_file(&part);
+            return Err(format!("не удалось проверить загруженный файл: {error}"));
+        }
+    };
+    if size == 0 {
+        let _ = fs::remove_file(&part);
+        return Err("сервис вернул пустой аудиофайл".to_string());
+    }
+    fs::rename(&part, &dest).map_err(|e| {
+        let _ = fs::remove_file(&part);
+        format!("не удалось сохранить файл {}: {e}", dest.display())
+    })?;
+    Ok(dest)
+}
+
 /// Задача фоновой загрузки: запускает `load_online` и отвечает движку (трек или предзагрузка).
-async fn run_load(provider: Arc<dyn MusicProvider>, downloader: Arc<StreamDownloader>, cache: StreamCache, track: Track, guard: LoadGuard) {
-    match load_online(provider, downloader, cache, track, &guard).await {
+async fn run_load(
+    provider: Arc<dyn MusicProvider>,
+    downloader: Arc<StreamDownloader>,
+    cache: StreamCache,
+    downloads: DownloadStore,
+    track: Track,
+    guard: LoadGuard,
+) {
+    match load_online(provider, downloader, cache, downloads, track, &guard).await {
         Ok(Loaded::File(path)) => guard.finish(Ok(path)),
         Ok(Loaded::Streamed(path)) => guard.stream_complete(path), // StreamReady уже ушёл; теперь файл целый
         Err(reason) => guard.finish(Err(reason)),
@@ -1291,7 +1477,7 @@ async fn run_load(provider: Arc<dyn MusicProvider>, downloader: Arc<StreamDownlo
 }
 
 /// Фоновая загрузка онлайн-трека. Идёт на рабочем потоке среды tokio, поток движка не блокирует.
-/// Порядок: кэш -> ссылка от провайдера -> скачивание -> файл в кэше.
+/// Порядок: постоянная загрузка -> кэш -> ссылка от провайдера -> скачивание в кэш.
 ///
 /// Скачивание идёт в отдельной вложенной задаче. Пока набирается `START_BYTES`, мы ждём;
 /// набралось и загрузка ещё идёт: шлём движку `StreamReady` (пусть начинает играть), и дальше
@@ -1300,22 +1486,27 @@ async fn load_online(
     provider: Arc<dyn MusicProvider>,
     downloader: Arc<StreamDownloader>,
     cache: StreamCache,
+    downloads: DownloadStore,
     track: Track,
     guard: &LoadGuard,
 ) -> Result<Loaded, String> {
-    // 1. Уже скачан раньше? Тогда без сети и без запроса ссылки (ссылки сервисов всё равно протухают)
+    // 1. Постоянные загрузки не удаляются автоматически — проверяем их прежде временного кэша.
     let stem = StreamCache::stem(&track);
+    if let Some(hit) = downloads.find(&stem) {
+        return Ok(Loaded::File(hit));
+    }
+    // 2. Недавний файл кэша позволяет не обращаться к сервису повторно.
     if let Some(hit) = cache.find(&stem) {
         return Ok(Loaded::File(hit));
     }
 
-    // 2. Просим у провайдера источник звука
+    // 3. Просим у провайдера источник звука
     let source = provider.get_stream(&track).await.map_err(|e| e.to_string())?;
     if let StreamSource::LocalFile(path) = source {
         return Ok(Loaded::File(path)); // провайдер уже держит файл на диске: качать нечего
     }
 
-    // 3. Качаем во временный файл `.part` и переименовываем: недокачанный файл не примут за готовый
+    // 4. Качаем во временный файл `.part` и переименовываем: недокачанный файл не примут за готовый
     let dest = cache.target(&stem, &source);
     let part = part_path(&dest);
     fs::create_dir_all(cache.dir()).map_err(|e| format!("папка кэша {}: {e}", cache.dir().display()))?;
@@ -1327,7 +1518,7 @@ async fn load_online(
     };
     let mut download = DownloadGuard { progress: progress.clone(), task, part: part.clone(), armed: true };
 
-    // 4. Ждём, пока скачается запас, загрузка не закончится или не оборвётся
+    // 5. Ждём, пока скачается запас, загрузка не закончится или не оборвётся
     while progress.written() < START_BYTES && !progress.is_finished() && progress.error().is_none() {
         tokio::time::sleep(READY_POLL).await;
     }
@@ -1336,13 +1527,13 @@ async fn load_online(
         return Err(error);
     }
 
-    // 5. Если загрузка ещё идёт, сообщаем движку: можно играть
+    // 6. Если загрузка ещё идёт, сообщаем движку: можно играть
     let streaming = !progress.is_finished();
     if streaming {
         guard.stream_ready(part.clone(), dest.clone(), progress.clone());
     }
 
-    // 6. Дожидаемся конца загрузки (для быстрых и мелких файлов это сразу)
+    // 7. Дожидаемся конца загрузки (для быстрых и мелких файлов это сразу)
     let outcome = (&mut download.task).await;
     match outcome {
         Ok(Ok(())) => {}
@@ -1357,11 +1548,11 @@ async fn load_online(
     }
     download.armed = false; // всё скачано, отмена больше не нужна
 
-    // 7. Переименовываем. На Windows открытый плеером файл переименовать можно (Rust открывает
+    // 8. Переименовываем. На Windows открытый плеером файл переименовать можно (Rust открывает
     //    файлы с общим доступом), и плеер продолжит читать тот же файл.
     fs::rename(&part, &dest).map_err(|e| format!("не удалось сохранить {}: {e}", dest.display()))?;
 
-    // 8. Подчищаем старые файлы кэша (только что скачанный не трогаем)
+    // 9. Подчищаем старые файлы кэша (только что скачанный не трогаем)
     cache.prune(&dest);
     Ok(if streaming { Loaded::Streamed(dest) } else { Loaded::File(dest) })
 }

@@ -4,12 +4,14 @@
 use async_trait::async_trait; // макрос, который разрешает async fn в трейте
 use std::path::PathBuf;
 use thiserror::Error; // макрос для удобного описания ошибок // PathBuf = путь к файлу (владеющий, как String для текста)
+pub mod downloads; // метаданные скачанных онлайн-треков
 pub mod history; // история прослушивания на диске
 pub mod likes; // понравившиеся треки на диске
 pub mod paths; // где лежат файлы приложения
 pub mod playlists; // плейлисты на диске
 pub mod secrets; // секреты (токены) в хранилище системы
 mod track_codec; // запись трека строкой и атомарная запись файла (общее для history/likes/playlists)
+pub use downloads::Downloads;
 pub use history::{HISTORY_MAX, History};
 pub use likes::Likes;
 pub use playlists::{Playlist, Playlists};

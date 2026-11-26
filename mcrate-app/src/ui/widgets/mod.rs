@@ -26,4 +26,4 @@ pub(crate) use search::search_bar;
 pub(crate) use segment::{SEGMENT_GAP, SegmentPos, apply_list_gap, ripple_corner, segment_radius, segment_shape};
 pub(crate) use slider::slider_bar;
 pub(crate) use text::elided;
-pub(crate) use track_row::{COVER_SCRIM_ALPHA, RowPlayback, row_hover, track_row};
+pub(crate) use track_row::{COVER_SCRIM_ALPHA, RowPlayback, row_hover, track_row, track_row_with_provider_badge};

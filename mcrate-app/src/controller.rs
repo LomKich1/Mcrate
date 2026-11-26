@@ -8,7 +8,7 @@
 //!   * каждый кадр (`tick`) читаем события и снимок состояния движка и копируем в поля для UI;
 //!   * библиотека своих файлов (`LocalProvider`) и поиск по SoundCloud (в фоне, UI не ждёт).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
@@ -31,6 +31,25 @@ pub fn provider_label(kind: ProviderKind) -> &'static str {
 /// Сколько после перемотки показываем выбранную позицию, не дожидаясь снимка движка
 /// (снимок обновляется раз в ~100 мс; без этого ползунок на миг прыгал бы назад).
 const SEEK_HOLD: Duration = Duration::from_millis(300);
+/// Длина падения стрелки и время исчезновения значка после завершения скачивания.
+pub(crate) const DOWNLOAD_ICON_DROP: Duration = Duration::from_millis(620);
+pub(crate) const DOWNLOAD_ICON_FADE: Duration = Duration::from_millis(220);
+
+/// Значок должен завершить падение даже при очень быстром скачивании, затем плавно исчезнуть.
+fn download_visual_expired(visual: DownloadVisual, now: Instant) -> bool {
+    let Some(finished_at) = visual.finished_at else { return false };
+    let fade_start = (visual.started_at + DOWNLOAD_ICON_DROP).max(finished_at);
+    now.saturating_duration_since(fade_start) >= DOWNLOAD_ICON_FADE
+}
+
+/// Состояние анимации скачивания для одной строки списка.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct DownloadVisual {
+    /// Момент начала скачивания: от него считается падение стрелки.
+    pub(crate) started_at: Instant,
+    /// Момент завершения: после анимации значок плавно исчезает.
+    pub(crate) finished_at: Option<Instant>,
+}
 
 /// Сведения о кэше онлайн-треков, как их отдаёт движок.
 #[derive(Debug, Clone)]
@@ -127,10 +146,16 @@ pub struct Controller {
 
     pub queue: QueueView,
     pub library: Vec<Track>,
+    /// Онлайн-треки, у которых есть постоянный аудиофайл в папке загрузок.
+    pub downloaded: Vec<Track>,
     /// Текущий трек (в том числе пока он грузится): копия `state().current` движка.
     pub now: Option<Track>,
     pub volume: f32,
     pub status: Option<String>,
+    /// Ошибка пользовательской загрузки; успешное сохранение не вызывает уведомление.
+    pub download_status: Option<String>,
+    /// Ключи треков с активной анимацией скачивания на обложке строки.
+    download_visuals: Arc<HashMap<LikeKey, DownloadVisual>>,
     /// Последняя ошибка воспроизведения (трек не запустился, оборвалась загрузка).
     /// Стирается, когда пошёл следующий трек.
     pub play_error: Option<String>,
@@ -234,7 +259,11 @@ impl Controller {
         }
 
         let (sc_tx, sc_rx) = mpsc::channel();
+        let history = History::open(paths::history_file());
         let likes = Likes::open(paths::likes_file());
+        let playlists = Playlists::open(paths::playlists_file());
+        let mut downloaded = PlaybackEngine::list_downloaded_tracks();
+        restore_download_metadata(&mut downloaded, &history, &likes, &playlists);
         Self {
             rt: Some(rt),
             local,
@@ -243,14 +272,17 @@ impl Controller {
             audio_error,
             queue: QueueView { shuffle: false, repeat: RepeatMode::Off, len: 0, index: 0 },
             library,
+            downloaded,
             now: None,
             volume,
             status,
+            download_status: None,
+            download_visuals: Arc::new(HashMap::new()),
             play_error: None,
-            history: History::open(paths::history_file()),
+            history,
             liked: Arc::new(liked_keys(likes.items())),
             likes,
-            playlists: Playlists::open(paths::playlists_file()),
+            playlists,
             sc: sc_state,
             playing: false,
             loading: false,
@@ -376,6 +408,7 @@ impl Controller {
         let Some(engine) = &self.engine else { return };
         let events = engine.poll_events();
         let state = engine.state();
+        let mut downloads_changed = false;
 
         for event in events {
             match event {
@@ -397,6 +430,22 @@ impl Controller {
                     self.queue.shuffle = shuffle;
                     self.queue.repeat = repeat;
                 }
+                PlaybackEvent::DownloadStarted(track) => {
+                    let key = (track.provider, track.id.clone());
+                    Arc::make_mut(&mut self.download_visuals).insert(
+                        key,
+                        DownloadVisual { started_at: Instant::now(), finished_at: None },
+                    );
+                    self.download_status = None;
+                }
+                PlaybackEvent::DownloadFinished { track, result } => {
+                    let key = (track.provider, track.id.clone());
+                    if let Some(visual) = Arc::make_mut(&mut self.download_visuals).get_mut(&key) {
+                        visual.finished_at = Some(Instant::now());
+                    }
+                    downloads_changed |= result.is_ok();
+                    self.download_status = result.err().map(|reason| format!("Не удалось скачать «{}»: {reason}", track.title));
+                }
                 PlaybackEvent::TrackFailed { track, reason } => {
                     let msg = format!("Не удалось сыграть «{}»: {reason}", track.title);
                     self.status = Some(msg.clone());
@@ -410,6 +459,10 @@ impl Controller {
             }
         }
 
+        if downloads_changed {
+            self.downloaded = engine.downloaded_tracks();
+            restore_download_metadata(&mut self.downloaded, &self.history, &self.likes, &self.playlists);
+        }
         self.now = state.current;
         self.playing = state.is_playing;
         self.loading = state.is_loading;
@@ -418,6 +471,10 @@ impl Controller {
         self.visualizer = engine.visualizer();
         // Громкость не копируем: её хозяин Controller (ползунок двигается плавно, а снимок отстаёт на кадр).
         self.queue = QueueView { shuffle: state.shuffle, repeat: state.repeat, len: state.queue_len, index: state.queue_index };
+        let now = Instant::now();
+        if self.download_visuals.values().any(|visual| download_visual_expired(*visual, now)) {
+            Arc::make_mut(&mut self.download_visuals).retain(|_, visual| !download_visual_expired(*visual, now));
+        }
     }
 
     /// Играет ли сейчас музыка. Пока онлайн-трек грузится, считаем, что «играет»
@@ -493,11 +550,51 @@ impl Controller {
         Arc::clone(&self.liked)
     }
 
+    /// Состояния анимации скачивания, которые строки списков используют для обложек.
+    pub(crate) fn download_visuals(&self) -> Arc<HashMap<LikeKey, DownloadVisual>> {
+        Arc::clone(&self.download_visuals)
+    }
+
     /// Поставить или снять лайк; возвращает, стоит ли он теперь. Всё делает ядро (`Likes::toggle`).
     pub fn toggle_like(&mut self, track: &Track) -> bool {
         let liked = self.likes.toggle(track);
         self.liked = Arc::new(liked_keys(self.likes.items()));
         liked
+    }
+
+    /// Убирает трек из понравившихся и обновляет быстрый набор для сердечек в строках.
+    pub fn remove_like(&mut self, track: &Track) -> bool {
+        let removed = self.likes.remove(track.provider, &track.id);
+        if removed {
+            self.liked = Arc::new(liked_keys(self.likes.items()));
+        }
+        removed
+    }
+
+    /// Удаляет скачанный файл через движок и сразу убирает трек из списка библиотеки.
+    pub fn remove_downloaded_track(&mut self, track: &Track) -> Result<(), String> {
+        if let Some(engine) = &self.engine {
+            engine.remove_downloaded_track(track)?;
+        } else {
+            PlaybackEngine::remove_downloaded_track_from_disk(track)?;
+        }
+        self.downloaded.retain(|item| !(item.provider == track.provider && item.id == track.id));
+        Ok(())
+    }
+
+    /// Перечитать список постоянных загрузок (например, при повторном открытии экрана).
+    pub fn refresh_downloads(&mut self) {
+        self.downloaded = PlaybackEngine::list_downloaded_tracks();
+        restore_download_metadata(&mut self.downloaded, &self.history, &self.likes, &self.playlists);
+    }
+
+    /// Скачать онлайн-трек, не меняя очередь и текущее воспроизведение.
+    pub fn download_track(&mut self, track: Track) {
+        let Some(engine) = &self.engine else {
+            self.download_status = Some(format!("Нет звукового движка: {}", self.audio_error.clone().unwrap_or_default()));
+            return;
+        };
+        engine.download_track(track);
     }
 
     /// Очистить кэш онлайн-треков. Играющий и готовящийся следующий трек остаются; движок делает это
@@ -554,6 +651,22 @@ fn liked_keys(items: &[Track]) -> HashSet<LikeKey> {
     items.iter().map(|t| (t.provider, t.id.clone())).collect()
 }
 
+
+/// Старые файлы появились до индекса `downloads.txt`: дополняем их метаданные данными,
+/// которые уже сохранены в истории, лайках или плейлистах. Идентификатор и сервис всегда должны совпасть.
+fn restore_download_metadata(downloaded: &mut [Track], history: &History, likes: &Likes, playlists: &Playlists) {
+    let mut known = history.items().to_vec();
+    known.extend(likes.items().iter().cloned());
+    for playlist in playlists.list() {
+        known.extend(playlist.tracks.iter().cloned());
+    }
+    for track in downloaded.iter_mut().filter(|track| track.artists.is_empty() || track.duration_secs == 0) {
+        if let Some(saved) = known.iter().find(|saved| saved.provider == track.provider && saved.id == track.id) {
+            *track = saved.clone();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -567,6 +680,21 @@ mod tests {
         sc.begin_search("старый".into());
         sc.finish_search("старый".into(), Ok(vec![track("1", ProviderKind::SoundCloud), track("2", ProviderKind::SoundCloud)]));
         sc
+    }
+
+    #[test]
+    fn short_download_keeps_the_arrow_until_it_lands_then_fades() {
+        let started_at = Instant::now();
+        let visual = DownloadVisual { started_at, finished_at: Some(started_at + Duration::from_millis(80)) };
+        assert!(!download_visual_expired(visual, started_at + DOWNLOAD_ICON_DROP));
+        assert!(download_visual_expired(visual, started_at + DOWNLOAD_ICON_DROP + DOWNLOAD_ICON_FADE));
+    }
+
+    #[test]
+    fn active_download_visual_does_not_expire() {
+        let now = Instant::now();
+        let visual = DownloadVisual { started_at: now, finished_at: None };
+        assert!(!download_visual_expired(visual, now + Duration::from_secs(60)));
     }
 
     #[test]

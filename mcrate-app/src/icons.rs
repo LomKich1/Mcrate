@@ -43,12 +43,16 @@ pub enum Icon {
     Heart,
     /// Пустое сердце: лайка нет.
     HeartOutline,
+    /// Скачать онлайн-трек в постоянную папку.
+    Download,
+    /// Удалить трек или убрать его из коллекции.
+    Trash,
     /// Три точки по вертикали: меню действий трека.
     MoreVertical,
 }
 
 impl Icon {
-    const COUNT: usize = 27;
+    const COUNT: usize = 29;
 
     const ALL: [Self; Self::COUNT] = [
         Self::Play,
@@ -77,6 +81,8 @@ impl Icon {
         Self::Close,
         Self::Heart,
         Self::HeartOutline,
+        Self::Download,
+        Self::Trash,
         Self::MoreVertical,
     ];
 
@@ -108,6 +114,8 @@ impl Icon {
             Self::Close => mi::ICON_CLOSE,
             Self::Heart => mi::ICON_FAVORITE.filled(),
             Self::HeartOutline => mi::ICON_FAVORITE.outlined(),
+            Self::Download => mi::ICON_DOWNLOAD,
+            Self::Trash => mi::ICON_DELETE,
             Self::MoreVertical => mi::ICON_MORE_VERT,
         }
     }
@@ -140,6 +148,8 @@ impl Icon {
             Self::Checkmark => "check",
             Self::Close => "x",
             Self::Heart | Self::HeartOutline => "heart",
+            Self::Download => "download",
+            Self::Trash => "trash-2",
             Self::MoreVertical => "ellipsis-vertical",
         }
     }

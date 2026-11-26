@@ -1,16 +1,16 @@
-//! Кэш скачанных онлайн-треков: папка во временных файлах Windows (%TEMP%\mcrate\stream\).
+//! Хранилища онлайн-треков: временный кэш и постоянная папка загрузок.
 //!
-//! Зачем: движок скачивает трек целиком в файл, а плеер играет файл. Если пользователь
-//! вернётся к уже скачанному треку, второй раз качать не нужно (на медленном интернете
-//! это экономит минуту). Старые файлы удаляем, чтобы папка не росла бесконечно.
-//!
-//! Имя файла: `<сервис>-<id трека>.<расширение>`, например `soundcloud-123456.m4a`.
+//! Имена файлов одинаковы в обоих местах: `<сервис>-<id трека>.<расширение>`. При
+//! воспроизведении сначала ищем постоянную загрузку, затем кэш; кэш ограничен по размеру,
+//! постоянные загрузки не удаляются автоматически.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use mcrate_core::{ProviderKind, StreamSource, Track};
+use mcrate_core::{Downloads, ProviderKind, StreamSource, Track};
 
 /// Сводка по кэшу: сколько в нём файлов и сколько они занимают.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -90,18 +90,7 @@ impl StreamCache {
     /// Ищет уже скачанный трек (с любым расширением). Найденный файл «освежаем»:
     /// ставим время изменения «сейчас», чтобы он считался недавним и не удалился первым.
     pub(crate) fn find(&self, stem: &str) -> Option<PathBuf> {
-        let entries = fs::read_dir(&self.dir).ok()?; // нет папки = в кэше пусто
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let is_part = path.extension().is_some_and(|e| e == "part"); // недокачанный файл не берём
-            let same_stem = path.file_stem().is_some_and(|s| s.to_string_lossy() == stem);
-            let not_empty = entry.metadata().map(|m| m.is_file() && m.len() > 0).unwrap_or(false);
-            if !is_part && same_stem && not_empty {
-                touch(&path);
-                return Some(path);
-            }
-        }
-        None
+        find_track(&self.dir, stem, true)
     }
 
     /// Куда сохранить скачанный трек.
@@ -141,6 +130,217 @@ impl StreamCache {
             }
         }
     }
+}
+
+/// Постоянная папка треков, сохранённых пользователем. В отличие от кэша, файлы здесь
+/// не удаляются автоматически и используются при каждом следующем воспроизведении.
+#[derive(Debug, Clone)]
+pub(crate) struct DownloadStore {
+    dir: PathBuf,
+    /// Метаданные лежат рядом с папкой аудиофайлов и обновляются потоком движка.
+    index: Arc<Mutex<Downloads>>,
+}
+
+impl DownloadStore {
+    pub(crate) fn new(dir: PathBuf) -> Self {
+        let index_path = if dir == Self::default_dir() {
+            mcrate_core::paths::downloads_index_file().or_else(|| dir.parent().map(|parent| parent.join("downloads.txt")))
+        } else {
+            Some(dir.join("downloads.txt"))
+        };
+        Self { dir, index: Arc::new(Mutex::new(Downloads::open(index_path))) }
+    }
+
+    /// Папка `%APPDATA%\Mcrate\downloads`.
+    pub(crate) fn default_dir() -> PathBuf {
+        mcrate_core::paths::downloads_dir().unwrap_or_else(|| std::env::temp_dir().join("mcrate").join("downloads"))
+    }
+
+    pub(crate) fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    pub(crate) fn contains(&self, path: &Path) -> bool {
+        path.starts_with(&self.dir)
+    }
+
+    /// Сохраняет метаданные после успешной записи аудиофайла. Если индекс временно недоступен,
+    /// сам аудиофайл не теряем: `Downloads` оставляет метаданные в памяти и пишет ошибку в stderr.
+    pub(crate) fn remember(&self, track: &Track) {
+        if let Some(path) = find_track(&self.dir, &StreamCache::stem(track), false) {
+            touch(&path); // перенос из кэша тоже становится свежей загрузкой в списке.
+        }
+        let mut index = self.index.lock().unwrap_or_else(|error| error.into_inner());
+        index.add(track);
+    }
+
+    /// Удаляет постоянный аудиофайл трека и его запись из общего индекса. Временный потоковый кэш не трогает.
+    pub(crate) fn remove(&self, track: &Track) -> Result<(), String> {
+        let stem = StreamCache::stem(track);
+        match fs::read_dir(&self.dir) {
+            Ok(entries) => {
+                for entry in entries {
+                    let entry = entry.map_err(|error| format!("не удалось прочитать папку загрузок: {error}"))?;
+                    let path = entry.path();
+                    if path.extension().is_some_and(|extension| extension == "part")
+                        || !path.file_stem().is_some_and(|name| name.to_string_lossy() == stem.as_str())
+                        || !entry.file_type().map_err(|error| format!("не удалось проверить {}: {error}", path.display()))?.is_file()
+                    {
+                        continue;
+                    }
+                    match fs::remove_file(&path) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(format!("не удалось удалить {}: {error}", path.display())),
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("не удалось открыть папку загрузок {}: {error}", self.dir.display())),
+        }
+        let mut index = self.index.lock().unwrap_or_else(|error| error.into_inner());
+        index.remove(track.provider, &track.id);
+        Ok(())
+    }
+
+    /// Возвращает существующие загрузки, новые первыми по времени файла. Старые файлы без индекса
+    /// тоже показываем: имя содержит сервис и id, поэтому создаём минимальную запись, пока метаданные
+    /// не удастся восстановить из истории или плейлиста на стороне Controller.
+    pub(crate) fn tracks(&self) -> Vec<Track> {
+        let indexed = self.index.lock().unwrap_or_else(|error| error.into_inner()).items().to_vec();
+        let mut found = Vec::<(SystemTime, Track)>::new();
+        let mut known_stems = HashSet::new();
+
+        for track in indexed {
+            let stem = StreamCache::stem(&track);
+            let Some(path) = find_track(&self.dir, &stem, false) else { continue };
+            known_stems.insert(stem);
+            let modified = fs::metadata(path).and_then(|meta| meta.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
+            found.push((modified, track));
+        }
+
+        if let Ok(entries) = fs::read_dir(&self.dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(metadata) = entry.metadata() else { continue };
+                if !metadata.is_file() || metadata.len() == 0 || path.extension().is_some_and(|ext| ext == "part") {
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(|name| name.to_str()) else { continue };
+                if !known_stems.insert(stem.to_string()) {
+                    continue;
+                }
+                let Some((service, id)) = stem.split_once('-') else { continue };
+                let Some(provider) = ProviderKind::from_key(service) else { continue };
+                if provider == ProviderKind::Local {
+                    continue;
+                }
+                let track = Track {
+                    id: id.to_string(),
+                    provider,
+                    title: format!("Трек {id}"),
+                    artists: Vec::new(),
+                    duration_secs: 0,
+                };
+                found.push((metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH), track));
+            }
+        }
+
+        found.sort_by(|a, b| b.0.cmp(&a.0));
+        found.into_iter().map(|(_, track)| track).collect()
+    }
+
+    /// Проверяет, что постоянная копия трека уже существует. Время файла не меняем:
+    /// постоянная загрузка не участвует в очистке и должна сохранять дату загрузки.
+    pub(crate) fn find(&self, stem: &str) -> Option<PathBuf> {
+        find_track(&self.dir, stem, false)
+    }
+
+    pub(crate) fn target(&self, stem: &str, source: &StreamSource) -> PathBuf {
+        self.dir.join(format!("{stem}.{}", extension_for(source)))
+    }
+
+    /// Переносит завершённый файл из кэша в постоянное хранилище. Сначала пробуем rename;
+    /// если Windows не разрешает переименовать открытый плеером файл, копируем во временный
+    /// файл и атомарно публикуем его, оставляя исходник в кэше, если удалить его нельзя.
+    pub(crate) fn adopt_cache_file(&self, source: &Path, stem: &str) -> Result<PathBuf, String> {
+        let file_name = source.file_name().ok_or_else(|| format!("неверный путь к файлу кэша: {}", source.display()))?;
+        fs::create_dir_all(&self.dir).map_err(|e| format!("папка загрузок {}: {e}", self.dir.display()))?;
+        let dest = self.dir.join(file_name);
+        if dest.exists() {
+            let valid = fs::metadata(&dest).map(|m| m.is_file() && m.len() > 0).unwrap_or(false);
+            if valid && dest.file_stem().is_some_and(|s| s.to_string_lossy() == stem) {
+                return Ok(dest);
+            }
+            let _ = fs::remove_file(&dest);
+        }
+        match fs::rename(source, &dest) {
+            Ok(()) => Ok(dest),
+            Err(rename_error) => {
+                let part = part_path(&dest);
+                if let Err(copy_error) = fs::copy(source, &part) {
+                    let _ = fs::remove_file(&part);
+                    return Err(format!("не удалось переместить файл из кэша ({rename_error}) или скопировать его ({copy_error})"));
+                }
+                if let Err(error) = fs::rename(&part, &dest) {
+                    let _ = fs::remove_file(&part);
+                    return Err(format!("не удалось сохранить файл в загрузки {}: {error}", dest.display()));
+                }
+                let _ = fs::remove_file(source);
+                Ok(dest)
+            }
+        }
+    }
+
+    /// Куда сохранить готовый файл из сетевого источника. Сначала создаём папку,
+    /// затем вызывающий код пишет в `.part` и переименовывает его после успешной загрузки.
+    pub(crate) fn prepare_target(&self, stem: &str, source: &StreamSource) -> Result<PathBuf, String> {
+        fs::create_dir_all(&self.dir).map_err(|e| format!("папка загрузок {}: {e}", self.dir.display()))?;
+        let dest = self.target(stem, source);
+        if fs::metadata(&dest).is_ok_and(|metadata| metadata.is_file() && metadata.len() == 0) {
+            let _ = fs::remove_file(&dest);
+        }
+        Ok(dest)
+    }
+
+    /// Копирует источник `LocalFile` в постоянную папку (полезно для провайдеров,
+    /// которые могут возвращать файл вместо сетевой ссылки).
+    pub(crate) fn import_file(&self, source: &Path, stem: &str) -> Result<PathBuf, String> {
+        fs::create_dir_all(&self.dir).map_err(|e| format!("папка загрузок {}: {e}", self.dir.display()))?;
+        let extension = source.extension().and_then(|e| e.to_str()).filter(|e| (1..=5).contains(&e.len()) && e.chars().all(|c| c.is_ascii_alphanumeric())).unwrap_or("bin");
+        let dest = self.dir.join(format!("{stem}.{}", extension.to_ascii_lowercase()));
+        if fs::metadata(&dest).is_ok_and(|metadata| metadata.is_file() && metadata.len() == 0) {
+            let _ = fs::remove_file(&dest);
+        }
+        let part = part_path(&dest);
+        if let Err(error) = fs::copy(source, &part) {
+            let _ = fs::remove_file(&part);
+            return Err(format!("не удалось скопировать {}: {error}", source.display()));
+        }
+        fs::rename(&part, &dest).map_err(|e| {
+            let _ = fs::remove_file(&part);
+            format!("не удалось сохранить {}: {e}", dest.display())
+        })?;
+        Ok(dest)
+    }
+}
+
+/// Ищет готовый файл с указанной основой имени. `.part` и пустые файлы не считаются загрузками.
+fn find_track(dir: &Path, stem: &str, refresh: bool) -> Option<PathBuf> {
+    let entries = fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_part = path.extension().is_some_and(|e| e == "part");
+        let same_stem = path.file_stem().is_some_and(|s| s.to_string_lossy() == stem);
+        let not_empty = entry.metadata().map(|m| m.is_file() && m.len() > 0).unwrap_or(false);
+        if !is_part && same_stem && not_empty {
+            if refresh {
+                touch(&path);
+            }
+            return Some(path);
+        }
+    }
+    None
 }
 
 /// Путь временного файла для докачки: `x.m4a` -> `x.m4a.part`. Скачиваем сюда,
@@ -312,6 +512,100 @@ mod tests {
         assert_eq!(cache.stats(), CacheStats { files: 2, bytes: 2 });
         assert_eq!(StreamCache::new(dir.join("нет такой"), 20).stats(), CacheStats::default());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn downloads_find_without_refreshing_file_age() {
+        let dir = temp_dir("downloads-find");
+        let store = DownloadStore::new(dir.clone());
+        let path = make_file(&dir, "soundcloud-7.m4a", 1000);
+        let before = fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(store.find("soundcloud-7"), Some(path.clone()));
+        let after = fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(after, before);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_file_can_be_adopted_as_permanent_download() {
+        let root = temp_dir("adopt");
+        let cache = root.join("cache");
+        let downloads = root.join("downloads");
+        fs::create_dir_all(&cache).unwrap();
+        let source = cache.join("soundcloud-42.m4a");
+        fs::write(&source, b"audio").unwrap();
+        let store = DownloadStore::new(downloads.clone());
+        let saved = store.adopt_cache_file(&source, "soundcloud-42").unwrap();
+        assert_eq!(saved, downloads.join("soundcloud-42.m4a"));
+        assert_eq!(fs::read(&saved).unwrap(), b"audio");
+        assert!(!source.exists());
+        assert_eq!(store.find("soundcloud-42"), Some(saved));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn remove_download_deletes_matching_file_and_index_but_keeps_other_service() {
+        let dir = temp_dir("downloads-remove");
+        let store = DownloadStore::new(dir.clone());
+        let soundcloud = track("42", ProviderKind::SoundCloud);
+        let vk = track("42", ProviderKind::Vk);
+        store.index.lock().unwrap().add(&soundcloud);
+        store.index.lock().unwrap().add(&vk);
+
+        let soundcloud_file = make_file(&dir, "soundcloud-42.m4a", 0);
+        let vk_file = make_file(&dir, "vk-42.m4a", 0);
+        let partial = dir.join("soundcloud-42.m4a.part");
+        fs::write(&partial, b"partial").unwrap();
+
+        store.remove(&soundcloud).unwrap();
+
+        assert!(!soundcloud_file.exists());
+        assert!(vk_file.exists());
+        assert!(partial.exists());
+        let remaining = store.tracks();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].provider, ProviderKind::Vk);
+        assert_eq!(remaining[0].id, "42");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn download_store_lists_legacy_files_and_persists_track_metadata() {
+        let dir = temp_dir("download-index");
+        let store = DownloadStore::new(dir.clone());
+        fs::write(dir.join("soundcloud-42.m4a"), b"audio").unwrap();
+        fs::write(dir.join("soundcloud-43.m4a.part"), b"partial").unwrap();
+
+        let legacy = store.tracks();
+        assert_eq!(legacy.len(), 1);
+        assert_eq!((legacy[0].provider, legacy[0].id.as_str()), (ProviderKind::SoundCloud, "42"));
+
+        let full = Track {
+            id: "42".into(),
+            provider: ProviderKind::SoundCloud,
+            title: "Песня".into(),
+            artists: vec!["Исполнитель".into()],
+            duration_secs: 137,
+        };
+        store.remember(&full);
+        let listed = store.tracks();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].title, "Песня");
+        assert_eq!(listed[0].artists, ["Исполнитель"]);
+        assert_eq!(listed[0].duration_secs, 137);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn local_file_can_be_imported_into_download_store() {
+        let root = temp_dir("import");
+        let source = root.join("source.wav");
+        fs::write(&source, b"audio").unwrap();
+        let store = DownloadStore::new(root.join("downloads"));
+        let saved = store.import_file(&source, "soundcloud-13").unwrap();
+        assert_eq!(saved, root.join("downloads").join("soundcloud-13.wav"));
+        assert_eq!(fs::read(saved).unwrap(), b"audio");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

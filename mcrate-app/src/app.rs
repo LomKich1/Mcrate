@@ -172,7 +172,7 @@ pub struct McrateApp {
     /// Текст в поле поиска экрана SoundCloud (запрос уходит по Enter).
     pub sc_input: String,
     pub filtered: Vec<Track>,
-    filter_key: Option<(String, usize)>,
+    filter_key: Option<(String, usize, View)>,
     pub seek_drag: Option<f32>,
     pub volume_before_mute: f32,
     /// Состояние экрана «Сейчас играет»: панель текста, её анимация, раскладка карточек.
@@ -206,6 +206,8 @@ impl McrateApp {
 
         let render_state = cc.wgpu_render_state.clone().expect("нужен рендерер wgpu (Renderer::Wgpu)");
         let gpu_backend = format!("{:?}", render_state.adapter.get_info().backend);
+        // Регистрируем отдельный GPU-проход Thanos в том же egui-wgpu renderer.
+        crate::ui::thanos::init_gpu(&render_state);
         // GlassContext = egui_glass::init + LiveBackdrop одним вызовом (1 = без MSAA, как у eframe).
         let glass = egui_glass::GlassContext::new(&cc.egui_ctx, &render_state, 1).expect("не удалось запустить egui_glass");
 
@@ -451,13 +453,31 @@ impl McrateApp {
         }
     }
 
-    /// Пересчитываем список по поиску только при изменении запроса или библиотеки.
+    /// Пересчитываем список только при изменении запроса, источника или числа треков.
     fn refresh_filter(&mut self) {
-        let key = (self.search.clone(), self.ctl.library.len());
-        if self.filter_key.as_ref() != Some(&key) {
-            self.filtered = self.ctl.search(&self.search);
-            self.filter_key = Some(key);
+        if self.view == View::CollectionDownloaded
+            && !self.filter_key.as_ref().is_some_and(|(_, _, view)| *view == View::CollectionDownloaded)
+        {
+            self.ctl.refresh_downloads();
         }
+        let count = match self.view {
+            View::Library => self.ctl.library.len(),
+            View::CollectionDownloaded => self.ctl.downloaded.len(),
+            _ => {
+                self.filter_key = None;
+                return;
+            }
+        };
+        let key = (self.search.clone(), count, self.view);
+        if self.filter_key.as_ref() == Some(&key) {
+            return;
+        }
+        self.filtered = match self.view {
+            View::Library => self.ctl.search(&self.search),
+            View::CollectionDownloaded => filter_downloaded(&self.ctl.downloaded, &self.search),
+            _ => Vec::new(),
+        };
+        self.filter_key = Some(key);
     }
 
     fn paint_drop_overlay(&self, ctx: &egui::Context) {
@@ -478,6 +498,21 @@ impl McrateApp {
     }
 }
 
+/// Поиск по постоянным загрузкам (движок уже отдал только треки с существующими файлами).
+fn filter_downloaded(items: &[Track], query: &str) -> Vec<Track> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return items.to_vec();
+    }
+    items
+        .iter()
+        .filter(|track| {
+            track.title.to_lowercase().contains(&query) || track.artists.iter().any(|artist| artist.to_lowercase().contains(&query))
+        })
+        .cloned()
+        .collect()
+}
+
 impl eframe::App for McrateApp {
     /// Работа, которая нужна и при скрытом окне: закрытие, трей, медиаклавиши (см. `background.rs`).
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -496,6 +531,7 @@ impl eframe::App for McrateApp {
         self.handle_input(&ctx);
         self.ctl.tick();
         self.sync_row_state(&ctx);
+        crate::ui::thanos::begin_frame(&ctx);
         self.refresh_filter();
         self.update_transition(&ctx);
         self.step_now_playing(&ctx); // анимация панели текста: ровно один раз за кадр
@@ -521,6 +557,9 @@ impl eframe::App for McrateApp {
         }
 
         self.show_track_menu(&ctx, &theme);
+        crate::ui::thanos::paint(&ctx, self.frame_time);
+        self.finish_thanos_removals(&ctx, self.frame_time);
+        self.show_download_status(&ctx, &theme);
         self.show_playlist_dialog(&ctx, &theme);
         self.paint_drop_overlay(&ctx);
         self.remember_typing(&ctx);

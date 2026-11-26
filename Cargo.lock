@@ -2358,8 +2358,10 @@ dependencies = [
 name = "mcrate-app"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "eframe",
  "egui",
+ "egui-wgpu",
  "egui_glass",
  "egui_material_icons",
  "global-hotkey",
@@ -2372,6 +2374,7 @@ dependencies = [
  "serde",
  "tokio",
  "tray-icon",
+ "wgpu",
  "winit",
  "winresource",
 ]

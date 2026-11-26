@@ -1,8 +1,8 @@
 //! Где приложение хранит свои файлы на диске. Пути считает только ядро: экраны и контроллер их не собирают.
 //!
-//! Всё лежит в одной папке `%APPDATA%\Mcrate` (обычно `C:\Users\<имя>\AppData\Roaming\Mcrate`).
-//! Функции возвращают `Option`, потому что переменной окружения теоретически может не быть:
-//! тогда приложение работает без сохранения.
+//! Настройки, данные приложения и скачанные треки лежат внутри `%APPDATA%\Mcrate`.
+//! Функции возвращают `Option`, потому что
+//! переменной окружения теоретически может не быть: тогда приложение работает без сохранения.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -13,6 +13,16 @@ const APP_DIR_NAME: &str = "Mcrate";
 /// Папка приложения: `%APPDATA%\Mcrate`.
 pub fn app_dir() -> Option<PathBuf> {
     app_dir_in(std::env::var_os("APPDATA"))
+}
+
+/// Папка постоянных загрузок: `%APPDATA%\Mcrate\downloads`.
+pub fn downloads_dir() -> Option<PathBuf> {
+    app_dir().map(|dir| dir.join("downloads"))
+}
+
+/// Индекс метаданных скачанных треков: `%APPDATA%\Mcrate\downloads.txt`.
+pub fn downloads_index_file() -> Option<PathBuf> {
+    app_dir().map(|dir| dir.join("downloads.txt"))
 }
 
 /// Папка приложения внутри `base` (значение `APPDATA`); отдельной функцией, чтобы проверить без окружения.
@@ -58,5 +68,21 @@ mod tests {
     #[test]
     fn no_appdata_means_no_dir() {
         assert_eq!(app_dir_in(None), None);
+    }
+
+    #[test]
+    fn downloads_live_inside_appdata_mcrate() {
+        assert_eq!(
+            app_dir_in(Some(OsString::from("appdata"))).map(|dir| dir.join("downloads")),
+            Some(PathBuf::from("appdata").join(APP_DIR_NAME).join("downloads")),
+        );
+    }
+
+    #[test]
+    fn downloads_index_lives_beside_downloads_folder() {
+        assert_eq!(
+            app_dir_in(Some(OsString::from("appdata"))).map(|dir| dir.join("downloads.txt")),
+            Some(PathBuf::from("appdata").join(APP_DIR_NAME).join("downloads.txt")),
+        );
     }
 }

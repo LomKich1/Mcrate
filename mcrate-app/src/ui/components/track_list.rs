@@ -5,7 +5,7 @@
 //! кнопка воспроизведения) рисуется самой строкой (`widgets::track_row`) и ни от списка, ни от соседних строк не зависит.
 
 use crate::theme::Theme;
-use crate::ui::widgets::{RowPlayback, SegmentPos, track_row};
+use crate::ui::widgets::{RowPlayback, SegmentPos, track_row, track_row_with_provider_badge};
 use egui::Ui;
 use mcrate_core::{ProviderKind, Track};
 
@@ -29,12 +29,42 @@ pub(crate) fn track_list<'a>(
     is_current: impl Fn(&Track) -> bool,
     playing: bool,
 ) -> Option<usize> {
+    track_list_inner(ui, theme, rows, total, is_current, playing, false)
+}
+
+/// Та же строка списка, но с меткой сервиса на обложке (используется только на экране «Скачанные»).
+pub(crate) fn downloaded_track_list<'a>(
+    ui: &mut Ui,
+    theme: &Theme,
+    rows: impl IntoIterator<Item = (usize, &'a Track)>,
+    total: usize,
+    is_current: impl Fn(&Track) -> bool,
+    playing: bool,
+) -> Option<usize> {
+    track_list_inner(ui, theme, rows, total, is_current, playing, true)
+}
+
+fn track_list_inner<'a>(
+    ui: &mut Ui,
+    theme: &Theme,
+    rows: impl IntoIterator<Item = (usize, &'a Track)>,
+    total: usize,
+    is_current: impl Fn(&Track) -> bool,
+    playing: bool,
+    show_provider_badge: bool,
+) -> Option<usize> {
     let time = ui.input(|i| i.time);
     let mut clicked = None;
     for (index, track) in rows {
         let current = is_current(track);
-        let resp = track_row(ui, theme, index, track, RowPlayback { is_current: current, is_playing: current && playing, time }, SegmentPos { index, count: total });
-        if resp.clicked() {
+        let playback = RowPlayback { is_current: current, is_playing: current && playing, time };
+        let pos = SegmentPos { index, count: total };
+        let response = if show_provider_badge {
+            track_row_with_provider_badge(ui, theme, index, track, playback, pos, true)
+        } else {
+            track_row(ui, theme, index, track, playback, pos)
+        };
+        if response.clicked() {
             clicked = Some(index);
         }
     }

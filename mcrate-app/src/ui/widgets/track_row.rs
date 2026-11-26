@@ -1,7 +1,8 @@
 //! Строка списка треков.
 //!
 //! Подсветка строки под курсором неподвижна и у каждой строки своя: обложка затемняется, поверх неё показывается
-//! кнопка воспроизведения; когда курсор уходит, всё так же плавно гаснет. Плашки под строкой нет ни в Material 3, ни в
+//! кнопка воспроизведения; когда курсор уходит, всё так же плавно гаснет. При скачивании на обложке появляется
+//! отдельный анимированный значок. Плашки под строкой нет ни в Material 3, ни в
 //! Liquid Glass (по просьбе владельца): при наведении выделяется только обложка.
 //! Те же слои включаются при нажатии (касание на Android: наведения там нет) и при фокусе с клавиатуры.
 
@@ -13,8 +14,11 @@ use crate::icons::{self, Icon};
 use crate::theme::{ShapeRole, TextRole, Theme, with_alpha};
 use crate::ui::format::{artists_text, fmt_time};
 use crate::ui::ripple::{self, LayerArea};
-use crate::ui::track_menu::{is_liked, request_like, request_menu};
-use egui::{Align2, Color32, CursorIcon, FontId, Id, Pos2, Rect, Response, Sense, Ui, UiBuilder, Vec2, pos2, vec2};
+use crate::controller::{DOWNLOAD_ICON_DROP, DOWNLOAD_ICON_FADE, DownloadVisual};
+use crate::ui::thanos;
+use crate::ui::track_menu::{download_visual, is_liked, request_like, request_menu};
+use egui::{Align2, Color32, CursorIcon, FontId, Id, Pos2, Rect, Response, Sense, Stroke, Ui, UiBuilder, Vec2, pos2, vec2};
+use std::time::Instant;
 use mcrate_core::Track;
 
 /// За сколько секунд подсветка строки появляется и гаснет.
@@ -42,6 +46,8 @@ struct RowState {
     hover: f32,
     /// Время кадра для анимации эквалайзера.
     time: f64,
+    /// Скачивание этого трека; значок рисуется поверх его обложки.
+    download: Option<DownloadVisual>,
 }
 
 /// Что сейчас играет относительно строки: от этого зависят подсветка, эквалайзер и кнопка на обложке.
@@ -59,6 +65,19 @@ pub(crate) struct RowPlayback {
 /// Liquid Glass сохраняет исходные 56 px для совместимости с прежней геометрией.
 /// Индекс выводится отдельной колонкой: он нужен для порядка в библиотеке и списка «Мои треки».
 pub(crate) fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track, playback: RowPlayback, pos: SegmentPos) -> Response {
+    track_row_with_provider_badge(ui, theme, index, track, playback, pos, false)
+}
+
+/// Строка для «Скачанных»: на обложке дополнительно показывает короткую метку источника.
+pub(crate) fn track_row_with_provider_badge(
+    ui: &mut Ui,
+    theme: &Theme,
+    index: usize,
+    track: &Track,
+    playback: RowPlayback,
+    pos: SegmentPos,
+    show_provider_badge: bool,
+) -> Response {
     let RowPlayback { is_current, is_playing, time } = playback;
     let row_height = theme.list_item_height(2);
     let row_width = ui.available_width();
@@ -67,7 +86,20 @@ pub(crate) fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track,
     let compact = !theme.glass_active() && row_width < 520.0;
     let show_index = theme.glass_active() || row_width >= 460.0;
     let cover_size = if theme.glass_active() || compact { 40.0 } else { 48.0 };
+    let row_id = ui.scope_id().with(("thanos_track_row", index, track.provider, &track.id));
+    let now = ui.input(|input| input.time);
+    if let Some(progress) = thanos::row_progress(ui.ctx(), row_id, now) {
+        let spacing = ui.spacing().item_spacing.y;
+        ui.spacing_mut().item_spacing.y = spacing * (1.0 - progress);
+        let (_, response) = ui.allocate_exact_size(vec2(row_width, row_height * (1.0 - progress)), Sense::hover());
+        ui.spacing_mut().item_spacing.y = spacing;
+        return response;
+    }
     let (rect, resp) = ui.allocate_exact_size(vec2(row_width, row_height), Sense::click());
+    // ПКМ по любой точке строки открывает то же меню, что и кнопка «три точки».
+    if resp.secondary_clicked() {
+        request_menu(ui.ctx(), track, rect, row_id);
+    }
     // Подсветку и pressed-state в Material 3 уже рисует общий glide/ripple списка.
     // В Liquid Glass собственного M3 ripple нет, поэтому там сохраняем squish.
     if !ui.is_rect_visible(rect) {
@@ -90,18 +122,78 @@ pub(crate) fn track_row(ui: &mut Ui, theme: &Theme, index: usize, track: &Track,
         paint_row_index(ui, theme, rect, index);
     }
     let cover = Rect::from_min_size(pos2(rect.left() + cover_left, rect.center().y - cover_size * 0.5), Vec2::splat(cover_size));
-    paint_row_cover(ui, theme, cover, track, &RowState { is_current, is_playing, hover, time });
+    let download = download_visual(ui.ctx(), track);
+    paint_row_cover(ui, theme, cover, track, show_provider_badge, &RowState { is_current, is_playing, hover, time, download });
     let show_like = row_width >= LIKE_MIN_ROW_WIDTH;
     let buttons_slot = BUTTONS_SLOT + if show_like { LIKE_SIZE } else { 0.0 };
     paint_row_text(ui, theme, rect, cover.right(), track, (compact, is_current, buttons_slot));
-    paint_row_buttons(ui, theme, rect, track, show_like);
+    paint_row_buttons(ui, theme, rect, track, show_like, row_id);
 
     let corner = segment.map_or_else(|| theme.shape_radius(ShapeRole::Large) as f32, ripple_corner);
     ripple::press_sparkles(ui, theme, ripple_slot, &resp, LayerArea { rect, corner });
     let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
     let accessible_label = format!("{} — {}", track.title, artists_text(track));
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, is_current, accessible_label.clone()));
+    thanos::record_row(ui.ctx(), row_id, rect.intersect(ui.clip_rect()));
     resp
+}
+
+/// Затемнение обложки и значок скачивания. Стрелка падает по кубической кривой, основание остаётся на месте.
+fn paint_download_overlay(ui: &Ui, theme: &Theme, cover: Rect, radius: f32, download: DownloadVisual) {
+    let now = Instant::now();
+    let elapsed = now.saturating_duration_since(download.started_at);
+    let progress = (elapsed.as_secs_f32() / DOWNLOAD_ICON_DROP.as_secs_f32()).clamp(0.0, 1.0);
+    let progress = if theme.settings.reduce_motion { 1.0 } else { progress };
+    let fade_start = (download.started_at + DOWNLOAD_ICON_DROP).max(download.finished_at.unwrap_or(download.started_at));
+    let alpha = if download.finished_at.is_some_and(|_| now >= fade_start) {
+        (1.0 - now.saturating_duration_since(fade_start).as_secs_f32() / DOWNLOAD_ICON_FADE.as_secs_f32()).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    if progress < 1.0 || download.finished_at.is_some() && alpha > 0.0 {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
+    }
+    ui.painter().rect_filled(cover, radius, Color32::from_black_alpha(COVER_SCRIM_ALPHA));
+    paint_download_icon(ui, cover.center(), cover.height() * 0.52, progress, alpha);
+}
+
+/// Основание значка неподвижно; стрелка проходит из верхней точки в лоток по плавной кубической траектории.
+fn paint_download_icon(ui: &Ui, center: Pos2, size: f32, progress: f32, alpha: f32) {
+    use crate::ui::anim::{EMPHASIZED_DECELERATE, cubic_bezier};
+    let color = with_alpha(Color32::WHITE, (255.0 * alpha).round() as u8);
+    let stroke = Stroke::new((size * 0.085).max(1.5), color);
+    let painter = ui.painter();
+    let tray_left = pos2(center.x - size * 0.34, center.y + size * 0.06);
+    let tray_right = pos2(center.x + size * 0.34, center.y + size * 0.06);
+    let base_y = center.y + size * 0.34;
+    painter.line_segment([tray_left, pos2(tray_left.x, base_y)], stroke);
+    painter.line_segment([pos2(tray_left.x, base_y), pos2(tray_right.x, base_y)], stroke);
+    painter.line_segment([tray_right, pos2(tray_right.x, base_y)], stroke);
+
+    let t = cubic_bezier(EMPHASIZED_DECELERATE, progress);
+    // Стрелка с самого первого кадра находится над центром основания и падает строго по вертикали:
+    // смещение по X раньше создавало впечатление, что она появляется из верхнего левого угла.
+    let start = pos2(center.x, center.y - size * 0.50);
+    let control_a = pos2(center.x, center.y - size * 0.30);
+    let control_b = pos2(center.x, center.y - size * 0.08);
+    let end = pos2(center.x, center.y + size * 0.15);
+    let tip = cubic_point(start, control_a, control_b, end, t);
+    let shaft_top = pos2(tip.x, tip.y - size * 0.43);
+    let wing_left = pos2(tip.x - size * 0.20, tip.y - size * 0.20);
+    let wing_right = pos2(tip.x + size * 0.20, tip.y - size * 0.20);
+    painter.line_segment([shaft_top, tip], stroke);
+    painter.line_segment([wing_left, tip], stroke);
+    painter.line_segment([tip, wing_right], stroke);
+}
+
+/// Точка кубической кривой Безье для траектории стрелки.
+fn cubic_point(start: Pos2, a: Pos2, b: Pos2, end: Pos2, t: f32) -> Pos2 {
+    let u = 1.0 - t;
+    let point = start.to_vec2() * (u * u * u)
+        + a.to_vec2() * (3.0 * u * u * t)
+        + b.to_vec2() * (3.0 * u * t * t)
+        + end.to_vec2() * (t * t * t);
+    Pos2::new(point.x, point.y)
 }
 
 /// Номер строки в левой колонке.
@@ -117,10 +209,14 @@ fn paint_row_index(ui: &Ui, theme: &Theme, rect: Rect, index: usize) {
 
 /// Обложка и слои поверх неё: у текущего трека затемнение с эквалайзером (при наведении он сменяется кнопкой
 /// воспроизведения), у остальных затемнение и кнопка только при наведении.
-fn paint_row_cover(ui: &mut Ui, theme: &Theme, cover: Rect, track: &Track, state: &RowState) {
-    let RowState { is_current, is_playing, hover, time } = *state;
+fn paint_row_cover(ui: &mut Ui, theme: &Theme, cover: Rect, track: &Track, show_provider_badge: bool, state: &RowState) {
+    let RowState { is_current, is_playing, hover, time, download } = *state;
     let cover_radius = if theme.glass_active() { 12.0 } else { theme.shape_radius(ShapeRole::Medium) as f32 };
     cover_tile(ui, theme, cover, &track.id, cover_radius);
+    if let Some(download) = download {
+        paint_download_overlay(ui, theme, cover, cover_radius, download);
+        return;
+    }
     let painter = ui.painter();
     if is_current {
         painter.rect_filled(cover, 12.0, Color32::from_black_alpha(COVER_SCRIM_ALPHA));
@@ -131,6 +227,37 @@ fn paint_row_cover(ui: &mut Ui, theme: &Theme, cover: Rect, track: &Track, state
     } else {
         paint_cover_play(ui, theme, cover, cover_radius, hover);
     }
+    if show_provider_badge {
+        paint_provider_badge(ui, cover, track);
+    }
+}
+
+/// Короткий код сервиса, откуда сохранён трек. Остальные коды добавляются вместе с провайдерами:
+/// Yandex -> "YM", VK -> "VK", Spotify -> "SP".
+fn provider_badge(provider: mcrate_core::ProviderKind) -> Option<&'static str> {
+    match provider {
+        mcrate_core::ProviderKind::SoundCloud => Some("SC"),
+        mcrate_core::ProviderKind::Yandex => None, // TODO: Some("YM") после подключения Yandex Music.
+        mcrate_core::ProviderKind::Vk => None, // TODO: Some("VK") после подключения VK Music.
+        mcrate_core::ProviderKind::Spotify => None, // TODO: Some("SP") после подключения Spotify.
+        mcrate_core::ProviderKind::Local => None,
+    }
+}
+
+/// Тёмная плашка с кодом сервиса в правом нижнем углу обложки (как на макете скачанного трека).
+fn paint_provider_badge(ui: &Ui, cover: Rect, track: &Track) {
+    let Some(label) = provider_badge(track.provider) else { return };
+    let width = (cover.width() * 0.42).clamp(14.0, 21.0);
+    let height = (cover.height() * 0.26).clamp(10.0, 13.0);
+    let badge = Rect::from_min_size(pos2(cover.right() - width, cover.bottom() - height), vec2(width, height));
+    ui.painter().rect_filled(badge, 2.0, Color32::from_black_alpha(205));
+    ui.painter().text(
+        badge.center(),
+        Align2::CENTER_CENTER,
+        label,
+        FontId::proportional(height * 0.78),
+        Color32::WHITE,
+    );
 }
 
 /// Название, исполнитель и длительность. `cover_right`: правый край обложки, от него идёт текст.
@@ -182,17 +309,17 @@ fn paint_row_text(
 /// Кнопки у правого края строки: «три точки» (меню трека) и левее неё сердечко «Нравится» (`show_like`).
 /// Нажатия только просят приложение что-то сделать (`track_menu::request_menu`, `request_like`),
 /// само действие выполняется там.
-fn paint_row_buttons(ui: &mut Ui, theme: &Theme, rect: Rect, track: &Track, show_like: bool) {
+fn paint_row_buttons(ui: &mut Ui, theme: &Theme, rect: Rect, track: &Track, show_like: bool, row_id: Id) {
     let more_center = pos2(rect.right() - MORE_INSET_RIGHT - MORE_SIZE / 2.0, rect.center().y);
     let more = place_in_row(ui, more_center, MORE_SIZE, |ui| icon_button(ui, theme, IconButton::new(Icon::MoreVertical, MORE_SIZE, "Ещё")));
     if more.clicked() {
-        request_menu(ui.ctx(), track, more.rect);
+        request_menu(ui.ctx(), track, more.rect, row_id);
     }
     if show_like {
         let like_center = pos2(more_center.x - MORE_SIZE / 2.0 - LIKE_SIZE / 2.0, rect.center().y);
         let liked = is_liked(ui.ctx(), track);
         if place_in_row(ui, like_center, LIKE_SIZE, |ui| like_button(ui, theme, liked, LIKE_SIZE)).clicked() {
-            request_like(ui.ctx(), track);
+            request_like(ui.ctx(), track, row_id);
         }
     }
 }
