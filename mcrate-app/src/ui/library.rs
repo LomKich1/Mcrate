@@ -191,7 +191,6 @@ impl McrateApp {
 
         let mut clicked: Option<usize> = None;
         let end_inset = self.bottom_inset;
-        apply_list_gap(ui, theme); // до rows_in_view: он считает шаг строк по этому отступу
         // Область прокрутки доходит до нижнего края контентной панели, а не до рассчитанной по доступной высоте
         // (та заканчивалась заметно выше мини-плеера, и строки пропадали, не дойдя до него). Плеер лежит поверх
         // панели, строки уходят под него; нижний запас (`scroll_end_padding`) позволяет прокрутить последнюю строку выше.
@@ -199,12 +198,18 @@ impl McrateApp {
         let free = ui.available_rect_before_wrap();
         let area = Rect::from_min_max(free.min, pos2(free.max.x, pane_bottom.max(free.min.y)));
         ui.scope_builder(UiBuilder::new().max_rect(area).layout(Layout::top_down(Align::Min)), |ui| {
-            egui::ScrollArea::vertical().id_salt("uploads_playlist_tracks").auto_shrink([false, false]).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("uploads_playlist_tracks").auto_shrink([false, false]).wheel_scroll_multiplier(egui::vec2(1.0, 2.0)).show(ui, |ui| {
                 centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
-                    let is_current = |track: &Track| current_id.as_deref() == Some(track.id.as_str());
-                    let rows = (0..count).map(|i| (i, &self.filtered[i]));
-                    clicked = track_list(ui, theme, rows, count, is_current, playing);
+                    apply_list_gap(ui, theme); // до rows_in_view: он считает шаг строк по этому отступу
+                    clicked = rows_in_view(ui, count, theme.list_item_height(2), |ui, range| {
+                        let is_current = |track: &Track| current_id.as_deref() == Some(track.id.as_str());
+                        let rows = range.map(|i| (i, &self.filtered[i]));
+                        track_list(ui, theme, rows, count, is_current, playing)
+                    });
                 });
+                if !theme.glass_active() {
+                    ui.add_space(10.0); // нижний отступ списка остаётся прежним
+                }
                 scroll_end_padding(ui, end_inset);
             });
         });

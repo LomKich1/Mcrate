@@ -17,7 +17,7 @@ use super::components::{
     same_track_as, split_page, title_scroll_page, track_list,
 };
 use super::layout::{
-    SETTINGS_CONTENT_MAX_WIDTH, TRACK_LIST_MAX_WIDTH, bleed_clip, centered_column, pane_scroll, rows_in_view, scroll_end_padding,
+    SETTINGS_CONTENT_MAX_WIDTH, TRACK_LIST_MAX_WIDTH, centered_column, pane_scroll, rows_in_view, scroll_end_padding,
 };
 use super::playlists::{PlaylistDialog, playlist_row, tracks_count_text};
 use super::settings::controls::{Row, Trailing, settings_group};
@@ -71,8 +71,6 @@ impl McrateApp {
             });
             pane_scroll(ui, self.bleed.below_header(), ScrollArea::vertical().auto_shrink([false, false]), |area, ui| {
                 area.show(ui, |ui| {
-                    bleed_clip(ui, self.bleed.below_header());
-
                     self.collection_menu(ui, theme);
                     self.collection_recent(ui, theme);
                     scroll_end_padding(ui, self.bottom_inset);
@@ -151,7 +149,6 @@ impl McrateApp {
             ui.add_space(4.0);
             pane_scroll(ui, self.bleed.below_header(), ScrollArea::vertical().auto_shrink([false, false]), |area, ui| {
                 area.show(ui, |ui| {
-                    bleed_clip(ui, self.bleed.below_header());
                     if self.ctl.history.items().is_empty() {
                         ui.label(RichText::new("Пока пусто: включите любой трек.").color(p.on_surface_variant));
                     } else {
@@ -176,7 +173,6 @@ impl McrateApp {
             ui.add_space(4.0);
             pane_scroll(ui, self.bleed.below_header(), ScrollArea::vertical().auto_shrink([false, false]), |area, ui| {
                 area.show(ui, |ui| {
-                    bleed_clip(ui, self.bleed.below_header());
                     let items = self.ctl.likes.items();
                     if items.is_empty() {
                         let top = empty_state_top_space(ui.available_height(), self.bottom_inset);
@@ -215,7 +211,6 @@ impl McrateApp {
             ui.add_space(4.0);
             pane_scroll(ui, self.bleed.below_header(), ScrollArea::vertical().auto_shrink([false, false]), |area, ui| {
                 area.show(ui, |ui| {
-                    bleed_clip(ui, self.bleed.below_header());
                     centered_column(ui, SETTINGS_CONTENT_MAX_WIDTH, |ui| {
                         create = pill_button(ui, theme, "Новый плейлист", Some(Icon::Plus), ButtonKind::Filled).clicked();
                         ui.add_space(10.0);
@@ -299,7 +294,6 @@ impl McrateApp {
             ui.add_space(6.0);
             pane_scroll(ui, self.bleed.below_header(), ScrollArea::vertical().auto_shrink([false, false]), |area, ui| {
                 area.show(ui, |ui| {
-                    bleed_clip(ui, self.bleed.below_header());
                     match self.ctl.playlists.get(id) {
                         Some(pl) if !pl.tracks.is_empty() => clicked = self.track_rows_in_view(ui, theme, &pl.tracks),
                         _ => {

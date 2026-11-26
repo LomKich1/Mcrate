@@ -30,6 +30,11 @@ serde = { version = "1", features = ["derive"] }
 # Версия должна совпадать с той, что использует eframe (0.30.x).
 [target.'cfg(windows)'.dependencies]
 winit = "0.30"
+# Глобальные медиаклавиши (Play/Pause, Следующий, Предыдущий) работают и когда окно не в фокусе.
+# На Windows это RegisterHotKey: нужен цикл сообщений главного потока, его даёт winit.
+global-hotkey = "0.10"
+# Иконка в области уведомлений (трей) и её меню: окно можно скрыть, музыка продолжит играть.
+tray-icon = { version = "0.27", default-features = false }
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

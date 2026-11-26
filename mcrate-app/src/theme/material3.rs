@@ -30,14 +30,26 @@ pub fn surface<R>(theme: &Theme, ui: &mut Ui, role: Surface, add: impl FnOnce(&m
     };
 
     let mut frame = Frame::new().fill(fill).corner_radius(radius).inner_margin(margin).stroke(stroke);
-    // Мягкую тень получают только диалоги; у плеера тени нет (она ложилась на край панели справа).
-    if matches!(role, Surface::Dialog) {
-        frame = frame.shadow(egui::Shadow {
+    // Мягкие тени получают диалоги и мини-плеер Material 3.
+    let shadow = match role {
+        Surface::Dialog => Some(egui::Shadow {
             offset: [0, 4],
             blur: 18,
             spread: 0,
             color: Color32::from_black_alpha(if p.dark { 110 } else { 45 }),
-        });
+        }),
+        // Тень выходит за плеер примерно на 12 px в стороны и 14 px вниз. Это меньше отступов (16 px) до краёв
+        // контентной панели, поэтому на край панели она не ложится.
+        Surface::PlayerBar if !theme.glass_active() => Some(egui::Shadow {
+            offset: [0, 2],
+            blur: 24,
+            spread: 0,
+            color: Color32::from_black_alpha(if p.dark { 90 } else { 36 }),
+        }),
+        _ => None,
+    };
+    if let Some(shadow) = shadow {
+        frame = frame.shadow(shadow);
     }
 
     frame

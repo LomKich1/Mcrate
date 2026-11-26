@@ -8,7 +8,7 @@
 use egui::{Context, Id, ScrollArea, Ui};
 
 use super::split_is_wide;
-use crate::ui::layout::{Bleed, bleed_clip, pane_scroll, scroll_end_padding};
+use crate::ui::layout::{Bleed, pane_scroll, scroll_end_padding};
 
 /// С какого смещения прокрутки (px) название начинает появляться в шапке: к этому моменту название карточки
 /// коллекции уже уехало вверх. Полностью название видно через `TITLE_REVEAL_RANGE` px после этого.
@@ -21,7 +21,6 @@ const TITLE_REVEAL_RANGE: f32 = 40.0;
 pub(in crate::ui) fn title_scroll_page(ui: &mut Ui, bleed: Bleed, bottom_inset: f32, key: &'static str, add: impl FnOnce(&mut Ui)) {
     let scroll = pane_scroll(ui, bleed, ScrollArea::vertical().id_salt(key).auto_shrink([false, false]), |area, ui| {
         area.show(ui, |ui| {
-            bleed_clip(ui, bleed);
             add(ui);
             scroll_end_padding(ui, bottom_inset);
         })

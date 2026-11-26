@@ -13,7 +13,7 @@ use super::controls::{Glyph, Row, Tile, Trailing, group_label, profile_card, set
 use crate::app::{McrateApp, View};
 use crate::settings::{GraphicsSettings, Preferences};
 use crate::theme::Theme;
-use crate::ui::layout::{bleed_clip, centered_column, pane_scroll, responsive_column, scroll_end_padding};
+use crate::ui::layout::{centered_column, pane_scroll, responsive_column, scroll_end_padding};
 use crate::ui::widgets::{ButtonKind, pill_button};
 
 /// Имя для карточки профиля: имя пользователя операционной системы. Показывается только на экране,
@@ -40,7 +40,6 @@ impl McrateApp {
             });
             pane_scroll(ui, self.bleed.below_header(), ScrollArea::vertical().auto_shrink([false, false]), |area, ui| {
                 area.show(ui, |ui| {
-                    bleed_clip(ui, self.bleed.below_header());
                     responsive_column(ui, |ui| {
                         self.main_profile_and_tiles(ui, theme);
                         self.main_appearance_group(ui, theme);

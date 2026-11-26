@@ -44,11 +44,17 @@ pub(crate) fn track_plate(rect: Rect) -> Rect {
     rect.shrink2(egui::vec2(0.0, SEGMENT_GAP / 2.0))
 }
 
-/// В Material 3 убирает отступ между строками списка треков: зазор уже внутри строки (`track_plate`), и шаг строк равен
-/// её высоте. Вызывать до `rows_in_view`: он считает шаг по этому значению. В Liquid Glass ничего не меняет.
+/// Настраивает отступ между строками списка треков. Вызывать один раз для `ui` списка и до `rows_in_view`: он считает
+/// шаг строк по этому значению.
+///
+/// * Material 3: отступа нет, зазор уже внутри строки (`track_plate`), шаг равен высоте строки.
+/// * Liquid Glass: отступ меньше заданного на 10 px (строки чуть заходят друг на друга, как и выглядели раньше).
 pub(crate) fn apply_list_gap(ui: &mut Ui, theme: &Theme) {
-    if !theme.glass_active() {
-        ui.spacing_mut().item_spacing.y = 18.0;
+    let gap = &mut ui.spacing_mut().item_spacing.y;
+    if theme.glass_active() {
+        *gap -= 10.0;
+    } else {
+        *gap = 0.0;
     }
 }
 

@@ -11,9 +11,12 @@ use mcrate_core::Track;
 
 use crate::controller::Controller;
 use crate::icons;
+use crate::media_keys::MediaKeys;
 use crate::settings::{Design, GraphicsSettings, PREFS_KEY, Preferences, STORAGE_KEY, ThemePreset, WindowBackdrop};
 use crate::theme::{Surface, Theme, glass, with_alpha};
+use crate::tray::Tray;
 use crate::ui::layout::{Bleed, Breakpoint};
+use crate::ui::nav_history::{NavHistory, Place};
 use crate::ui::now_playing::NowPlayingState;
 use crate::ui::settings::SoonKind;
 use crate::ui::transition::ViewTransition;
@@ -180,6 +183,18 @@ pub struct McrateApp {
     pub playlist_dialog: Option<crate::ui::playlists::PlaylistDialog>,
     /// Какой плейлист открыт на экране `View::CollectionPlaylist`.
     pub open_playlist: Option<u64>,
+    /// История экранов для кнопок мыши «Назад»/«Вперёд», Alt+стрелок и Esc (см. `ui/nav_history.rs`, `ui/shortcuts.rs`).
+    pub nav: NavHistory,
+    /// Глобальные медиаклавиши (`None`: не Windows или клавиши заняты другой программой).
+    pub media_keys: Option<MediaKeys>,
+    /// Было ли в конце прошлого кадра в фокусе текстовое поле (нужно Esc: egui снимает фокус до нашего кода).
+    pub text_focused_last_frame: bool,
+    /// Иконка в трее (`None`: не Windows или Windows не дала её создать). См. `background.rs`.
+    pub tray: Option<Tray>,
+    /// Окно сейчас скрыто в трей (интерфейс не рисуется, работает только `App::logic`).
+    pub hidden_to_tray: bool,
+    /// Пользователь выбрал «Выход» в меню иконки: закрытие окна больше не прячет его в трей.
+    pub quitting: bool,
 }
 
 impl McrateApp {
@@ -234,6 +249,12 @@ impl McrateApp {
             track_menu: None,
             playlist_dialog: None,
             open_playlist: None,
+            nav: NavHistory::new(Place::new(View::Home, None)),
+            media_keys: MediaKeys::new(&cc.egui_ctx),
+            text_focused_last_frame: false,
+            tray: Tray::new(&cc.egui_ctx),
+            hidden_to_tray: false,
+            quitting: false,
         }
     }
 
@@ -410,17 +431,14 @@ impl McrateApp {
         self.view_host(ui, theme);
     }
 
-    /// Файлы, брошенные в окно, + пробел как «пауза/играть».
+    /// Файлы, брошенные в окно, и клавиатура с кнопками мыши (пауза, треки, «назад»/«вперёд», Esc: `ui/shortcuts.rs`).
     fn handle_input(&mut self, ctx: &egui::Context) {
         let dropped: Vec<_> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
         if !dropped.is_empty() {
             self.ctl.add_paths(&dropped);
             self.view = View::Library;
         }
-        // wants_keyboard_input = true, когда курсор стоит в поле ввода (тогда пробел не трогаем)
-        if !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Space)) {
-            self.ctl.toggle_pause();
-        }
+        self.handle_shortcuts(ctx);
     }
 
     /// Отправляет движку настройки воспроизведения при первом кадре (старт приложения) и каждый
@@ -461,6 +479,11 @@ impl McrateApp {
 }
 
 impl eframe::App for McrateApp {
+    /// Работа, которая нужна и при скрытом окне: закрытие, трей, медиаклавиши (см. `background.rs`).
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.background_logic(ctx);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.sync_theme(&ctx, frame);
@@ -500,6 +523,7 @@ impl eframe::App for McrateApp {
         self.show_track_menu(&ctx, &theme);
         self.show_playlist_dialog(&ctx, &theme);
         self.paint_drop_overlay(&ctx);
+        self.remember_typing(&ctx);
 
         // В раскладке стекла клик по меню случается ПОСЛЕ отрисовки экрана (рейка лежит над
         // страницей), и переход начнётся только в следующем кадре. Просим его сразу, а не ждём

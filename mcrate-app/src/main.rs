@@ -4,12 +4,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod background;
 mod controller;
 mod fonts;
 mod icons;
+mod media_keys;
 mod platform;
 mod settings;
 mod theme;
+mod tray;
 mod ui;
 
 /// Иконка окна и панели задач: 256x256, сырые байты RGBA (без новых зависимостей).

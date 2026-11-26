@@ -5,7 +5,7 @@
 //! Liquid Glass (по просьбе владельца): при наведении выделяется только обложка.
 //! Те же слои включаются при нажатии (касание на Android: наведения там нет) и при фокусе с клавиатуры.
 
-use super::buttons::{IconButton, icon_button, like_button, place_at};
+use super::buttons::{IconButton, icon_button, like_button};
 use super::cover::cover_tile;
 use super::glide::squish;
 use super::segment::{SegmentPos, ripple_corner, segment_radius, segment_shape, track_plate};
@@ -14,7 +14,7 @@ use crate::theme::{ShapeRole, TextRole, Theme, with_alpha};
 use crate::ui::format::{artists_text, fmt_time};
 use crate::ui::ripple::{self, LayerArea};
 use crate::ui::track_menu::{is_liked, request_like, request_menu};
-use egui::{Align2, Color32, CursorIcon, FontId, Id, Rect, Response, Sense, Ui, Vec2, pos2, vec2};
+use egui::{Align2, Color32, CursorIcon, FontId, Id, Pos2, Rect, Response, Sense, Ui, UiBuilder, Vec2, pos2, vec2};
 use mcrate_core::Track;
 
 /// За сколько секунд подсветка строки появляется и гаснет.
@@ -184,17 +184,24 @@ fn paint_row_text(
 /// само действие выполняется там.
 fn paint_row_buttons(ui: &mut Ui, theme: &Theme, rect: Rect, track: &Track, show_like: bool) {
     let more_center = pos2(rect.right() - MORE_INSET_RIGHT - MORE_SIZE / 2.0, rect.center().y);
-    let more = place_at(ui, more_center, MORE_SIZE, |ui| icon_button(ui, theme, IconButton::new(Icon::MoreVertical, MORE_SIZE, "Ещё")));
+    let more = place_in_row(ui, more_center, MORE_SIZE, |ui| icon_button(ui, theme, IconButton::new(Icon::MoreVertical, MORE_SIZE, "Ещё")));
     if more.clicked() {
         request_menu(ui.ctx(), track, more.rect);
     }
     if show_like {
         let like_center = pos2(more_center.x - MORE_SIZE / 2.0 - LIKE_SIZE / 2.0, rect.center().y);
         let liked = is_liked(ui.ctx(), track);
-        if place_at(ui, like_center, LIKE_SIZE, |ui| like_button(ui, theme, liked, LIKE_SIZE)).clicked() {
+        if place_in_row(ui, like_center, LIKE_SIZE, |ui| like_button(ui, theme, liked, LIKE_SIZE)).clicked() {
             request_like(ui.ctx(), track);
         }
     }
+}
+
+/// Кнопка внутри уже выделенной строки: как `buttons::place_at`, но курсор списка не сдвигается. Иначе видимая строка
+/// (с кнопками) и невидимая (без них) занимали бы разную высоту, и список дёргался бы при прокрутке.
+fn place_in_row<R>(ui: &mut Ui, center: Pos2, size: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let rect = Rect::from_center_size(center, Vec2::splat(size));
+    add(&mut ui.new_child(UiBuilder::new().max_rect(rect)))
 }
 
 /// Общая и для карточек полок (`home/media_card.rs`): у них та же подсветка обложки при наведении.

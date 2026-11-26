@@ -15,7 +15,7 @@ use crate::icons::Icon;
 use crate::theme::Theme;
 use crate::ui::components::{TitleRow, empty_state, same_track_as, title_search_row, track_list};
 use crate::ui::format::tracks_word;
-use crate::ui::layout::{TRACK_LIST_MAX_WIDTH, bleed_clip, centered_column, pane_scroll, scroll_end_padding};
+use crate::ui::layout::{TRACK_LIST_MAX_WIDTH, centered_column, pane_scroll, scroll_end_padding};
 use crate::ui::widgets::{apply_list_gap, error_banner, loading_indicator};
 use mcrate_core::Track;
 
@@ -49,7 +49,6 @@ impl McrateApp {
             let view_height = ui.available_height();
             pane_scroll(ui, self.bleed.below_header(), ScrollArea::vertical().auto_shrink([false, false]), |area, ui| {
                 area.show(ui, |ui| {
-                    bleed_clip(ui, self.bleed.below_header());
                     centered_column(ui, TRACK_LIST_MAX_WIDTH, |ui| {
                         self.soundcloud_status(ui, theme, view_height);
                         self.soundcloud_empty_states(ui, theme, view_height);

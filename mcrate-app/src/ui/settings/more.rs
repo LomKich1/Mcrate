@@ -12,7 +12,7 @@ use crate::platform;
 use crate::settings::{GlassQuality, Language, WindowBackdrop};
 use crate::theme::{TextRole, Theme};
 use crate::ui::components::{ConfirmDialog, DialogChoice, back_header, confirm_dialog};
-use crate::ui::layout::{bleed_clip, centered_column, pane_scroll, responsive_column, scroll_end_padding};
+use crate::ui::layout::{centered_column, pane_scroll, responsive_column, scroll_end_padding};
 use crate::ui::widgets::error_banner;
 
 /// Какой экран-«скоро» показать.
@@ -71,7 +71,6 @@ impl McrateApp {
             });
             pane_scroll(ui, self.bleed.below_header(), ScrollArea::vertical().auto_shrink([false, false]), |area, ui| {
                 area.show(ui, |ui| {
-                    bleed_clip(ui, self.bleed.below_header());
                     responsive_column(ui, |ui| {
                         body(self, ui);
                         scroll_end_padding(ui, self.bottom_inset);

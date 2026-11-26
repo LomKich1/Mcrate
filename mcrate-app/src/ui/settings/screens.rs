@@ -213,14 +213,23 @@ impl McrateApp {
 
                         // ---------- прочее ----------
                         group_label(ui, theme, "Прочее");
-                        let rows = vec![
+                        let mut rows = vec![
                             Row::plain("Нормализация громкости", Trailing::Switch(&mut self.prefs.normalize_volume)),
                             Row::plain("Автовоспроизведение", Trailing::Switch(&mut self.prefs.autoplay)),
-                            Row::plain("Воспроизведение в фоне", Trailing::Switch(&mut self.prefs.background_play)),
                         ];
+                        // Трей есть только в Windows; без него переключателю нечего делать (см. `background.rs`).
+                        if crate::tray::SUPPORTED {
+                            rows.push(Row::plain("Сворачивать в трей при закрытии", Trailing::Switch(&mut self.prefs.background_play)));
+                        }
                         settings_group(ui, theme, "playback_other", rows);
 
-                        hint_text(ui, theme, "Эти настройки сохраняются, но движок воспроизведения пока их не использует.");
+                        let hint = if crate::tray::SUPPORTED {
+                            "Закрытие окна прячет его в трей, музыка продолжает играть; выйти можно через меню иконки в трее. \
+                             Остальные настройки сохраняются, но движок воспроизведения пока их не использует."
+                        } else {
+                            "Эти настройки сохраняются, но движок воспроизведения пока их не использует."
+                        };
+                        hint_text(ui, theme, hint);
                     });
                     scroll_end_padding(ui, self.bottom_inset);
                 })
