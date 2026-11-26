@@ -2,6 +2,7 @@
 //! Всё в «точках» egui (логических пикселях), поэтому масштаб Windows (125%, 150%) учитывается сам.
 //! Правила собраны здесь, а не размазаны по экранам: так их проще менять и проверять тестами.
 
+use crate::ui::autoscroll;
 use egui::scroll_area::{ScrollAreaOutput, ScrollSource};
 use egui::{Align, Event, Layout, Margin, MouseWheelUnit, Rect, ScrollArea, Ui, UiBuilder, pos2, vec2};
 use std::ops::Range;
@@ -177,6 +178,12 @@ struct WheelScroll {
     /// Максимально допустимое смещение (из прошлого кадра).
     max: f32,
     active: bool,
+    /// Прокрутка средней кнопкой (`ui/autoscroll.rs`): точное смещение с дробной частью (без него медленная
+    /// прокрутка округлялась бы до физического пикселя и стояла на месте), что отдали области, и номер кадра.
+    auto_pos: f32,
+    auto_applied: f32,
+    auto_frame: u64,
+    auto_on: bool,
 }
 
 /// Сколько точек прокрутило колесо за этот кадр (положительное: содержимое уезжает вниз).
@@ -233,6 +240,24 @@ pub(crate) fn pane_scroll<T>(
         }
 
         let mut forced = None;
+        // Прокрутка средней кнопкой: едем без сглаживания, скорость задаёт расстояние курсора от значка.
+        let auto = autoscroll::current(ui.ctx()).filter(|a| scroll_rect.contains(a.origin));
+        if let Some(a) = auto {
+            st.active = false;
+            if st.auto_frame != a.nr {
+                // Новый кадр (закадровый проход Liquid Glass получает копию с тем же номером и пропускает этот блок).
+                if !st.auto_on || (st.offset - st.auto_applied).abs() > 1.0 {
+                    st.auto_pos = st.offset; // начало, либо область сдвинул кто-то другой (ползунок)
+                }
+                st.auto_pos = (st.auto_pos + a.speed * dt).clamp(0.0, st.max);
+                st.auto_applied = (st.auto_pos * ppp).round() / ppp;
+                st.auto_frame = a.nr;
+                forced = Some(st.auto_applied);
+            }
+            st.auto_on = true;
+        } else {
+            st.auto_on = false;
+        }
         if st.active {
             if (st.offset - st.applied).abs() > 1.0 {
                 st.active = false; // область сдвинул кто-то другой (ползунок, scroll_to): уступаем

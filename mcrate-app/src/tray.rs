@@ -5,6 +5,10 @@
 //! - правый клик открывает меню: «Открыть Mcrate», пауза/играть, предыдущий и следующий трек, «Выход»;
 //! - подсказка при наведении показывает играющий трек.
 //!
+//! Меню рисует само приложение (`ui/tray_menu.rs`) в цветах текущей темы: системное меню Windows перекрасить нельзя.
+//! Иконка лишь сообщает, что нажали правую кнопку и где (`TrayCommand::OpenMenu`). Запасной вариант: если запустить
+//! с переменной окружения `MCRATE_NATIVE_TRAY_MENU=1`, меню будет системным (на случай, если своё не показывается).
+//!
 //! Этот модуль только про иконку и меню (обвязка ОС, как `platform.rs` и `media_keys.rs`). Что делать со скрытым
 //! окном, решает `background.rs`: он же перехватывает закрытие окна.
 //!
@@ -29,6 +33,11 @@ pub(crate) enum TrayCommand {
     TogglePause,
     Next,
     Previous,
+    /// Правый клик по иконке: открыть меню приложения. Координаты курсора в физических пикселях экрана.
+    OpenMenu {
+        x: i32,
+        y: i32,
+    },
     /// Закрыть приложение по-настоящему (кнопка «закрыть» в окне только прячет его).
     Quit,
 }
@@ -113,8 +122,9 @@ mod imp {
         /// Создаёт иконку и меню. `None`, если Windows не дала создать иконку (тогда окно закрывается как обычно).
         /// `ctx` нужен, чтобы разбудить приложение, когда выбрали пункт меню: скрытое окно само не перерисуется.
         pub(crate) fn new(ctx: &egui::Context) -> Option<Self> {
+            let native_menu = std::env::var_os("MCRATE_NATIVE_TRAY_MENU").is_some();
             let (tx, commands) = mpsc::channel();
-            install_handlers(ctx, tx);
+            install_handlers(ctx, tx, native_menu);
 
             let menu = Menu::new();
             let show = MenuItem::with_id(ID_SHOW, "Открыть Mcrate", true, None);
@@ -127,14 +137,20 @@ mod imp {
 
             let bytes = if taskbar_uses_light_theme() { ICON_FOR_LIGHT_TASKBAR } else { ICON_FOR_DARK_TASKBAR };
             let icon = Icon::from_rgba(bytes.to_vec(), ICON_SIZE, ICON_SIZE).ok()?;
-            let tray = TrayIconBuilder::new()
-                .with_menu(Box::new(menu))
-                .with_menu_on_left_click(false) // левый клик возвращает окно, меню только по правому
-                .with_icon(icon)
-                .with_tooltip(APP_NAME)
-                .build()
-                .ok()?;
+            let mut builder = TrayIconBuilder::new().with_icon(icon).with_tooltip(APP_NAME);
+            if native_menu {
+                // Левый клик возвращает окно, системное меню только по правому.
+                builder = builder.with_menu(Box::new(menu)).with_menu_on_left_click(false);
+            }
+            let tray = builder.build().ok()?;
             Some(Self { icon: tray, commands, tooltip: APP_NAME.to_string() })
+        }
+
+        /// Видит ли Windows иконку. `tray-icon` при неудачной регистрации (панель задач ещё не готова) молча ждёт
+        /// и создаёт объект всё равно, поэтому «объект есть» не значит «иконка на экране». Не видна: окно прятать
+        /// нельзя, вернуть его было бы нечем.
+        pub(crate) fn is_visible(&self) -> bool {
+            self.icon.rect().is_some()
         }
 
         /// Забирает команды, накопившиеся с прошлого раза.
@@ -151,7 +167,7 @@ mod imp {
     }
 
     /// Подписывается на пункты меню и клики по иконке. Обработчики общие на весь процесс и ставятся один раз.
-    fn install_handlers(ctx: &egui::Context, tx: mpsc::Sender<TrayCommand>) {
+    fn install_handlers(ctx: &egui::Context, tx: mpsc::Sender<TrayCommand>, native_menu: bool) {
         let (menu_tx, menu_ctx) = (tx.clone(), ctx.clone());
         let on_menu: MenuEventHandler = Arc::new(move |event: MenuEvent| {
             if let Some(command) = command_for_menu_id(&event.id.0) {
@@ -164,8 +180,15 @@ mod imp {
         let click_ctx = ctx.clone();
         TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
             // Реагируем на отпускание левой кнопки: нажатие и отпускание приходят двумя событиями.
-            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-                let _ = tx.send(TrayCommand::Show);
+            let command = match event {
+                TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } => Some(TrayCommand::Show),
+                TrayIconEvent::Click { button: MouseButton::Right, button_state: MouseButtonState::Up, position, .. } if !native_menu => {
+                    Some(TrayCommand::OpenMenu { x: position.x.round() as i32, y: position.y.round() as i32 })
+                }
+                _ => None,
+            };
+            if let Some(command) = command {
+                let _ = tx.send(command);
                 click_ctx.request_repaint();
             }
         }));
@@ -192,6 +215,10 @@ mod imp {
     impl Tray {
         pub(crate) fn new(_ctx: &egui::Context) -> Option<Self> {
             None
+        }
+
+        pub(crate) fn is_visible(&self) -> bool {
+            false
         }
 
         pub(crate) fn poll(&self) -> Vec<TrayCommand> {

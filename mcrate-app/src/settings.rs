@@ -71,6 +71,30 @@ pub enum WindowBackdrop {
     Acrylic, // полупрозрачный блюр того, что находится за окном
 }
 
+/// Фон центральной панели, когда включён Mica/Acrylic: насколько материал виден сквозь неё.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum PaneFill {
+    /// Обычный фон темы.
+    #[default]
+    Solid,
+    /// Фон темы с непрозрачностью 50 %.
+    Half,
+    /// Без фона: виден только материал окна.
+    Clear,
+}
+
+impl PaneFill {
+    pub const ALL: [PaneFill; 3] = [Self::Solid, Self::Half, Self::Clear];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Solid => "Обычный",
+            Self::Half => "50 %",
+            Self::Clear => "Убрать",
+        }
+    }
+}
+
 /// Качество «живого» фона стекла: во сколько раз уменьшается закадровая картинка, которую
 /// преломляет стекло. Меньше = быстрее на слабых видеокартах, но стекло чуть «мылит».
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -115,6 +139,8 @@ pub struct GraphicsSettings {
     /// Отключает непрерывное движение декоративной волны и визуализатора.
     pub reduce_motion: bool,
     pub window_backdrop: WindowBackdrop,
+    /// Фон центральной панели поверх материала окна (см. `PaneFill`).
+    pub pane_fill: PaneFill,
 }
 
 impl Default for GraphicsSettings {
@@ -130,6 +156,7 @@ impl Default for GraphicsSettings {
             glass_quality: GlassQuality::Balanced,
             reduce_motion: false,
             window_backdrop: WindowBackdrop::Off,
+            pane_fill: PaneFill::Solid,
         }
     }
 }

@@ -22,7 +22,10 @@ pub fn surface<R>(theme: &Theme, ui: &mut Ui, role: Surface, add: impl FnOnce(&m
     let (fill, margin, stroke) = match role {
         // Навигация сливается с фоном (как в проводнике Windows 11).
         Surface::Rail => (Color32::TRANSPARENT, Margin::symmetric(12, 14), Stroke::NONE),
-        Surface::Content => (p.surface_container_low, Margin::same(20), Stroke::NONE),
+        Surface::Content => {
+            let fill = theme.pane_color(p.surface_container_low, p.surface_container_low);
+            (fill, Margin::same(20), Stroke::NONE)
+        }
         Surface::PlayerBar => (p.surface_container_high, Margin::symmetric(22, 12), Stroke::NONE),
         // На экране «Сейчас играет» панель остаётся тональной, но слегка просвечивает,
         // чтобы фоновая аудиоволна была видна и в Material 3.

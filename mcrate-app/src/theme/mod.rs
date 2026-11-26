@@ -9,7 +9,7 @@ pub mod palette;
 
 use egui::{Color32, Context, CornerRadius, Ui};
 
-use crate::settings::{Design, GraphicsSettings, WindowBackdrop};
+use crate::settings::{Design, GraphicsSettings, PaneFill, WindowBackdrop};
 pub use palette::{Palette, with_alpha, with_alpha_over};
 
 /// Семантические роли формы. Значения задаются в логических пикселях egui.
@@ -47,6 +47,9 @@ pub enum TextRole {
 
 // Полные таблицы токенов. Помимо единого источника значений они позволяют
 // проверить/перебрать всю шкалу, даже если конкретный экран пока не использует роль.
+/// Непрозрачность панели в режиме «50 %» (половина от 255).
+const HALF_PANE_ALPHA: u8 = 128;
+
 const SHAPE_TOKENS: [(ShapeRole, u8, u8); 7] = [
     (ShapeRole::None, 0, 0),
     (ShapeRole::ExtraSmall, 4, 8),
@@ -112,6 +115,21 @@ impl Theme {
     /// Показывается ли системный материал (Mica/Acrylic) сквозь окно.
     pub fn window_backdrop_active(&self) -> bool {
         self.settings.window_backdrop != WindowBackdrop::Off
+    }
+
+    /// Какой фон у центральной панели на самом деле. Без Mica/Acrylic всегда обычный: иначе сквозь окно был бы
+    /// виден рабочий стол без размытия, и текст не читался бы.
+    pub fn pane_fill(&self) -> PaneFill {
+        if self.window_backdrop_active() { self.settings.pane_fill } else { PaneFill::Solid }
+    }
+
+    /// Цвет центральной панели с учётом `pane_fill`. `solid`: цвет обычного фона, `base`: тот же цвет без прозрачности.
+    pub fn pane_color(&self, solid: Color32, base: Color32) -> Color32 {
+        match self.pane_fill() {
+            PaneFill::Solid => solid,
+            PaneFill::Half => with_alpha(base, HALF_PANE_ALPHA),
+            PaneFill::Clear => Color32::TRANSPARENT,
+        }
     }
 
     /// Радиус скругления больших панелей (совместимость с существующими вызовами).
@@ -336,5 +354,28 @@ mod tests {
         assert_eq!(theme.text_size(TextRole::DisplaySmall), 34.0);
         assert_eq!(theme.text_size(TextRole::BodyMedium), 15.0);
         assert_eq!(theme.text_size(TextRole::LabelSmall), 12.0);
+    }
+}
+
+#[cfg(test)]
+mod pane_fill_tests {
+    use super::*;
+
+    fn theme(window_backdrop: WindowBackdrop, pane_fill: PaneFill) -> Theme {
+        Theme::new(&GraphicsSettings { window_backdrop, pane_fill, ..GraphicsSettings::default() })
+    }
+
+    #[test]
+    fn pane_stays_solid_without_window_material() {
+        assert_eq!(theme(WindowBackdrop::Off, PaneFill::Clear).pane_fill(), PaneFill::Solid);
+    }
+
+    #[test]
+    fn pane_color_follows_setting() {
+        let base = Color32::from_rgb(20, 40, 60);
+        let color = |fill| theme(WindowBackdrop::Mica, fill).pane_color(base, base);
+        assert_eq!(color(PaneFill::Solid), base);
+        assert_eq!(color(PaneFill::Half).a(), HALF_PANE_ALPHA);
+        assert_eq!(color(PaneFill::Clear), Color32::TRANSPARENT);
     }
 }

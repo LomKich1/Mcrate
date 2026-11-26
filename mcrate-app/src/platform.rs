@@ -2,6 +2,7 @@
 //! (Desktop Window Manager, оконный менеджер Windows).
 
 use crate::settings::WindowBackdrop;
+use eframe::egui::Color32;
 
 /// Есть ли на этой ОС Mica/Acrylic.
 pub const BACKDROP_SUPPORTED: bool = cfg!(windows);
@@ -96,5 +97,66 @@ pub fn apply_title_bar(frame: &eframe::Frame, background: [u8; 3], text: [u8; 3]
     {
         let _ = (frame, background, text, use_material);
         Ok(())
+    }
+}
+
+/// Оформить всплывающее окно без рамки (меню трея) средствами DWM: скругление Windows 11, цвет рамки и цвет
+/// однопиксельной полоски заголовка сверху (eframe включает таким окнам системную тень, и полоска остаётся видна).
+/// Окно ищется по заголовку: eframe не даёт доступа к окнам дочерних viewport. На Windows 10 эффекта нет.
+#[cfg(windows)]
+pub fn style_popup_window(title: &str, fill: Color32, border: Color32, dark: bool) {
+    use std::ffi::c_void;
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn FindWindowW(class: *const u16, title: *const u16) -> *mut c_void;
+    }
+    #[link(name = "dwmapi")]
+    unsafe extern "system" {
+        fn DwmSetWindowAttribute(window: *mut c_void, attribute: u32, value: *const c_void, size: u32) -> i32;
+    }
+    // Номера атрибутов из dwmapi.h (DWMWINDOWATTRIBUTE).
+    const USE_IMMERSIVE_DARK_MODE: u32 = 20;
+    const WINDOW_CORNER_PREFERENCE: u32 = 33;
+    const BORDER_COLOR: u32 = 34;
+    const CAPTION_COLOR: u32 = 35;
+    /// DWMWCP_ROUND: обычное скругление Windows 11.
+    const CORNER_ROUND: u32 = 2;
+
+    let wide: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: `wide` заканчивается нулём и живёт до конца вызова; нулевой class значит «любой класс окна».
+    let window = unsafe { FindWindowW(std::ptr::null(), wide.as_ptr()) };
+    if window.is_null() {
+        return;
+    }
+    let attributes = [
+        (USE_IMMERSIVE_DARK_MODE, u32::from(dark)),
+        (WINDOW_CORNER_PREFERENCE, CORNER_ROUND),
+        (BORDER_COLOR, colorref(border)),
+        (CAPTION_COLOR, colorref(fill)),
+    ];
+    for (attribute, value) in attributes {
+        // SAFETY: окно найдено выше; все четыре атрибута принимают 4 байта. Ошибку (старая Windows) пропускаем.
+        unsafe { DwmSetWindowAttribute(window, attribute, (&raw const value).cast(), size_of::<u32>() as u32) };
+    }
+}
+
+/// Вне Windows оформлять нечего.
+#[cfg(not(windows))]
+pub fn style_popup_window(_title: &str, _fill: Color32, _border: Color32, _dark: bool) {}
+
+/// Цвет в формате COLORREF (число 0x00BBGGRR), прозрачность отбрасывается.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn colorref(color: Color32) -> u32 {
+    u32::from_le_bytes([color.r(), color.g(), color.b(), 0])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn colorref_is_bgr() {
+        assert_eq!(colorref(Color32::from_rgb(0x11, 0x22, 0x33)), 0x0033_2211);
     }
 }

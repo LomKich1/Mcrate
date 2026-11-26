@@ -8,7 +8,7 @@ use egui::{Color32, CornerRadius, Rect, Shape, Ui};
 /// Зазор между плашками соседних строк.
 pub(crate) const SEGMENT_GAP: f32 = 2.1;
 /// Радиус угла на стыке плашек.
-const SEGMENT_INNER_RADIUS: u8 = 4;
+pub(crate) const SEGMENT_INNER_RADIUS: u8 = 4;
 
 /// Место строки в списке: номер (с нуля) и сколько всего строк.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

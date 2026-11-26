@@ -57,6 +57,18 @@ pub(crate) struct FinishedRemoval {
 struct RowPaintRange {
     /// Видимая часть строки с учётом клиппинга прокручиваемого списка.
     rect: Rect,
+    /// Позиция строки в исходном списке на момент запроса удаления.
+    index: usize,
+    count: usize,
+}
+
+/// Изменение скругления соседней строки начинается сразу при запросе удаления,
+/// ещё до того, как снимок строки готов и сам элемент исчез из данных.
+struct SegmentTransition {
+    row_id: Id,
+    removed_index: usize,
+    original_count: usize,
+    started_at: f64,
 }
 
 /// Однажды вырезанное CPU-изображение строки, которое загружается в GPU-текстуру.
@@ -92,6 +104,7 @@ struct State {
     rows: std::collections::HashMap<Id, RowPaintRange>,
     pending: Option<PendingCapture>,
     effects: Vec<Effect>,
+    segment_transition: Option<SegmentTransition>,
 }
 
 fn state_id() -> Id {
@@ -301,12 +314,39 @@ fn empty_capture() -> CapturedRow {
 }
 
 /// Запоминает видимую область строки для однократного снимка при выборе удаления.
-pub(crate) fn record_row(ctx: &Context, row_id: Id, rect: Rect) {
+pub(crate) fn record_row(ctx: &Context, row_id: Id, rect: Rect, index: usize, count: usize) {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
     }
     let shared = shared_state(ctx);
-    lock_state(&shared).rows.insert(row_id, RowPaintRange { rect });
+    lock_state(&shared).rows.insert(row_id, RowPaintRange { rect, index, count });
+}
+
+/// Возвращает прогресс появления новых внешних углов у соседней строки.
+/// Удаляемая строка не меняет собственные углы: её снимок должен сохранить исходный вид.
+pub(crate) fn segment_corner_progress(
+    ctx: &Context,
+    row_id: Id,
+    index: usize,
+    now: f64,
+) -> Option<(bool, bool, f32)> {
+    let shared = shared_state(ctx);
+    let state = lock_state(&shared);
+    let transition = state.segment_transition.as_ref()?;
+    if transition.row_id == row_id || transition.original_count < 2 {
+        return None;
+    }
+
+    let reveal_top = transition.removed_index == 0 && index == 1;
+    let reveal_bottom = transition.removed_index + 1 == transition.original_count
+        && index + 1 == transition.removed_index;
+    if !reveal_top && !reveal_bottom {
+        return None;
+    }
+
+    let linear = ((now - transition.started_at) / COLLAPSE_DURATION).clamp(0.0, 1.0) as f32;
+    let progress = cubic_bezier(STANDARD, linear).clamp(0.0, 1.0);
+    Some((reveal_top, reveal_bottom, progress))
 }
 
 /// Запускает снимок строки. `false` означает, что анимация недоступна и трек надо удалить сразу.
@@ -325,6 +365,12 @@ pub(crate) fn start(ctx: &Context, row_id: Id, track: Track, kind: RemovalKind, 
         return false;
     }
     let Some(row) = state.rows.get(&row_id).copied() else { return false };
+    state.segment_transition = Some(SegmentTransition {
+        row_id,
+        removed_index: row.index,
+        original_count: row.count,
+        started_at: now,
+    });
     let pixels_per_point = ctx.pixels_per_point().max(0.1);
     let result: CaptureSlot = Arc::default();
     state.pending = Some(PendingCapture {
@@ -439,6 +485,9 @@ pub(crate) fn take_finished(ctx: &Context, now: f64) -> Vec<FinishedRemoval> {
         if now - effect.started_at >= EFFECT_DURATION {
             finished.push(FinishedRemoval { track: effect.track, kind: effect.kind });
             state.rows.remove(&effect.row_id);
+            if state.segment_transition.as_ref().is_some_and(|transition| transition.row_id == effect.row_id) {
+                state.segment_transition = None;
+            }
         } else {
             active.push(effect);
         }

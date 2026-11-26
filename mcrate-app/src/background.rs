@@ -35,6 +35,10 @@ impl McrateApp {
         self.handle_close_request(ctx);
         self.run_background_commands(ctx);
         self.update_tray_tooltip();
+        if self.hidden_to_tray && self.tray_menu_is_open() {
+            // Меню трея рисуется из `App::ui`, а у скрытого окна его не зовут: просим один кадр на каждый проход.
+            ctx.send_viewport_cmd(ViewportCommand::RequestPaintWhileHidden);
+        }
         if self.hidden_to_tray {
             // Окно скрыто: `ui` не вызывается, движок опрашиваем сами и просим разбудить нас снова.
             self.ctl.tick();
@@ -47,9 +51,16 @@ impl McrateApp {
         if self.quitting || !ctx.input(|i| i.viewport().close_requested()) {
             return;
         }
-        if self.prefs.background_play && self.tray.is_some() {
-            ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+        if !self.prefs.background_play || self.tray.is_none() {
+            return;
+        }
+        ctx.send_viewport_cmd(ViewportCommand::CancelClose);
+        if self.tray.as_ref().is_some_and(|t| t.is_visible()) {
             self.hide_to_tray(ctx);
+        } else {
+            // Windows не видит иконку (панель задач не готова или иконку не приняли): окно, спрятанное без
+            // иконки, вернуть нечем. Сворачиваем в панель задач, пока иконка не появится.
+            ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
         }
     }
 
@@ -57,13 +68,7 @@ impl McrateApp {
     fn run_background_commands(&mut self, ctx: &Context) {
         let tray_commands = self.tray.as_ref().map(|t| t.poll()).unwrap_or_default();
         for command in tray_commands {
-            match command {
-                TrayCommand::Show => self.show_from_tray(ctx),
-                TrayCommand::TogglePause => self.run_shortcut(Shortcut::TogglePause),
-                TrayCommand::Next => self.run_shortcut(Shortcut::NextTrack),
-                TrayCommand::Previous => self.run_shortcut(Shortcut::PrevTrack),
-                TrayCommand::Quit => self.quit(ctx),
-            }
+            self.run_tray_command(ctx, command);
         }
         let media_keys = self.media_keys.as_ref().map(|k| k.poll()).unwrap_or_default();
         for key in media_keys {
@@ -71,9 +76,25 @@ impl McrateApp {
         }
     }
 
+    /// Выполняет команду иконки в трее или её меню.
+    pub(crate) fn run_tray_command(&mut self, ctx: &Context, command: TrayCommand) {
+        match command {
+            TrayCommand::Show => {
+                self.tray_menu = None;
+                self.show_from_tray(ctx);
+            }
+            TrayCommand::TogglePause => self.run_shortcut(Shortcut::TogglePause),
+            TrayCommand::Next => self.run_shortcut(Shortcut::NextTrack),
+            TrayCommand::Previous => self.run_shortcut(Shortcut::PrevTrack),
+            TrayCommand::OpenMenu { x, y } => self.open_tray_menu(ctx, (x, y)),
+            TrayCommand::Quit => self.quit(ctx),
+        }
+    }
+
     /// Прячет окно: пропадает с экрана и из панели задач, остаётся иконка в трее.
     fn hide_to_tray(&mut self, ctx: &Context) {
         self.hidden_to_tray = true;
+        self.tray_menu = None;
         ctx.send_viewport_cmd(ViewportCommand::Visible(false));
         ctx.request_repaint(); // чтобы `logic` вызвалась сразу и запустила таймер опроса движка
     }

@@ -7,7 +7,7 @@ use egui::{Color32, CornerRadius, CursorIcon, FontId, Margin, Rect, RichText, Se
 use crate::app::{McrateApp, View};
 use crate::icons::{self, Icon};
 use crate::platform;
-use crate::settings::{Design, GlassQuality, GraphicsSettings, ThemePreset, WindowBackdrop};
+use crate::settings::{Design, GlassQuality, GraphicsSettings, PaneFill, ThemePreset, WindowBackdrop};
 use crate::theme::Palette;
 use crate::theme::{ShapeRole, TextRole, Theme, with_alpha};
 use crate::ui::components::{back_header, nav_list};
@@ -25,6 +25,7 @@ impl McrateApp {
             ui.add_space(8.0);
 
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                crate::ui::autoscroll::apply_to_area(ui);
                 bleed_clip(ui, self.bleed.below_header());
                 let design = match self.settings.design {
                     Design::Material3 => "Material 3",
@@ -66,6 +67,7 @@ impl McrateApp {
             ui.add_space(4.0);
 
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                crate::ui::autoscroll::apply_to_area(ui);
                 bleed_clip(ui, self.bleed.below_header());
                 group_title(ui, theme, "Дизайн");
                 design_cards(ui, theme, &mut self.settings.design);
@@ -122,6 +124,7 @@ impl McrateApp {
             ui.add_space(4.0);
 
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                crate::ui::autoscroll::apply_to_area(ui);
                 bleed_clip(ui, self.bleed.below_header());
                 group_title(ui, theme, "Материал окна (Windows 11)");
                 ui.add_enabled_ui(platform::BACKDROP_SUPPORTED, |ui| {
@@ -131,8 +134,17 @@ impl McrateApp {
                         ui.selectable_value(&mut self.settings.window_backdrop, WindowBackdrop::Acrylic, "Acrylic");
                     });
                 });
+                group_title(ui, theme, "Фон панели");
+                let material = platform::BACKDROP_SUPPORTED && self.settings.window_backdrop != WindowBackdrop::Off;
+                ui.add_enabled_ui(material, |ui| {
+                    ui.horizontal(|ui| {
+                        for fill in PaneFill::ALL {
+                            ui.selectable_value(&mut self.settings.pane_fill, fill, fill.label());
+                        }
+                    });
+                });
                 let note = if platform::BACKDROP_SUPPORTED {
-                    "Нужна Windows 11 сборки 22621+. Материал виден там, где панели не закрашены: в Material 3 это фон под навигацией."
+                    "Нужна Windows 11 сборки 22621+. Без материала фон панели всегда обычный."
                 } else {
                     "Недоступно на этой ОС."
                 };
@@ -168,6 +180,7 @@ impl McrateApp {
             ui.add_space(4.0);
 
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                crate::ui::autoscroll::apply_to_area(ui);
                 bleed_clip(ui, self.bleed.below_header());
                 group_title(ui, theme, "Mcrate");
                 ui.label(RichText::new("Музыкальный плеер на Rust и egui.").color(p.on_surface_variant));

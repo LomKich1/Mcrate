@@ -20,11 +20,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// Ширина меню. Material 3 допускает 112-280 px; 260 вмещает самую длинную подпись одной строкой.
-const MENU_WIDTH: f32 = 260.0;
+pub(super) const MENU_WIDTH: f32 = 260.0;
 /// Высота пункта меню (Material 3: 48 px).
-const ITEM_HEIGHT: f32 = 48.0;
+pub(super) const ITEM_HEIGHT: f32 = 48.0;
 /// Вертикальный отступ внутри карточки меню (Material 3: 8 px сверху и снизу).
-const MENU_PADDING: i8 = 8;
+pub(super) const MENU_PADDING: i8 = 8;
 /// Отступ значка пункта от левого края.
 const ITEM_ICON_INSET: f32 = 16.0;
 /// Размер значка в пункте меню.
@@ -282,7 +282,7 @@ fn menu_position(window: Rect, anchor: Rect, item_count: usize) -> Pos2 {
 }
 
 /// Карточка меню Material 3: тональная поверхность, небольшое скругление и тень.
-fn m3_frame(theme: &Theme) -> Frame {
+pub(super) fn m3_frame(theme: &Theme) -> Frame {
     Frame::new()
         .fill(theme.palette.surface_container)
         .corner_radius(theme.shape_radius(ShapeRole::Medium))
@@ -291,7 +291,7 @@ fn m3_frame(theme: &Theme) -> Frame {
 }
 
 /// Карточка меню Liquid Glass: полупрозрачная заливка и тонкая светлая кромка.
-fn glass_frame(theme: &Theme) -> Frame {
+pub(super) fn glass_frame(theme: &Theme) -> Frame {
     let p = &theme.palette;
     Frame::new()
         .fill(with_alpha(p.surface_container, GLASS_FILL_ALPHA))
@@ -301,7 +301,7 @@ fn glass_frame(theme: &Theme) -> Frame {
 }
 
 /// Один пункт: слой наведения/нажатия, значок и подпись. Возвращает true, если по нему кликнули.
-fn menu_item(ui: &mut Ui, theme: &Theme, icon: Icon, label: &str) -> bool {
+pub(super) fn menu_item(ui: &mut Ui, theme: &Theme, icon: Icon, label: &str) -> bool {
     let p = &theme.palette;
     let (rect, resp) = ui.allocate_exact_size(vec2(MENU_WIDTH, ITEM_HEIGHT), Sense::click());
     if resp.hovered() && !resp.is_pointer_button_down_on() {

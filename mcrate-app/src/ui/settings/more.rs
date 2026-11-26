@@ -9,11 +9,23 @@ use egui_material_icons::icons as mi;
 use super::controls::{Chip, Choice, Row, Trailing, group_label, hint_text, paint_symbol, settings_card, settings_group};
 use crate::app::{McrateApp, View};
 use crate::platform;
-use crate::settings::{GlassQuality, Language, WindowBackdrop};
+use crate::settings::{GlassQuality, GraphicsSettings, Language, PaneFill, WindowBackdrop};
 use crate::theme::{TextRole, Theme};
 use crate::ui::components::{ConfirmDialog, DialogChoice, back_header, confirm_dialog};
 use crate::ui::layout::{centered_column, pane_scroll, responsive_column, scroll_end_padding};
 use crate::ui::widgets::error_banner;
+
+/// Строка «Фон панели»: варианты кроме обычного доступны только с включённым материалом окна.
+fn pane_fill_group(ui: &mut Ui, theme: &Theme, settings: &mut GraphicsSettings) {
+    let fills = PaneFill::ALL;
+    let material = platform::BACKDROP_SUPPORTED && settings.window_backdrop != WindowBackdrop::Off;
+    let mut idx = fills.iter().position(|f| *f == settings.pane_fill).unwrap_or(0);
+    let chips =
+        fills.iter().map(|f| if *f == PaneFill::Solid || material { Chip::new(f.label()) } else { Chip::locked(f.label()) }).collect();
+    let row = Row::new(mi::ICON_OPACITY, "Фон панели", Trailing::Choice(Choice { chips, selected: &mut idx, stretch: true }));
+    settings_group(ui, theme, "pane_fill", vec![row]);
+    settings.pane_fill = fills[idx];
+}
 
 /// Какой экран-«скоро» показать.
 #[derive(Clone, Copy)]
@@ -113,11 +125,12 @@ impl McrateApp {
                 vec![Row::new(mi::ICON_WINDOW, "Материал окна", Trailing::Choice(Choice { chips, selected: &mut idx, stretch: true }))],
             );
             app.settings.window_backdrop = backdrops[idx].0;
+            pane_fill_group(ui, theme, &mut app.settings);
             hint_text(
                 ui,
                 theme,
                 if supported {
-                    "Нужна Windows 11 сборки 22621+. Материал виден там, где панели не закрашены: в Material 3 это фон под навигацией."
+                    "Нужна Windows 11 сборки 22621+. Без материала фон панели всегда обычный."
                 } else {
                     "Материал окна доступен только в Windows 11."
                 },

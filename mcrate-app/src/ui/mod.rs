@@ -5,6 +5,7 @@
 //! Цвета, стекло и Material 3 живут в `crate::theme`, не здесь.
 
 mod anim;
+pub(crate) mod autoscroll;
 pub(crate) mod collection;
 pub(crate) mod components;
 pub(crate) mod format;
@@ -24,6 +25,7 @@ pub(crate) mod soundcloud;
 pub(crate) mod track_menu;
 pub(crate) mod thanos;
 pub(crate) mod transition;
+pub(crate) mod tray_menu;
 pub(crate) mod wave;
 pub(crate) mod widgets;
 pub(crate) mod window_layout;

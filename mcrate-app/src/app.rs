@@ -12,14 +12,16 @@ use mcrate_core::Track;
 use crate::controller::Controller;
 use crate::icons;
 use crate::media_keys::MediaKeys;
-use crate::settings::{Design, GraphicsSettings, PREFS_KEY, Preferences, STORAGE_KEY, ThemePreset, WindowBackdrop};
+use crate::settings::{Design, GraphicsSettings, PREFS_KEY, PaneFill, Preferences, STORAGE_KEY, ThemePreset, WindowBackdrop};
 use crate::theme::{Surface, Theme, glass, with_alpha};
 use crate::tray::Tray;
+use crate::ui::autoscroll::AutoScroll;
 use crate::ui::layout::{Bleed, Breakpoint};
 use crate::ui::nav_history::{NavHistory, Place};
 use crate::ui::now_playing::NowPlayingState;
 use crate::ui::settings::SoonKind;
 use crate::ui::transition::ViewTransition;
+use crate::ui::tray_menu::OpenTrayMenu;
 use crate::ui::window_layout::{
     EDGE, GLASS_PAGE_PAD, M3_CONTENT_INSET, PANE_HALF_GAP, RAIL_COMPACT_BELOW, bottom_inset, content_pane_rect, glass_page_rect,
     glass_rail_rect, mini_bar_rect,
@@ -189,8 +191,12 @@ pub struct McrateApp {
     pub media_keys: Option<MediaKeys>,
     /// Было ли в конце прошлого кадра в фокусе текстовое поле (нужно Esc: egui снимает фокус до нашего кода).
     pub text_focused_last_frame: bool,
+    /// Прокрутка зажатием средней кнопки мыши (`ui/autoscroll.rs`).
+    pub autoscroll: AutoScroll,
     /// Иконка в трее (`None`: не Windows или Windows не дала её создать). См. `background.rs`.
     pub tray: Option<Tray>,
+    /// Открытое меню иконки в трее (`ui/tray_menu.rs`).
+    pub tray_menu: Option<OpenTrayMenu>,
     /// Окно сейчас скрыто в трей (интерфейс не рисуется, работает только `App::logic`).
     pub hidden_to_tray: bool,
     /// Пользователь выбрал «Выход» в меню иконки: закрытие окна больше не прячет его в трей.
@@ -254,7 +260,9 @@ impl McrateApp {
             nav: NavHistory::new(Place::new(View::Home, None)),
             media_keys: MediaKeys::new(&cc.egui_ctx),
             text_focused_last_frame: false,
+            autoscroll: AutoScroll::default(),
             tray: Tray::new(&cc.egui_ctx),
+            tray_menu: None,
             hidden_to_tray: false,
             quitting: false,
         }
@@ -410,7 +418,10 @@ impl McrateApp {
         // проходе нет событий мыши и клавиатуры, поэтому клики не повторяются.
         live.run_with_quality(ui, theme.palette.surface, quality, |page| {
             page.set_style(style.clone());
-            glass::paint_wallpaper(page.painter(), full, tex, theme.palette.surface, translucent);
+            // Фон панели ослаблен или убран: обои тоже не рисуем, иначе они заслонят материал окна.
+            if theme.pane_fill() == PaneFill::Solid {
+                glass::paint_wallpaper(page.painter(), full, tex, theme.palette.surface, translucent);
+            }
             glass::paint_pane(theme, page.painter(), content_pane);
             page.scope_builder(UiBuilder::new().max_rect(inner), |ui| self.screen(ui, theme));
         });
@@ -561,7 +572,9 @@ impl eframe::App for McrateApp {
         self.finish_thanos_removals(&ctx, self.frame_time);
         self.show_download_status(&ctx, &theme);
         self.show_playlist_dialog(&ctx, &theme);
+        self.show_tray_menu(&ctx, &theme);
         self.paint_drop_overlay(&ctx);
+        self.paint_autoscroll_marker(&ctx, &theme);
         self.remember_typing(&ctx);
 
         // В раскладке стекла клик по меню случается ПОСЛЕ отрисовки экрана (рейка лежит над

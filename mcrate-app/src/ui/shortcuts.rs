@@ -6,6 +6,7 @@
 //! | кнопка мыши «Назад» (4), Alt+←, клавиша «Назад» | на предыдущий экран (история, см. `nav_history`)  |
 //! | кнопка мыши «Вперёд» (5), Alt+→, клавиша «Вперёд» | на следующий экран                              |
 //! | Esc                                          | то же, что «Назад»; сначала закрывает окна и меню |
+//! | зажатая средняя кнопка мыши                  | прокрутка как в браузере, см. `autoscroll`        |
 //! | Пробел, клавиша Play/Pause                   | пауза / играть                                    |
 //! | Ctrl+→, клавиша «Следующий трек»             | следующий трек                                    |
 //! | Ctrl+←, клавиша «Предыдущий трек»            | предыдущий трек (после 3 с перезапуск, как в движке) |
@@ -123,7 +124,12 @@ impl McrateApp {
             text_focused_last_frame: self.text_focused_last_frame,
             overlay_open: self.overlay_open(ctx),
         };
-        let shortcuts = ctx.input(|i| read_shortcuts(i, &guard));
+        // Прокрутка средней кнопкой: Esc сначала останавливает её и не уводит с экрана.
+        let escape_stopped_autoscroll = self.step_autoscroll(ctx, !guard.overlay_open);
+        let mut shortcuts = ctx.input(|i| read_shortcuts(i, &guard));
+        if escape_stopped_autoscroll {
+            shortcuts.retain(|s| *s != Shortcut::Escape);
+        }
         for shortcut in shortcuts {
             self.run_shortcut(shortcut);
         }
@@ -137,7 +143,7 @@ impl McrateApp {
     /// Открыто ли что-то поверх экрана, что само закрывается по Esc: меню трека, окна плейлистов и любое
     /// модальное окно egui (например, «Очистить кэш?»). Модальные окна рисуются позже по кадру, поэтому тут видно
     /// состояние прошлого кадра: этого достаточно, окно не может открыться и закрыться в одном кадре.
-    fn overlay_open(&self, ctx: &Context) -> bool {
+    pub(crate) fn overlay_open(&self, ctx: &Context) -> bool {
         self.track_menu.is_some() || self.playlist_dialog.is_some() || ctx.memory(|m| m.top_modal_layer().is_some())
     }
 

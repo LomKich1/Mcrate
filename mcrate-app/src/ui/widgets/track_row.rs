@@ -9,7 +9,7 @@
 use super::buttons::{IconButton, icon_button, like_button};
 use super::cover::cover_tile;
 use super::glide::squish;
-use super::segment::{SegmentPos, ripple_corner, segment_radius, segment_shape, track_plate};
+use super::segment::{SEGMENT_INNER_RADIUS, SegmentPos, ripple_corner, segment_radius, segment_shape, track_plate};
 use crate::icons::{self, Icon};
 use crate::theme::{ShapeRole, TextRole, Theme, with_alpha};
 use crate::ui::format::{artists_text, fmt_time};
@@ -107,7 +107,25 @@ pub(crate) fn track_row_with_provider_badge(
     }
     // Плашка строки (только Material 3, сегментированный список): слот резервируем первым, чтобы плашка лежала под
     // волной нажатия и содержимым, и рисуем по исходному прямоугольнику (сжимается только содержимое).
-    let segment = (!theme.glass_active()).then(|| segment_radius(theme, pos));
+    let segment = (!theme.glass_active()).then(|| {
+        let mut radius = segment_radius(theme, pos);
+        if let Some((reveal_top, reveal_bottom, progress)) =
+            thanos::segment_corner_progress(ui.ctx(), row_id, pos.index, now)
+        {
+            let inner = f32::from(SEGMENT_INNER_RADIUS);
+            let outer = f32::from(theme.shape_radius(ShapeRole::ExtraLarge));
+            let animated = (inner + (outer - inner) * progress).round().clamp(0.0, 255.0) as u8;
+            if reveal_top {
+                radius.nw = animated;
+                radius.ne = animated;
+            }
+            if reveal_bottom {
+                radius.sw = animated;
+                radius.se = animated;
+            }
+        }
+        radius
+    });
     if let Some(radius) = segment {
         ui.painter().add(segment_shape(track_plate(rect), radius, theme.palette.surface_container_high));
     }
@@ -134,7 +152,7 @@ pub(crate) fn track_row_with_provider_badge(
     let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
     let accessible_label = format!("{} — {}", track.title, artists_text(track));
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, is_current, accessible_label.clone()));
-    thanos::record_row(ui.ctx(), row_id, rect.intersect(ui.clip_rect()));
+    thanos::record_row(ui.ctx(), row_id, rect.intersect(ui.clip_rect()), pos.index, pos.count);
     resp
 }
 
