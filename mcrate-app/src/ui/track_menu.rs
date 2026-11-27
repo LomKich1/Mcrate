@@ -14,7 +14,7 @@ use crate::ui::widgets::status_snackbar;
 use crate::ui::playlists::PlaylistDialog;
 use crate::ui::ripple;
 use crate::ui::thanos::{self, RemovalKind};
-use egui::{Align2, Area, Color32, Context, FontId, Frame, Id, Key, Margin, Order, Pos2, Rect, Sense, Shadow, Stroke, Ui, vec2};
+use egui::{Align2, Area, Color32, Context, FontId, Frame, Id, Key, Margin, Order, Pos2, Rect, Sense, Shadow, Stroke, Ui, Vec2, vec2};
 use mcrate_core::{ProviderKind, Track};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -31,7 +31,7 @@ const ITEM_ICON_INSET: f32 = 16.0;
 const ITEM_ICON_SIZE: f32 = 20.0;
 /// Расстояние от левого края значка до начала подписи.
 const ITEM_LABEL_INSET: f32 = ITEM_ICON_INSET + ITEM_ICON_SIZE + 12.0;
-/// Зазор между областью строки (или кнопкой «три точки») и меню.
+/// Зазор между кнопкой «три точки» и меню.
 const ANCHOR_GAP: f32 = 4.0;
 /// Прозрачность слоя наведения на пункте (Material 3: 8 % от 255); нажатие рисует `ripple`.
 const HOVER_ALPHA: u8 = 20;
@@ -42,10 +42,19 @@ const SHADOW_OFFSET_Y: i8 = 2;
 const SHADOW_BLUR: u8 = 10;
 const SHADOW_ALPHA: u8 = 60;
 
-/// Открытое меню: для какого трека и рядом с какой кнопкой.
+/// От чего отсчитывать место меню (координаты окна).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum MenuAnchor {
+    /// Кнопка «три точки»: меню встаёт под ней или над ней, см. `menu_position`.
+    Button(Rect),
+    /// Правый клик: меню открывается у курсора, см. `cursor_menu_position`.
+    Cursor(Pos2),
+}
+
+/// Открытое меню: для какого трека и где его показывать.
 pub(crate) struct OpenTrackMenu {
     track: Track,
-    anchor: Rect,
+    anchor: MenuAnchor,
     row_id: Id,
 }
 
@@ -101,8 +110,8 @@ pub(crate) fn request_like(ctx: &Context, track: &Track, row_id: Id) {
     ctx.data_mut(|d| d.insert_temp(like_request_id(), (track.clone(), row_id)));
 }
 
-/// Строка просит открыть меню для `track` рядом с кнопкой `anchor`.
-pub(crate) fn request_menu(ctx: &Context, track: &Track, anchor: Rect, row_id: Id) {
+/// Строка просит открыть меню для `track` в месте `anchor` (у кнопки или у курсора).
+pub(crate) fn request_menu(ctx: &Context, track: &Track, anchor: MenuAnchor, row_id: Id) {
     ctx.data_mut(|d| d.insert_temp(request_id(), (track.clone(), anchor, row_id)));
 }
 
@@ -148,8 +157,8 @@ impl McrateApp {
     /// Вызывается один раз за кадр после отрисовки экранов.
     pub(crate) fn show_track_menu(&mut self, ctx: &Context, theme: &Theme) {
         let request = ctx.data_mut(|d| {
-            let request = d.get_temp::<(Track, Rect, Id)>(request_id());
-            d.remove::<(Track, Rect, Id)>(request_id());
+            let request = d.get_temp::<(Track, MenuAnchor, Id)>(request_id());
+            d.remove::<(Track, MenuAnchor, Id)>(request_id());
             request
         });
         if let Some((track, anchor, row_id)) = request {
@@ -169,10 +178,10 @@ impl McrateApp {
         };
         let downloadable = open.track.provider != ProviderKind::Local && self.view != View::CollectionDownloaded;
         let items = menu_items(downloadable, removal);
-        let pos = menu_position(ctx.content_rect(), open.anchor, items.len());
+        let frame = if theme.glass_active() { glass_frame(theme) } else { m3_frame(theme) };
+        let pos = anchored_position(ctx.content_rect(), open.anchor, items.len(), &frame);
 
         let area = Area::new(Id::unique("track_menu")).order(Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
-            let frame = if theme.glass_active() { glass_frame(theme) } else { m3_frame(theme) };
             frame
                 .show(ui, |ui| {
                     ui.set_width(MENU_WIDTH);
@@ -271,7 +280,29 @@ fn menu_items(downloadable: bool, removal: Option<RemovalKind>) -> Vec<(MenuActi
     items
 }
 
-/// Где поставить меню: правым краем к правому краю области строки/кнопки, под ней; если снизу не хватает места — над ней;
+/// Позиция левого верхнего угла меню для любого якоря. `frame`: карточка меню, её отступы и обводка входят в размер.
+fn anchored_position(window: Rect, anchor: MenuAnchor, item_count: usize, frame: &Frame) -> Pos2 {
+    match anchor {
+        MenuAnchor::Button(button) => menu_position(window, button, item_count),
+        MenuAnchor::Cursor(cursor) => {
+            let items = vec2(MENU_WIDTH, item_count as f32 * ITEM_HEIGHT);
+            cursor_menu_position(window, cursor, items + frame.total_margin().sum())
+        }
+    }
+}
+
+/// Меню размером `size` у курсора: вправо и вниз от него; где не помещается, раскрывается в другую сторону
+/// (влево или вверх). Если не помещается ни так, ни так, прижимается к краю окна.
+fn cursor_menu_position(window: Rect, cursor: Pos2, size: Vec2) -> Pos2 {
+    // Одна ось: `min` и `max` это границы окна, `length` это размер меню вдоль оси.
+    let axis = |at: f32, length: f32, min: f32, max: f32| {
+        let start = if at + length <= max { at } else { at - length };
+        start.clamp(min, (max - length).max(min))
+    };
+    Pos2::new(axis(cursor.x, size.x, window.left(), window.right()), axis(cursor.y, size.y, window.top(), window.bottom()))
+}
+
+/// Где поставить меню у кнопки: правым краем к правому краю кнопки, под ней; если снизу не хватает места — над ней;
 /// по горизонтали не выходит за окно.
 fn menu_position(window: Rect, anchor: Rect, item_count: usize) -> Pos2 {
     let height = item_count as f32 * ITEM_HEIGHT + 2.0 * f32::from(MENU_PADDING);
@@ -353,6 +384,36 @@ mod tests {
         assert_eq!(left.x, 0.0, "слишком близко к левому краю: прижимается к нему");
         let right = menu_position(WINDOW, anchor(990.0, 100.0), 2);
         assert!(right.x + MENU_WIDTH <= WINDOW.right());
+    }
+
+    #[test]
+    fn cursor_menu_opens_right_and_down_from_cursor() {
+        let cursor = Pos2::new(100.0, 100.0);
+        assert_eq!(cursor_menu_position(WINDOW, cursor, vec2(260.0, 160.0)), cursor);
+    }
+
+    #[test]
+    fn cursor_menu_flips_near_bottom_right_corner() {
+        let pos = cursor_menu_position(WINDOW, Pos2::new(990.0, 690.0), vec2(260.0, 160.0));
+        assert_eq!(pos, Pos2::new(730.0, 530.0));
+    }
+
+    #[test]
+    fn cursor_menu_is_clamped_when_neither_side_fits() {
+        let window = Rect::from_min_max(Pos2::ZERO, Pos2::new(300.0, 200.0));
+        let pos = cursor_menu_position(window, Pos2::new(150.0, 100.0), vec2(260.0, 160.0));
+        assert_eq!(pos, Pos2::ZERO);
+        // Окно меньше меню: виден хотя бы левый верхний угол.
+        let tiny = cursor_menu_position(window, Pos2::new(150.0, 100.0), vec2(400.0, 300.0));
+        assert_eq!(tiny, Pos2::ZERO);
+    }
+
+    #[test]
+    fn cursor_menu_size_includes_frame() {
+        let frame = Frame::new().inner_margin(Margin::symmetric(0, MENU_PADDING)).stroke(Stroke::new(1.0, Color32::WHITE));
+        let anchor = MenuAnchor::Cursor(Pos2::new(1000.0, 700.0));
+        let pos = anchored_position(WINDOW, anchor, 2, &frame);
+        assert_eq!(pos, Pos2::new(1000.0 - MENU_WIDTH - 2.0, 700.0 - 2.0 * ITEM_HEIGHT - 18.0));
     }
 
     #[test]

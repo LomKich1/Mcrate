@@ -35,10 +35,11 @@ fn search_bar_glass(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str) 
     let p = &theme.palette;
 
     let width = ui.available_width();
-    let (rect, outer) = ui.allocate_exact_size(vec2(width, 52.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(width, 52.0), Sense::hover());
     let edit_id = ui.make_persistent_id(("mcrate_search_field", hint));
     let focused_before = ui.memory(|memory| memory.has_focus(edit_id));
-    let hovered = outer.hovered();
+    // Не `Response::hovered`: редактор и крестик лежат поверх поля и забирали бы наведение себе.
+    let hovered = ui.rect_contains_pointer(rect);
     paint_glass_search_surface(ui, theme, rect, hovered);
 
     // Фиксированная геометрия: одинаковый вертикальный центр у лупы, текста и clear-кнопки.
@@ -129,7 +130,8 @@ fn search_bar_m3(ui: &mut Ui, theme: &Theme, value: &mut String, hint: &str, max
     let radius = theme.shape_radius(ShapeRole::Full);
     let edit_id = ui.make_persistent_id(("mcrate_search_field", hint));
     let focused_before = ui.memory(|memory| memory.has_focus(edit_id));
-    let hovered = ui.interact(rect, ui.make_persistent_id(("mcrate_search_surface", hint)), Sense::hover()).hovered();
+    // Не `Response::hovered`: редактор и крестик лежат поверх поля и забирали бы наведение себе.
+    let hovered = ui.rect_contains_pointer(rect);
     ui.painter().rect_filled(rect, radius, p.surface_container_high);
 
     let icon_center = pos2(rect.left() + 32.0, rect.center().y);

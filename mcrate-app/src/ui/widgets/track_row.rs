@@ -17,7 +17,7 @@ use crate::ui::format::{artists_text, fmt_time};
 use crate::ui::ripple::{self, LayerArea};
 use crate::controller::DownloadVisual;
 use crate::ui::thanos;
-use crate::ui::track_menu::{download_visual, is_liked, request_like, request_menu};
+use crate::ui::track_menu::{MenuAnchor, download_visual, is_liked, request_like, request_menu};
 use egui::{Align2, Color32, CursorIcon, FontId, Id, Pos2, Rect, Response, Sense, Ui, UiBuilder, Vec2, pos2, vec2};
 use mcrate_core::Track;
 
@@ -96,9 +96,12 @@ pub(crate) fn track_row_with_provider_badge(
         return response;
     }
     let (rect, resp) = ui.allocate_exact_size(vec2(row_width, row_height), Sense::click());
-    // ПКМ по любой точке строки открывает то же меню, что и кнопка «три точки».
+    // ПКМ по строке открывает то же меню, что и кнопка «три точки», но у курсора.
     if resp.secondary_clicked() {
-        request_menu(ui.ctx(), track, rect, row_id);
+        // `pointer.interact_pos`, а не `Response`: меню живёт в координатах окна, а слой строки может быть смещён.
+        // Если позиции указателя нет, ставим меню по левому верхнему углу строки.
+        let cursor = ui.input(|i| i.pointer.interact_pos()).unwrap_or(rect.min);
+        request_menu(ui.ctx(), track, MenuAnchor::Cursor(cursor), row_id);
     }
     // Подсветку и pressed-state в Material 3 уже рисует общий glide/ripple списка.
     // В Liquid Glass собственного M3 ripple нет, поэтому там сохраняем squish.
@@ -273,7 +276,7 @@ fn paint_row_buttons(ui: &mut Ui, theme: &Theme, rect: Rect, track: &Track, show
     let more_center = pos2(rect.right() - MORE_INSET_RIGHT - MORE_SIZE / 2.0, rect.center().y);
     let more = place_in_row(ui, more_center, MORE_SIZE, |ui| icon_button(ui, theme, IconButton::new(Icon::MoreVertical, MORE_SIZE, "Ещё")));
     if more.clicked() {
-        request_menu(ui.ctx(), track, more.rect, row_id);
+        request_menu(ui.ctx(), track, MenuAnchor::Button(more.rect), row_id);
     }
     if show_like {
         let like_center = pos2(more_center.x - MORE_SIZE / 2.0 - LIKE_SIZE / 2.0, rect.center().y);
