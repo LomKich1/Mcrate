@@ -311,6 +311,10 @@ pub struct Preferences {
     pub text_size: TextSize,
     pub cover_morph: bool,
     pub wave_quality: WaveQuality,
+    // ---- громкость (записывается при сохранении, см. `McrateApp::save`) ----
+    pub volume: f32,
+    /// Что вернёт кнопка динамика, если приложение закрыли с выключенным звуком.
+    pub volume_before_mute: f32,
 }
 
 impl Default for Preferences {
@@ -333,6 +337,8 @@ impl Default for Preferences {
             text_size: TextSize::Medium,
             cover_morph: true,
             wave_quality: WaveQuality::High,
+            volume: mcrate_audio::DEFAULT_VOLUME,
+            volume_before_mute: mcrate_audio::DEFAULT_VOLUME,
         }
     }
 }

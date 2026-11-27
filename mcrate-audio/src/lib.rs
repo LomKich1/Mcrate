@@ -15,6 +15,8 @@ pub use normalize::{DEFAULT_TARGET_LUFS, PlaybackSettings};
 mod stitch; // бесшовный стык: учёт треков, дописанных в очередь деки (внутренний)
 mod stream_cache; // кэш скачанных онлайн-треков (внутренний, наружу не торчит)
 mod visualizer; // неблокирующий анализатор аудио для визуализатора
+pub mod volume; // ползунок громкости и выключение звука
+pub use volume::{DEFAULT_VOLUME, Volume};
 pub use visualizer::{VISUALIZER_POINTS, VisualizerFrame};
 
 use std::fs::File;

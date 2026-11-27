@@ -5,6 +5,7 @@
 
 mod buttons;
 mod cover;
+mod download_icon;
 mod feedback;
 mod glide;
 mod loading_indicator;

@@ -11,6 +11,7 @@ mod icons;
 mod media_keys;
 mod platform;
 mod settings;
+mod single_instance;
 mod theme;
 mod tray;
 mod ui;
@@ -35,5 +36,7 @@ fn main() -> eframe::Result {
     };
     // Пути из командной строки: `mcrate-app песня.mp3 папка`. Они сразу попадают в библиотеку.
     let open_paths: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();
-    eframe::run_native("Mcrate", options, Box::new(move |cc| Ok(Box::new(app::McrateApp::new(cc, open_paths)))))
+    // Mcrate уже запущен (например, спрятан в трей): он получил сигнал показаться, а эта копия выходит.
+    let Some(instance) = single_instance::claim(&open_paths) else { return Ok(()) };
+    eframe::run_native("Mcrate", options, Box::new(move |cc| Ok(Box::new(app::McrateApp::new(cc, open_paths, instance)))))
 }

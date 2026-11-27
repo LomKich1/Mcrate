@@ -6,6 +6,7 @@
 //!   Иначе приложение закрывается как раньше.
 //! - Настоящий выход: пункт «Выход» в меню иконки.
 //! - Команды иконки и глобальные медиаклавиши выполняются и при скрытом окне.
+//! - Повторный запуск приложения показывает это окно (`single_instance.rs`).
 //!
 //! Как это работает с eframe 0.37: пока окно скрыто (`ViewportCommand::Visible(false)`), он не рисует интерфейс
 //! и не вызывает `App::ui`, но на каждый `request_repaint` зовёт `App::logic`. Поэтому всё, что должно жить в
@@ -20,7 +21,7 @@ use std::time::Duration;
 
 use eframe::egui::{Context, ViewportCommand};
 
-use crate::app::McrateApp;
+use crate::app::{McrateApp, View};
 use crate::tray::{TrayCommand, tooltip_text};
 use crate::ui::format::artists_text;
 use crate::ui::shortcuts::Shortcut;
@@ -34,6 +35,7 @@ impl McrateApp {
     pub(crate) fn background_logic(&mut self, ctx: &Context) {
         self.handle_close_request(ctx);
         self.run_background_commands(ctx);
+        self.handle_relaunches(ctx);
         self.update_tray_tooltip();
         if self.hidden_to_tray && self.tray_menu_is_open() {
             // Меню трея рисуется из `App::ui`, а у скрытого окна его не зовут: просим один кадр на каждый проход.
@@ -73,6 +75,18 @@ impl McrateApp {
         let media_keys = self.media_keys.as_ref().map(|k| k.poll()).unwrap_or_default();
         for key in media_keys {
             self.run_shortcut(Shortcut::from(key));
+        }
+    }
+
+    /// Приложение запустили ещё раз: показываем это окно и добавляем переданные файлы, как при обычном запуске.
+    fn handle_relaunches(&mut self, ctx: &Context) {
+        let relaunches: Vec<_> = self.relaunches.as_ref().map(|r| r.try_iter().collect()).unwrap_or_default();
+        for paths in relaunches {
+            if !paths.is_empty() {
+                self.ctl.add_paths(&paths);
+                self.view = View::Library;
+            }
+            self.run_tray_command(ctx, TrayCommand::Show);
         }
     }
 

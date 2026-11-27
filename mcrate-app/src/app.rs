@@ -3,16 +3,18 @@
 //! Раскладка (как в проводнике Windows 11): слева навигация, справа основная область
 //! со скруглёнными углами, снизу плавающая панель плеера.
 
+use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use eframe::egui::{self, Frame, Margin, Rect, Sense, UiBuilder};
-use mcrate_audio::PlaybackSettings;
+use mcrate_audio::{PlaybackSettings, Volume};
 use mcrate_core::Track;
 
 use crate::controller::Controller;
 use crate::icons;
 use crate::media_keys::MediaKeys;
 use crate::settings::{Design, GraphicsSettings, PREFS_KEY, PaneFill, Preferences, STORAGE_KEY, ThemePreset, WindowBackdrop};
+use crate::single_instance::SingleInstance;
 use crate::theme::{Surface, Theme, glass, with_alpha};
 use crate::tray::Tray;
 use crate::ui::autoscroll::AutoScroll;
@@ -176,7 +178,6 @@ pub struct McrateApp {
     pub filtered: Vec<Track>,
     filter_key: Option<(String, usize, View)>,
     pub seek_drag: Option<f32>,
-    pub volume_before_mute: f32,
     /// Состояние экрана «Сейчас играет»: панель текста, её анимация, раскладка карточек.
     pub np: NowPlayingState,
     /// Открытое меню действий трека («три точки» в строке списка), см. `ui/track_menu.rs`.
@@ -201,10 +202,12 @@ pub struct McrateApp {
     pub hidden_to_tray: bool,
     /// Пользователь выбрал «Выход» в меню иконки: закрытие окна больше не прячет его в трей.
     pub quitting: bool,
+    /// Повторные запуски приложения и их пути (`single_instance.rs`; `None`: не Windows).
+    pub relaunches: Option<Receiver<Vec<std::path::PathBuf>>>,
 }
 
 impl McrateApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, open_paths: Vec<std::path::PathBuf>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, open_paths: Vec<std::path::PathBuf>, instance: SingleInstance) -> Self {
         // Сохранённые настройки (если есть) или значения по умолчанию.
         let settings: GraphicsSettings = cc.storage.and_then(|s| eframe::get_value(s, STORAGE_KEY)).unwrap_or_default();
 
@@ -224,6 +227,7 @@ impl McrateApp {
         glass.set_fonts(font_defs);
 
         let mut ctl = Controller::new();
+        ctl.restore_volume(Volume::restore(prefs.volume, prefs.volume_before_mute));
         if !open_paths.is_empty() {
             ctl.add_paths(&open_paths); // файлы/папки из командной строки («Открыть с помощью»)
         }
@@ -252,7 +256,6 @@ impl McrateApp {
             filtered: Vec::new(),
             filter_key: None,
             seek_drag: None,
-            volume_before_mute: 0.8,
             np: NowPlayingState::default(),
             track_menu: None,
             playlist_dialog: None,
@@ -265,6 +268,7 @@ impl McrateApp {
             tray_menu: None,
             hidden_to_tray: false,
             quitting: false,
+            relaunches: instance.listen(&cc.egui_ctx),
         }
     }
 
@@ -597,6 +601,8 @@ impl eframe::App for McrateApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.prefs.volume = self.ctl.volume.level();
+        self.prefs.volume_before_mute = self.ctl.volume.before_mute();
         eframe::set_value(storage, STORAGE_KEY, &self.settings);
         eframe::set_value(storage, PREFS_KEY, &self.prefs);
     }

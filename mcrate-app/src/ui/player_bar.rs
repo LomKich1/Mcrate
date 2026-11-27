@@ -235,19 +235,14 @@ impl McrateApp {
         ui.add_space(4.0);
         // Ползунок растёт с панелью, но остаётся в пределах 64..180 px (минимум снижен из-за стрелки справа).
         let slider_w = ((width - 36.0) * 0.45).clamp(64.0, 180.0);
-        let out = slider_bar(ui, theme, slider_w, self.ctl.volume, true, "Громкость");
+        let out = slider_bar(ui, theme, slider_w, self.ctl.volume.level(), true, "Громкость");
         if let Some(v) = out.value {
             self.ctl.set_volume(v);
         }
-        let muted = self.ctl.volume <= 0.001;
+        let muted = self.ctl.volume.is_muted();
         let icon = if muted { Icon::VolumeMute } else { Icon::Volume };
         if icon_button(ui, theme, IconButton::new(icon, 36.0, "Громкость")).clicked() {
-            if muted {
-                self.ctl.set_volume(self.volume_before_mute.max(0.2));
-            } else {
-                self.volume_before_mute = self.ctl.volume;
-                self.ctl.set_volume(0.0);
-            }
+            self.ctl.toggle_mute();
         }
     }
 }

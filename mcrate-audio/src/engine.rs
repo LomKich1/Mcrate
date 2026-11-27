@@ -59,6 +59,8 @@ enum Command {
         start: usize,
     },
     AddToQueue(Track),
+    /// Показать трек как текущий, не включая его.
+    Restore(Track),
     TogglePause,
     Next,
     Prev,
@@ -323,6 +325,7 @@ impl PlaybackEngine {
                 loaded: false,
                 duration: None,
                 loading: false,
+                cued: false,
                 loading_track: None,
                 load_task: None,
                 request: 0,
@@ -361,6 +364,11 @@ impl PlaybackEngine {
     }
     pub fn add_to_queue(&self, track: Track) {
         self.send(Command::AddToQueue(track));
+    }
+    /// Вернуть в плеер трек с прошлого запуска: он становится текущим, но не играет и не скачивается, пока не
+    /// нажмут «играть» (`toggle_pause`). Действует, только если очередь пуста.
+    pub fn restore_track(&self, track: Track) {
+        self.send(Command::Restore(track));
     }
     pub fn toggle_pause(&self) {
         self.send(Command::TogglePause);
@@ -534,6 +542,7 @@ struct Worker {
     loaded: bool,                                      // true, пока какой-то трек загружен в плеер (играет или на паузе)
     duration: Option<Duration>,                        // длина загруженного (или грузящегося) трека
     loading: bool,                                     // true, пока идёт фоновая загрузка
+    cued: bool,                                        // трек с прошлого запуска: показан, но ещё не включался
     loading_track: Option<Track>,                      // какой именно трек сейчас грузится
     load_task: Option<tokio::task::JoinHandle<()>>,    // ручка фоновой задачи, чтобы её отменить
     request: u64,                                      // номер текущего запроса; растёт при каждом запуске и отмене
@@ -610,8 +619,11 @@ impl Worker {
                     self.play_current();
                 }
             }
+            Command::Restore(track) => self.restore(track),
             Command::TogglePause => {
-                if self.loaded {
+                if self.cued {
+                    self.play_current();
+                } else if self.loaded {
                     if self.player.is_paused() {
                         self.player.resume();
                     } else {
@@ -681,6 +693,17 @@ impl Worker {
         }
     }
 
+    /// Поставить трек в пустую очередь без запуска (см. `PlaybackEngine::restore_track`).
+    fn restore(&mut self, track: Track) {
+        if !self.queue.is_empty() {
+            return; // пользователь уже что-то включил
+        }
+        self.duration = Some(Duration::from_secs(u64::from(track.duration_secs)));
+        self.queue.set(vec![track], 0);
+        self.cued = true;
+        self.emit(PlaybackEvent::QueueChanged { len: self.queue.len() });
+    }
+
     /// Начать отдельную загрузку трека, не меняя текущую очередь и звук.
     fn start_download(&mut self, track: Track) {
         let key = key_of(&track);
@@ -733,6 +756,7 @@ impl Worker {
     /// Запустить трек, выбранный в очереди. Если он не играет, пропустить и взять следующий.
     /// Онлайн-трек только ставится на загрузку, функция при этом сразу возвращается.
     fn start_current(&mut self) {
+        self.cued = false;
         loop {
             self.cancel_loading(); // отменяем прошлую загрузку, если она ещё шла
             if self.start_paused {
@@ -1314,6 +1338,7 @@ impl Worker {
     fn set_idle(&mut self) {
         self.cancel_loading();
         self.start_paused = false;
+        self.cued = false;
         self.player.stop();
         self.loaded = false;
         self.duration = None;
@@ -1325,7 +1350,7 @@ impl Worker {
     fn publish_state(&self) {
         let snapshot = PlaybackState {
             // Пока грузится, показываем грузящийся трек, чтобы UI мог нарисовать его название
-            current: if self.loaded {
+            current: if self.loaded || self.cued {
                 self.queue.current().cloned()
             } else if self.loading {
                 self.loading_track.clone()
@@ -1754,6 +1779,27 @@ mod tests {
     }
     fn is_started(id: &'static str) -> impl Fn(&PlaybackEvent) -> bool {
         move |e| matches!(e, PlaybackEvent::TrackChanged(Some(t)) if t.id == id)
+    }
+
+    #[test]
+    fn restored_track_waits_for_play() {
+        let Some(mut fx) = Fixture::new("restore", &[("a", 0)]) else { return };
+        let track = Track {
+            id: "a".to_string(),
+            provider: ProviderKind::SoundCloud,
+            title: "a".to_string(),
+            artists: Vec::new(),
+            duration_secs: 30,
+        };
+        fx.engine.restore_track(track);
+        fx.idle(300);
+        let state = fx.engine.state();
+        assert_eq!(state.current.map(|t| t.id).as_deref(), Some("a"));
+        assert!(!state.is_playing && !state.is_loading);
+        assert_eq!(fx.fake.calls.load(Ordering::SeqCst), 0, "до нажатия «играть» сервис не трогаем");
+
+        fx.engine.toggle_pause();
+        assert!(fx.wait_for(3000, is_started("a")));
     }
 
     #[test]

@@ -5,9 +5,15 @@
 //! или светлая тема текущие. Окно не показывается в панели задач, лежит поверх остальных и закрывается, как обычное
 //! меню: выбором пункта, Esc или щелчком вне него (потеря фокуса).
 //!
-//! Главное окно при этом может быть скрыто. eframe не вызывает `App::ui` у скрытого окна, а меню рисуется оттуда
-//! (`show_viewport_immediate`), поэтому, пока меню открыто, `background.rs` просит `RequestPaintWhileHidden`.
-//! Как только окно меню появилось, eframe сам продолжает гонять `ui` ради видимого дочернего окна.
+//! Главное окно при этом может быть скрыто. eframe не вызывает `App::ui` у скрытого окна, а окно меню объявляется
+//! оттуда, поэтому, пока меню открыто, `background.rs` просит `RequestPaintWhileHidden`. Как только окно меню
+//! появилось, eframe сам продолжает гонять `ui` ради видимого дочернего окна.
+//!
+//! Окно меню обязано быть отложенным (`show_viewport_deferred`), а не немедленным (`show_viewport_immediate`).
+//! В eframe 0.37 кадр скрытого окна, запущенный по таймеру (`new_events`), идёт без доступа к циклу событий:
+//! немедленное окно тогда не создаётся, и egui паникует («the user callback was never called»), приложение
+//! закрывается. Отложенное окно eframe создаёт сам в начале следующего кадра. Оно рисуется отдельно от приложения,
+//! поэтому выбор пользователя передаётся через общую ячейку `Feedback`, после чего будим главное окно.
 //!
 //! Положение: правый край меню у курсора в момент клика; меню над ним, если панель задач внизу, и под ним, если
 //! вверху; от краёв экрана отступ. Координаты клика приходят в физических пикселях, окну нужны точки egui: делим на `pixels_per_point`
@@ -15,6 +21,8 @@
 //!
 //! Скругление, рамку и тень рисует Windows (`platform::style_popup_window`), а карточка заполняет окно целиком:
 //! своя скруглённая рамка поверх системной давала светлые уголки и полоску сверху.
+
+use std::sync::{Arc, Mutex, PoisonError};
 
 use egui::{
     CentralPanel, Context, CornerRadius, Frame, Key, Pos2, Shadow, Stroke, Ui, Vec2, ViewportBuilder, ViewportCommand, ViewportId, vec2,
@@ -43,8 +51,29 @@ pub(crate) struct OpenTrayMenu {
     pos: Pos2,
     /// Когда открыли (время egui, с).
     opened_at: f64,
+    /// Что сообщило окно меню.
+    feedback: Arc<Mutex<Feedback>>,
+}
+
+/// Что произошло в окне меню: оно пишет сюда, главное окно читает.
+#[derive(Clone, Copy, Default)]
+struct Feedback {
     /// Окно уже получало фокус (после этого его потеря значит «щёлкнули вне меню»).
     had_focus: bool,
+    /// Меню пора закрыть.
+    done: bool,
+    /// Выбранный пункт.
+    chosen: Option<TrayCommand>,
+}
+
+impl Feedback {
+    /// Учесть кадр окна меню. `dismissed`: нажали Esc или Windows просит закрыть окно.
+    fn record(&mut self, chosen: Option<TrayCommand>, focused: Option<bool>, dismissed: bool) {
+        self.had_focus |= focused == Some(true);
+        let lost_focus = self.had_focus && focused == Some(false);
+        self.chosen = self.chosen.or(chosen);
+        self.done |= self.chosen.is_some() || dismissed || lost_focus;
+    }
 }
 
 /// Один пункт меню.
@@ -99,7 +128,7 @@ impl McrateApp {
         let monitor = ctx.input(|i| i.viewport().monitor_size);
         let size = menu_size(&entries(self.ctl.is_playing()));
         let pos = menu_origin(cursor, scale, monitor, size);
-        self.tray_menu = Some(OpenTrayMenu { pos, opened_at: ctx.input(|i| i.time), had_focus: false });
+        self.tray_menu = Some(OpenTrayMenu { pos, opened_at: ctx.input(|i| i.time), feedback: Arc::default() });
         ctx.request_repaint();
     }
 
@@ -108,57 +137,66 @@ impl McrateApp {
         self.tray_menu.is_some()
     }
 
-    /// Рисует меню в своём окне и выполняет выбранное. Раз за кадр из `App::ui`.
+    /// Выполняет выбранное в меню, а пока оно открыто, объявляет его окно. Раз за кадр из `App::ui`.
     pub(crate) fn show_tray_menu(&mut self, ctx: &Context, theme: &Theme) {
         let Some(open) = &self.tray_menu else { return };
-        let entries = entries(self.ctl.is_playing());
-        let builder = ViewportBuilder::default()
-            .with_title(MENU_TITLE)
-            .with_inner_size(menu_size(&entries))
-            .with_position(open.pos)
-            .with_decorations(false)
-            .with_transparent(true)
-            .with_resizable(false)
-            .with_taskbar(false)
-            .with_always_on_top()
-            .with_active(true);
-        let had_focus = open.had_focus;
-
-        let drawn = ctx.show_viewport_immediate(ViewportId::from_hash_of("mcrate_tray_menu"), builder, |ui, _class| {
-            if !had_focus {
-                ui.ctx().send_viewport_cmd(ViewportCommand::Focus); // чтобы потеря фокуса означала «щёлкнули вне меню»
-                let p = &theme.palette;
-                platform::style_popup_window(MENU_TITLE, p.surface_container, p.outline_variant, p.dark);
+        let feedback = *lock(&open.feedback);
+        let never_focused = !feedback.had_focus && ctx.input(|i| i.time) - open.opened_at > FOCUS_TIMEOUT_SECS;
+        if feedback.done || never_focused {
+            self.tray_menu = None; // окно не объявляем: egui закроет его
+            ctx.request_repaint();
+            if let Some(command) = feedback.chosen {
+                self.run_tray_command(ctx, command);
             }
-            let chosen = draw_menu(ui, theme, &entries);
-            let (focused, close_requested) = ui.input(|i| (i.viewport().focused, i.viewport().close_requested()));
-            let escape = ui.input(|i| i.key_pressed(Key::Escape));
-            Drawn { chosen, focused, escape, close_requested }
-        });
-
-        let now = ctx.input(|i| i.time);
-        let Some(open) = &mut self.tray_menu else { return };
-        if drawn.focused == Some(true) {
-            open.had_focus = true;
+            return;
         }
-        let lost_focus = open.had_focus && drawn.focused == Some(false);
-        let never_focused = !open.had_focus && now - open.opened_at > FOCUS_TIMEOUT_SECS;
-        if drawn.chosen.is_some() || drawn.escape || drawn.close_requested || lost_focus || never_focused {
-            self.tray_menu = None;
-            ctx.request_repaint(); // окно меню закроется в следующем проходе
-        }
-        if let Some(command) = drawn.chosen {
-            self.run_tray_command(ctx, command);
-        }
+        declare_menu_window(ctx, theme, open, self.ctl.is_playing());
     }
 }
 
-/// Что произошло в окне меню за кадр.
-struct Drawn {
-    chosen: Option<TrayCommand>,
-    focused: Option<bool>,
-    escape: bool,
-    close_requested: bool,
+/// Объявляет отложенное окно меню на этот кадр.
+fn declare_menu_window(ctx: &Context, theme: &Theme, open: &OpenTrayMenu, playing: bool) {
+    let id = ViewportId::from_hash_of("mcrate_tray_menu");
+    let builder = ViewportBuilder::default()
+        .with_title(MENU_TITLE)
+        .with_inner_size(menu_size(&entries(playing)))
+        .with_position(open.pos)
+        .with_decorations(false)
+        .with_transparent(true)
+        .with_resizable(false)
+        .with_taskbar(false)
+        .with_always_on_top()
+        .with_active(true);
+    let (theme, feedback) = (theme.clone(), Arc::clone(&open.feedback));
+    ctx.show_viewport_deferred(id, builder, move |ui, _class| menu_window(ui, &theme, playing, &feedback));
+    if !lock(&open.feedback).had_focus {
+        ctx.request_repaint_of(id); // пока окно не получило фокус, не даём ему застыть пустым
+    }
+}
+
+/// Кадр окна меню.
+fn menu_window(ui: &mut Ui, theme: &Theme, playing: bool, feedback: &Mutex<Feedback>) {
+    if !lock(feedback).had_focus {
+        ui.ctx().send_viewport_cmd(ViewportCommand::Focus); // чтобы потеря фокуса означала «щёлкнули вне меню»
+        let p = &theme.palette;
+        platform::style_popup_window(MENU_TITLE, p.surface_container, p.outline_variant, p.dark);
+    }
+    let chosen = draw_menu(ui, theme, &entries(playing));
+    let (focused, close_requested) = ui.input(|i| (i.viewport().focused, i.viewport().close_requested()));
+    let escape = ui.input(|i| i.key_pressed(Key::Escape));
+    let done = {
+        let mut feedback = lock(feedback);
+        feedback.record(chosen, focused, escape || close_requested);
+        feedback.done
+    };
+    if done {
+        ui.ctx().request_repaint_of(ViewportId::ROOT); // главное окно выполнит выбор и закроет меню
+    }
+}
+
+/// Замок на ячейку; после паники в другом кадре берём значение как есть.
+fn lock(feedback: &Mutex<Feedback>) -> std::sync::MutexGuard<'_, Feedback> {
+    feedback.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Карточка меню на всё окно и пункты в ней. Возвращает выбранную команду.
@@ -253,6 +291,26 @@ mod tests {
         let pos = menu_origin((500, 400), 1.0, None, s);
         assert!(pos.x >= SCREEN_MARGIN && pos.y >= SCREEN_MARGIN);
         assert_eq!(menu_origin((500, 400), 0.0, None, s), pos, "нулевой масштаб считается за 1");
+    }
+
+    #[test]
+    fn menu_closes_on_focus_loss_only_after_it_had_focus() {
+        let mut feedback = Feedback::default();
+        feedback.record(None, Some(false), false);
+        assert!(!feedback.done, "фокуса ещё не было");
+        feedback.record(None, Some(true), false);
+        assert!(!feedback.done);
+        feedback.record(None, Some(false), false);
+        assert!(feedback.done);
+    }
+
+    #[test]
+    fn chosen_item_is_kept_until_the_main_window_reads_it() {
+        let mut feedback = Feedback::default();
+        feedback.record(Some(TrayCommand::Quit), Some(true), false);
+        feedback.record(None, Some(false), false);
+        assert!(feedback.done);
+        assert_eq!(feedback.chosen, Some(TrayCommand::Quit));
     }
 
     #[test]

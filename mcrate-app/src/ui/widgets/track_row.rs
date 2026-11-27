@@ -8,17 +8,17 @@
 
 use super::buttons::{IconButton, icon_button, like_button};
 use super::cover::cover_tile;
+use super::download_icon::paint_download_overlay;
 use super::glide::squish;
 use super::segment::{SEGMENT_INNER_RADIUS, SegmentPos, ripple_corner, segment_radius, segment_shape, track_plate};
 use crate::icons::{self, Icon};
 use crate::theme::{ShapeRole, TextRole, Theme, with_alpha};
 use crate::ui::format::{artists_text, fmt_time};
 use crate::ui::ripple::{self, LayerArea};
-use crate::controller::{DOWNLOAD_ICON_DROP, DOWNLOAD_ICON_FADE, DownloadVisual};
+use crate::controller::DownloadVisual;
 use crate::ui::thanos;
 use crate::ui::track_menu::{download_visual, is_liked, request_like, request_menu};
-use egui::{Align2, Color32, CursorIcon, FontId, Id, Pos2, Rect, Response, Sense, Stroke, Ui, UiBuilder, Vec2, pos2, vec2};
-use std::time::Instant;
+use egui::{Align2, Color32, CursorIcon, FontId, Id, Pos2, Rect, Response, Sense, Ui, UiBuilder, Vec2, pos2, vec2};
 use mcrate_core::Track;
 
 /// За сколько секунд подсветка строки появляется и гаснет.
@@ -154,64 +154,6 @@ pub(crate) fn track_row_with_provider_badge(
     resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, is_current, accessible_label.clone()));
     thanos::record_row(ui.ctx(), row_id, rect.intersect(ui.clip_rect()), pos.index, pos.count);
     resp
-}
-
-/// Затемнение обложки и значок скачивания. Стрелка падает по кубической кривой, основание остаётся на месте.
-fn paint_download_overlay(ui: &Ui, theme: &Theme, cover: Rect, radius: f32, download: DownloadVisual) {
-    let now = Instant::now();
-    let elapsed = now.saturating_duration_since(download.started_at);
-    let progress = (elapsed.as_secs_f32() / DOWNLOAD_ICON_DROP.as_secs_f32()).clamp(0.0, 1.0);
-    let progress = if theme.settings.reduce_motion { 1.0 } else { progress };
-    let fade_start = (download.started_at + DOWNLOAD_ICON_DROP).max(download.finished_at.unwrap_or(download.started_at));
-    let alpha = if download.finished_at.is_some_and(|_| now >= fade_start) {
-        (1.0 - now.saturating_duration_since(fade_start).as_secs_f32() / DOWNLOAD_ICON_FADE.as_secs_f32()).clamp(0.0, 1.0)
-    } else {
-        1.0
-    };
-    if progress < 1.0 || download.finished_at.is_some() && alpha > 0.0 {
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
-    }
-    ui.painter().rect_filled(cover, radius, Color32::from_black_alpha(COVER_SCRIM_ALPHA));
-    paint_download_icon(ui, cover.center(), cover.height() * 0.52, progress, alpha);
-}
-
-/// Основание значка неподвижно; стрелка проходит из верхней точки в лоток по плавной кубической траектории.
-fn paint_download_icon(ui: &Ui, center: Pos2, size: f32, progress: f32, alpha: f32) {
-    use crate::ui::anim::{EMPHASIZED_DECELERATE, cubic_bezier};
-    let color = with_alpha(Color32::WHITE, (255.0 * alpha).round() as u8);
-    let stroke = Stroke::new((size * 0.085).max(1.5), color);
-    let painter = ui.painter();
-    let tray_left = pos2(center.x - size * 0.34, center.y + size * 0.06);
-    let tray_right = pos2(center.x + size * 0.34, center.y + size * 0.06);
-    let base_y = center.y + size * 0.34;
-    painter.line_segment([tray_left, pos2(tray_left.x, base_y)], stroke);
-    painter.line_segment([pos2(tray_left.x, base_y), pos2(tray_right.x, base_y)], stroke);
-    painter.line_segment([tray_right, pos2(tray_right.x, base_y)], stroke);
-
-    let t = cubic_bezier(EMPHASIZED_DECELERATE, progress);
-    // Стрелка с самого первого кадра находится над центром основания и падает строго по вертикали:
-    // смещение по X раньше создавало впечатление, что она появляется из верхнего левого угла.
-    let start = pos2(center.x, center.y - size * 0.50);
-    let control_a = pos2(center.x, center.y - size * 0.30);
-    let control_b = pos2(center.x, center.y - size * 0.08);
-    let end = pos2(center.x, center.y + size * 0.15);
-    let tip = cubic_point(start, control_a, control_b, end, t);
-    let shaft_top = pos2(tip.x, tip.y - size * 0.43);
-    let wing_left = pos2(tip.x - size * 0.20, tip.y - size * 0.20);
-    let wing_right = pos2(tip.x + size * 0.20, tip.y - size * 0.20);
-    painter.line_segment([shaft_top, tip], stroke);
-    painter.line_segment([wing_left, tip], stroke);
-    painter.line_segment([tip, wing_right], stroke);
-}
-
-/// Точка кубической кривой Безье для траектории стрелки.
-fn cubic_point(start: Pos2, a: Pos2, b: Pos2, end: Pos2, t: f32) -> Pos2 {
-    let u = 1.0 - t;
-    let point = start.to_vec2() * (u * u * u)
-        + a.to_vec2() * (3.0 * u * u * t)
-        + b.to_vec2() * (3.0 * u * t * t)
-        + end.to_vec2() * (t * t * t);
-    Pos2::new(point.x, point.y)
 }
 
 /// Номер строки в левой колонке.

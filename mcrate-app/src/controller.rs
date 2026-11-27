@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
-use mcrate_audio::{CacheStats, PlaybackEngine, PlaybackEvent, PlaybackSettings, RepeatMode, VisualizerFrame};
+use mcrate_audio::{CacheStats, PlaybackEngine, PlaybackEvent, PlaybackSettings, RepeatMode, VisualizerFrame, Volume};
 use mcrate_core::{History, Likes, MusicProvider, Playlists, ProviderKind, Track, paths};
 use mcrate_providers::{LocalProvider, SoundCloudProvider};
 
@@ -150,7 +150,7 @@ pub struct Controller {
     pub downloaded: Vec<Track>,
     /// Текущий трек (в том числе пока он грузится): копия `state().current` движка.
     pub now: Option<Track>,
-    pub volume: f32,
+    pub volume: Volume,
     pub status: Option<String>,
     /// Ошибка пользовательской загрузки; успешное сохранение не вызывает уведомление.
     pub download_status: Option<String>,
@@ -253,9 +253,9 @@ impl Controller {
             Ok(e) => (Some(e), None),
             Err(e) => (None, Some(e.to_string())),
         };
-        let volume = 0.8;
+        let volume = Volume::default(); // сохранённую вернёт `restore_volume`
         if let Some(engine) = &engine {
-            engine.set_volume(volume);
+            engine.set_volume(volume.level());
         }
 
         let (sc_tx, sc_rx) = mpsc::channel();
@@ -264,6 +264,7 @@ impl Controller {
         let playlists = Playlists::open(paths::playlists_file());
         let mut downloaded = PlaybackEngine::list_downloaded_tracks();
         restore_download_metadata(&mut downloaded, &history, &likes, &playlists);
+        let now = restore_last_track(engine.as_ref(), &history);
         Self {
             rt: Some(rt),
             local,
@@ -273,7 +274,7 @@ impl Controller {
             queue: QueueView { shuffle: false, repeat: RepeatMode::Off, len: 0, index: 0 },
             library,
             downloaded,
-            now: None,
+            now,
             volume,
             status,
             download_status: None,
@@ -518,10 +519,26 @@ impl Controller {
         }
     }
 
-    pub fn set_volume(&mut self, volume: f32) {
-        self.volume = volume.clamp(0.0, 1.0);
+    pub fn set_volume(&mut self, level: f32) {
+        self.volume.set(level);
+        self.send_volume();
+    }
+
+    /// Кнопка динамика: выключить звук или вернуть прежнюю громкость.
+    pub fn toggle_mute(&mut self) {
+        self.volume.toggle_mute();
+        self.send_volume();
+    }
+
+    /// Вернуть громкость с прошлого запуска.
+    pub fn restore_volume(&mut self, volume: Volume) {
+        self.volume = volume;
+        self.send_volume();
+    }
+
+    fn send_volume(&self) {
         if let Some(engine) = &self.engine {
-            engine.set_volume(self.volume);
+            engine.set_volume(self.volume.level());
         }
     }
 
@@ -651,6 +668,13 @@ fn liked_keys(items: &[Track]) -> HashSet<LikeKey> {
     items.iter().map(|t| (t.provider, t.id.clone())).collect()
 }
 
+
+/// Последний игравший трек (первый в истории) возвращается в плеер без запуска. `None`: истории или звука нет.
+fn restore_last_track(engine: Option<&PlaybackEngine>, history: &History) -> Option<Track> {
+    let (engine, last) = (engine?, history.items().first()?);
+    engine.restore_track(last.clone());
+    Some(last.clone())
+}
 
 /// Старые файлы появились до индекса `downloads.txt`: дополняем их метаданные данными,
 /// которые уже сохранены в истории, лайках или плейлистах. Идентификатор и сервис всегда должны совпасть.
