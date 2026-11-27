@@ -1628,7 +1628,14 @@ mod tests {
     }
 
     fn track(id: &str) -> Track {
-        Track { id: id.to_string(), provider: ProviderKind::SoundCloud, title: id.to_string(), artists: vec![], duration_secs: 60 }
+        Track {
+            id: id.to_string(),
+            provider: ProviderKind::SoundCloud,
+            title: id.to_string(),
+            artists: vec![],
+            duration_secs: 60,
+            cover_url: None,
+        }
     }
 
     /// Пишет беззвучный WAV (8 кГц, моно, 16 бит): 44 байта заголовка и нули.
@@ -1790,6 +1797,7 @@ mod tests {
             title: "a".to_string(),
             artists: Vec::new(),
             duration_secs: 30,
+            cover_url: None,
         };
         fx.engine.restore_track(track);
         fx.idle(300);

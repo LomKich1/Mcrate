@@ -7,7 +7,7 @@
 //! Те же слои включаются при нажатии (касание на Android: наведения там нет) и при фокусе с клавиатуры.
 
 use super::buttons::{IconButton, icon_button, like_button};
-use super::cover::cover_tile;
+use super::cover::track_cover;
 use super::download_icon::paint_download_overlay;
 use super::glide::squish;
 use super::segment::{SEGMENT_INNER_RADIUS, SegmentPos, ripple_corner, segment_radius, segment_shape, track_plate};
@@ -175,7 +175,7 @@ fn paint_row_index(ui: &Ui, theme: &Theme, rect: Rect, index: usize) {
 fn paint_row_cover(ui: &mut Ui, theme: &Theme, cover: Rect, track: &Track, show_provider_badge: bool, state: &RowState) {
     let RowState { is_current, is_playing, hover, time, download } = *state;
     let cover_radius = if theme.glass_active() { 12.0 } else { theme.shape_radius(ShapeRole::Medium) as f32 };
-    cover_tile(ui, theme, cover, &track.id, cover_radius);
+    track_cover(ui, theme, cover, track, cover_radius);
     if let Some(download) = download {
         paint_download_overlay(ui, theme, cover, cover_radius, download);
         return;

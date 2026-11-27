@@ -4,16 +4,19 @@ use super::shelf::SHELF_HOVER_KEY;
 use crate::icons::{self, Icon};
 use crate::theme::{Theme, with_alpha};
 use crate::ui::ripple;
-use crate::ui::widgets::{COVER_SCRIM_ALPHA, cover_tile, elided, row_hover, squish};
+use crate::ui::widgets::{COVER_SCRIM_ALPHA, cover_tile, elided, row_hover, squish, track_cover};
 use egui::{Color32, CursorIcon, FontId, Id, Rect, Response, Sense, Stroke, Ui, Vec2, pos2, vec2};
+use mcrate_core::Track;
 
 /// Размер кнопки воспроизведения на обложке карточки, доля стороны обложки (у строки трека 0,5: там обложка мелкая).
 const PLAY_RATIO: f32 = 0.34;
 
 /// Что показать на карточке полки.
 pub(super) struct MediaCard<'a> {
-    /// От чего зависит цвет плитки-заглушки (пока нет обложек).
+    /// От чего зависит цвет плитки-заглушки (когда обложки нет или она ещё грузится).
     pub(super) seed: &'a str,
+    /// Трек, чья обложка на карточке (у исполнителя его первый трек: фото исполнителей в данных нет); `None`: только заглушка.
+    pub(super) track: Option<&'a Track>,
     pub(super) title: &'a str,
     pub(super) subtitle: &'a str,
     /// Круглая картинка (исполнитель) вместо скруглённого квадрата (трек).
@@ -76,7 +79,10 @@ pub(super) fn media_card(ui: &mut Ui, theme: &Theme, card: &MediaCard, is_curren
     } else {
         12.0
     };
-    cover_tile(ui, theme, cover, card.seed, cover_radius);
+    match card.track {
+        Some(track) => track_cover(ui, theme, cover, track, cover_radius),
+        None => cover_tile(ui, theme, cover, card.seed, cover_radius),
+    }
     let painter = ui.painter();
     if glass {
         painter.rect_stroke(cover, cover_radius, Stroke::new(0.8, with_alpha(p.on_surface, 36)), egui::StrokeKind::Inside);

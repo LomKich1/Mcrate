@@ -1,10 +1,11 @@
 //! Обложка-заглушка и контур загрузки вокруг неё.
 
+use super::cover_images::paint_track_image;
 use crate::icons::{self, Icon};
 use crate::settings::Design;
 use crate::theme::{Theme, with_alpha};
 use egui::{CornerRadius, Pos2, Rect, Shape, Stroke, Ui, pos2, vec2};
-use mcrate_core::Track;
+use mcrate_core::{ProviderKind, Track};
 
 /// Радиус скругления настолько велик, что прямоугольник превращается в круг (у круглых обложек исполнителей он равен
 /// половине стороны). Такой `rect_filled` у egui строит вырожденный контур, и полупрозрачная заливка показывает
@@ -14,12 +15,26 @@ pub(crate) fn is_circle(rect: Rect, radius: CornerRadius) -> bool {
     rect.width() == rect.height() && [radius.nw, radius.ne, radius.sw, radius.se].iter().all(|&r| f32::from(r) >= half - 0.5)
 }
 
-/// Цветная плитка-заглушка вместо обложки (обложек в ядре пока нет).
+/// Цветная плитка-заглушка: вместо обложки, пока она грузится или её нет (и там, где обложка не трек: рейка, коллекции).
 pub(crate) fn cover_tile(ui: &mut Ui, theme: &Theme, rect: Rect, seed: &str, radius: f32) {
     cover_tile_shaped(ui, theme, rect, seed, CornerRadius::same(radius.round().clamp(0.0, 255.0) as u8));
 }
 
-/// То же, но с отдельным радиусом у каждого угла (плитки составной обложки скруглены только по внешним углам).
+/// Обложка трека: настоящая картинка, а пока она грузится, у трека её нет или не вышло загрузить, цветная заглушка.
+/// Загрузку запускает сама (см. `crate::covers`), так что вызывающему достаточно показать трек.
+pub(crate) fn track_cover(ui: &mut Ui, theme: &Theme, rect: Rect, track: &Track, radius: f32) {
+    let radius = radius.min(rect.width().min(rect.height()) / 2.0 - 1.0).max(0.0); // см. `cover_tile`: полный радиус даёт шов
+    track_cover_shaped(ui, theme, rect, track, CornerRadius::same(radius.round().clamp(0.0, 255.0) as u8));
+}
+
+/// То же, но с отдельным радиусом у каждого угла (плитки коллажа).
+fn track_cover_shaped(ui: &mut Ui, theme: &Theme, rect: Rect, track: &Track, radius: CornerRadius) {
+    if !paint_track_image(ui, rect, track, radius) {
+        cover_tile_shaped(ui, theme, rect, &track.id, radius);
+    }
+}
+
+/// То же, что `cover_tile`, но с отдельным радиусом у каждого угла (плитки составной обложки скруглены только по внешним углам).
 fn cover_tile_shaped(ui: &mut Ui, theme: &Theme, rect: Rect, seed: &str, radius: CornerRadius) {
     let p = &theme.palette;
     let h = seed.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
@@ -46,6 +61,29 @@ fn cover_tile_shaped(ui: &mut Ui, theme: &Theme, rect: Rect, seed: &str, radius:
 const COLLAGE_GAP: f32 = 2.0;
 /// Сколько первых треков плейлиста попадает в обложку.
 pub(crate) const COLLAGE_MAX_TILES: usize = 4;
+/// Сколько первых треков просматриваем, подбирая плитки коллажа. Список может быть в тысячи треков, а коллажу нужно четыре.
+const COLLAGE_SCAN: usize = 24;
+
+/// Треки для коллажа коллекции или плейлиста: первые с РАЗНЫМИ обложками. Четыре трека одного альбома дали бы
+/// четыре одинаковые плитки. Пропускаются и онлайн-треки без обложки (показывать там нечего). Если подходящих нет,
+/// остаётся один первый трек (одна заглушка), у пустого списка результат пустой.
+pub(crate) fn collage_sample(tracks: &[Track]) -> Vec<Track> {
+    let mut picked: Vec<Track> = Vec::with_capacity(COLLAGE_MAX_TILES);
+    for track in tracks.iter().take(COLLAGE_SCAN) {
+        if picked.len() == COLLAGE_MAX_TILES {
+            break;
+        }
+        let has_picture = track.provider == ProviderKind::Local || track.cover_url.is_some(); // у своего файла она может быть в теге
+        let repeats = track.cover_url.is_some() && picked.iter().any(|p| p.cover_url == track.cover_url);
+        if has_picture && !repeats {
+            picked.push(track.clone());
+        }
+    }
+    if picked.is_empty() {
+        picked.extend(tracks.first().cloned());
+    }
+    picked
+}
 
 /// Плитка составной обложки: где она лежит и какие её углы внешние (верхний левый, верхний правый, нижний левый,
 /// нижний правый): только внешние скругляются.
@@ -89,8 +127,8 @@ fn collage_tiles(rect: Rect, count: usize) -> Vec<CollageTile> {
 }
 
 /// Обложка плейлиста из обложек его первых четырёх треков: чем меньше треков, тем меньше плиток (см. `collage_tiles`).
-/// Пустой плейлист получает одну плитку по названию. Пока у треков нет настоящих обложек, плитки это цветные
-/// заглушки (цвет по id трека); когда обложки появятся, заменить `cover_tile_shaped` в этой функции.
+/// Пустой плейлист получает одну плитку-заглушку по названию. Плитка трека без обложки (или пока она грузится)
+/// это цветная заглушка по id трека.
 pub(crate) fn playlist_cover(ui: &mut Ui, theme: &Theme, rect: Rect, (name, tracks): (&str, &[Track]), radius: f32) {
     let r = radius.round().clamp(0.0, 255.0) as u8;
     let corner = |outer: [bool; 4]| {
@@ -102,7 +140,7 @@ pub(crate) fn playlist_cover(ui: &mut Ui, theme: &Theme, rect: Rect, (name, trac
         return;
     }
     for (tile, track) in collage_tiles(rect, tracks.len()).into_iter().zip(tracks) {
-        cover_tile_shaped(ui, theme, tile.rect, &track.id, corner(tile.outer));
+        track_cover_shaped(ui, theme, tile.rect, track, corner(tile.outer));
     }
 }
 
@@ -187,6 +225,56 @@ mod tests {
 
     fn square() -> Rect {
         Rect::from_min_size(pos2(10.0, 20.0), vec2(100.0, 100.0))
+    }
+
+    fn online(id: &str, cover: Option<&str>) -> Track {
+        Track {
+            id: id.into(),
+            provider: ProviderKind::SoundCloud,
+            title: id.into(),
+            artists: vec![],
+            duration_secs: 1,
+            cover_url: cover.map(str::to_string),
+        }
+    }
+
+    fn local(id: &str) -> Track {
+        Track { provider: ProviderKind::Local, ..online(id, None) }
+    }
+
+    fn ids(tracks: &[Track]) -> Vec<&str> {
+        tracks.iter().map(|t| t.id.as_str()).collect()
+    }
+
+    #[test]
+    fn collage_sample_takes_distinct_covers_first() {
+        // Первые три трека одного альбома: плитка нужна одна, остальные места занимают другие обложки.
+        let tracks =
+            [online("1", Some("a")), online("2", Some("a")), online("3", Some("a")), online("4", Some("b")), online("5", Some("c"))];
+        assert_eq!(ids(&collage_sample(&tracks)), ["1", "4", "5"]);
+    }
+
+    #[test]
+    fn collage_sample_stops_at_four_and_skips_pictureless_online() {
+        let tracks: Vec<Track> = (0..30).map(|i| online(&i.to_string(), Some(&format!("c{i}")))).collect();
+        assert_eq!(collage_sample(&tracks).len(), COLLAGE_MAX_TILES);
+        let mixed = [online("x", None), online("y", Some("a")), local("z")];
+        assert_eq!(ids(&collage_sample(&mixed)), ["y", "z"], "онлайн без обложки пропущен, свой файл берём (обложка может быть в теге)");
+    }
+
+    #[test]
+    fn collage_sample_falls_back_to_one_placeholder() {
+        let bare = [online("x", None), online("y", None)];
+        assert_eq!(ids(&collage_sample(&bare)), ["x"]);
+        assert!(collage_sample(&[]).is_empty());
+    }
+
+    #[test]
+    fn collage_sample_does_not_scan_a_huge_list() {
+        // Подходящие треки только после окна просмотра: берём заглушку, а не перебираем тысячи.
+        let mut tracks: Vec<Track> = (0..COLLAGE_SCAN).map(|i| online(&i.to_string(), None)).collect();
+        tracks.push(online("late", Some("a")));
+        assert_eq!(ids(&collage_sample(&tracks)), ["0"]);
     }
 
     #[test]

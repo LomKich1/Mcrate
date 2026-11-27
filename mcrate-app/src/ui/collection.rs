@@ -18,7 +18,7 @@ use super::layout::{
 };
 use super::playlists::{PlaylistDialog, playlist_row, tracks_count_text};
 use super::settings::controls::{Row, Trailing, settings_group};
-use super::widgets::{ButtonKind, COLLAGE_MAX_TILES, SEGMENT_GAP, SegmentPos, apply_list_gap, pill_button, playlist_cover};
+use super::widgets::{ButtonKind, SEGMENT_GAP, SegmentPos, apply_list_gap, collage_sample, pill_button, playlist_cover};
 use crate::app::{McrateApp, View};
 use crate::icons::Icon;
 use crate::theme::Theme;
@@ -141,43 +141,6 @@ impl McrateApp {
         });
     }
 
-    /// «Понравившиеся»: треки с сердечком, свежие первыми. Клик играет список с этого трека.
-    pub(crate) fn collection_liked_view(&mut self, ui: &mut Ui, theme: &Theme) {
-        let mut back = false;
-        let mut clicked = None;
-        centered_column(ui, f32::INFINITY, |ui| {
-            back = back_header(ui, theme, "Понравившиеся");
-            ui.add_space(4.0);
-            pane_scroll(ui, self.bleed.below_header(), ScrollArea::vertical().auto_shrink([false, false]), |area, ui| {
-                area.show(ui, |ui| {
-                    let items = self.ctl.likes.items();
-                    if items.is_empty() {
-                        let top = empty_state_top_space(ui.available_height(), self.bottom_inset);
-                        empty_state(
-                            ui,
-                            theme,
-                            top,
-                            Icon::HeartOutline,
-                            "Лайков пока нет",
-                            "Нажмите на сердечко у трека, и он появится здесь.",
-                        );
-                    } else {
-                        clicked = self.track_rows_in_view(ui, theme, items);
-                    }
-                    scroll_end_padding(ui, self.bottom_inset);
-                })
-            });
-        });
-        if back {
-            self.view = View::Collection;
-        }
-        if let Some(i) = clicked {
-            // Копия очереди делается только по клику, не каждый кадр.
-            let items = self.ctl.likes.items().to_vec();
-            self.ctl.play_list(items, i);
-        }
-    }
-
     /// «Плейлисты»: кнопка «Новый плейлист» и список плейлистов; клик открывает плейлист.
     pub(crate) fn collection_playlists_view(&mut self, ui: &mut Ui, theme: &Theme) {
         let mut back = false;
@@ -236,8 +199,8 @@ impl McrateApp {
             return;
         };
         let (id, name, count) = (playlist.id, playlist.name.clone(), playlist.tracks.len());
-        // В обложку идут только первые треки: копируются они, а не весь список (в нём могут быть тысячи).
-        let cover_tracks: Vec<Track> = playlist.tracks.iter().take(COLLAGE_MAX_TILES).cloned().collect();
+        // В обложку идут несколько треков с разными обложками: копируются они, а не весь список (в нём могут быть тысячи).
+        let cover_tracks: Vec<Track> = collage_sample(&playlist.tracks);
         let mut back = false;
         let mut action = None;
         let mut clicked = None;
@@ -247,8 +210,7 @@ impl McrateApp {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 let (cover, _) = ui.allocate_exact_size(Vec2::splat(PLAYLIST_COVER_SIZE), Sense::hover());
-                let first = &cover_tracks[..cover_tracks.len().min(COLLAGE_MAX_TILES)];
-                playlist_cover(ui, theme, cover, (&name, first), PLAYLIST_COVER_RADIUS);
+                playlist_cover(ui, theme, cover, (&name, &cover_tracks), PLAYLIST_COVER_RADIUS);
                 ui.add_space(14.0);
                 ui.vertical(|ui| {
                     ui.label(RichText::new(tracks_count_text(count)).color(p.on_surface_variant));

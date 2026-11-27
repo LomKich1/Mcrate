@@ -11,7 +11,7 @@ use egui::{Align, CursorIcon, Layout, Pos2, Rect, RichText, ScrollArea, Sense, S
 use super::anim::spring_step;
 use super::format::artists_text;
 use super::layout::cover_side;
-use super::widgets::{ButtonKind, IconButton, cover_tile, icon_button, like_button};
+use super::widgets::{ButtonKind, IconButton, icon_button, like_button, track_cover};
 use crate::app::{McrateApp, View};
 use crate::controller::provider_label;
 use crate::icons::Icon;
@@ -294,7 +294,7 @@ impl McrateApp {
                         let compact = ui.available_height() < 560.0;
                         let side = cover_side(ui.available_width(), ui.available_height(), compact).min(340.0);
                         let (cover, _) = ui.allocate_exact_size(vec2(side, side), Sense::hover());
-                        cover_tile(ui, theme, cover, &track.id, 28.0);
+                        track_cover(ui, theme, cover, track, 28.0);
                         ui.add_space(18.0);
                         ui.label(RichText::new(&track.title).size(if compact { 21.0 } else { 25.0 }).strong());
                         ui.add_space(4.0);

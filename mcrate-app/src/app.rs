@@ -227,6 +227,12 @@ impl McrateApp {
         glass.set_fonts(font_defs);
 
         let mut ctl = Controller::new();
+        // Обложки: окно перерисуется, когда картинка догрузится (без этого она появилась бы только после движения мыши).
+        if let Some(hub) = ctl.covers() {
+            let ctx = cc.egui_ctx.clone();
+            hub.set_repaint(move || ctx.request_repaint());
+            crate::ui::widgets::install_cover_hub(hub);
+        }
         ctl.restore_volume(Volume::restore(prefs.volume, prefs.volume_before_mute));
         if !open_paths.is_empty() {
             ctl.add_paths(&open_paths); // файлы/папки из командной строки («Открыть с помощью»)
@@ -478,6 +484,7 @@ impl McrateApp {
         let count = match self.view {
             View::Library => self.ctl.library.len(),
             View::CollectionDownloaded => self.ctl.downloaded.len(),
+            View::CollectionLiked => self.ctl.likes.items().len(),
             _ => {
                 self.filter_key = None;
                 return;
@@ -489,7 +496,8 @@ impl McrateApp {
         }
         self.filtered = match self.view {
             View::Library => self.ctl.search(&self.search),
-            View::CollectionDownloaded => filter_downloaded(&self.ctl.downloaded, &self.search),
+            View::CollectionDownloaded => filter_tracks(&self.ctl.downloaded, &self.search),
+            View::CollectionLiked => filter_tracks(self.ctl.likes.items(), &self.search),
             _ => Vec::new(),
         };
         self.filter_key = Some(key);
@@ -513,8 +521,9 @@ impl McrateApp {
     }
 }
 
-/// Поиск по постоянным загрузкам (движок уже отдал только треки с существующими файлами).
-fn filter_downloaded(items: &[Track], query: &str) -> Vec<Track> {
+/// Поиск по названию и исполнителю в готовом списке (загрузки, лайки). Загрузки движок уже отдал
+/// только с существующими файлами.
+fn filter_tracks(items: &[Track], query: &str) -> Vec<Track> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
         return items.to_vec();
@@ -610,5 +619,32 @@ impl eframe::App for McrateApp {
     /// Фон окна полностью прозрачный: всё закрашиваем сами, а при Mica/Acrylic виден материал ОС.
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         [0.0, 0.0, 0.0, 0.0]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mcrate_core::ProviderKind;
+
+    fn track(title: &str, artist: &str) -> Track {
+        Track {
+            id: title.into(),
+            provider: ProviderKind::SoundCloud,
+            title: title.into(),
+            artists: vec![artist.into()],
+            duration_secs: 1,
+            cover_url: None,
+        }
+    }
+
+    #[test]
+    fn filter_tracks_matches_title_or_artist_ignoring_case_and_keeps_order() {
+        let items = [track("Урод", "CUPSIZE"), track("Кислота", "Cupsize"), track("Автостопом", "цветы цветочки")];
+        let names = |q: &str| filter_tracks(&items, q).into_iter().map(|t| t.title).collect::<Vec<_>>();
+        assert_eq!(names("cupsize"), ["Урод", "Кислота"], "по исполнителю, порядок сохраняется");
+        assert_eq!(names("  АВТО "), ["Автостопом"], "по названию, пробелы по краям не мешают");
+        assert_eq!(names("").len(), 3, "пустой запрос не отсеивает");
+        assert!(names("нет такого").is_empty());
     }
 }

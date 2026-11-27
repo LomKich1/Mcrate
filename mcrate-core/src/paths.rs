@@ -20,6 +20,11 @@ pub fn downloads_dir() -> Option<PathBuf> {
     app_dir().map(|dir| dir.join("downloads"))
 }
 
+/// Кэш картинок обложек онлайн-треков: `%APPDATA%\Mcrate\covers`.
+pub fn covers_dir() -> Option<PathBuf> {
+    app_dir().map(|dir| dir.join("covers"))
+}
+
 /// Индекс метаданных скачанных треков: `%APPDATA%\Mcrate\downloads.txt`.
 pub fn downloads_index_file() -> Option<PathBuf> {
     app_dir().map(|dir| dir.join("downloads.txt"))

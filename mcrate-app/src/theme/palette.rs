@@ -313,6 +313,74 @@ fn material3_amoled() -> Palette {
 // Совместимость с Liquid Glass
 // ---------------------------------------------------------------------------------------------
 
+/// Красно-чёрная палитра, перенесённая из RedDark.attheme.
+/// Общая для Material 3 и Liquid Glass: акценты и поверхности не должны
+/// отличаться при переключении дизайна интерфейса.
+fn red_dark_palette() -> Palette {
+    let mut p = from_seed([0xE9, 0x31, 0x2F], true);
+
+    // Акценты: основной красный, более светлый красный для ссылок и мягкий оттенок для текста.
+    p.primary = hex(0xE9312F);
+    p.on_primary = hex(0x110A0B);
+    p.primary_container = hex(0x7D2023);
+    p.on_primary_container = hex(0xEEEEEE);
+    p.inverse_primary = hex(0xFF8A87);
+    p.primary_fixed = hex(0xFF8A87);
+    p.primary_fixed_dim = hex(0xE9312F);
+    p.on_primary_fixed = hex(0x110A0B);
+    p.on_primary_fixed_variant = hex(0x110A0B);
+
+    p.secondary = hex(0xFF5C59);
+    p.on_secondary = hex(0x110A0B);
+    // Выбранный элемент — глубокий красный, а не серо-коричневый.
+    p.secondary_container = hex(0x651A1D);
+    p.on_secondary_container = hex(0xE6B9B8);
+    p.secondary_fixed = hex(0xFF5C59);
+    p.secondary_fixed_dim = hex(0xE9312F);
+    p.on_secondary_fixed = hex(0x110A0B);
+    p.on_secondary_fixed_variant = hex(0x110A0B);
+
+    p.tertiary = hex(0xFF8A87);
+    p.on_tertiary = hex(0x110A0B);
+    p.tertiary_container = hex(0x383132);
+    p.on_tertiary_container = hex(0xEEEEEE);
+    p.tertiary_fixed = hex(0xFF8A87);
+    p.tertiary_fixed_dim = hex(0xE9312F);
+    p.on_tertiary_fixed = hex(0x110A0B);
+    p.on_tertiary_fixed_variant = hex(0x110A0B);
+
+    p.error = hex(0xF26366);
+    p.on_error = hex(0x110A0B);
+    p.error_container = hex(0x5C1D20);
+    p.on_error_container = hex(0xEEEEEE);
+
+    // Поверхности взяты из фонов и панелей исходной темы, от почти чёрного до приподнятого.
+    p.surface_dim = hex(0x110A0B);
+    p.surface = hex(0x160F10);
+    p.surface_tint = p.primary;
+    p.surface_bright = hex(0x494243);
+    p.surface_container_lowest = hex(0x110A0B);
+    p.surface_container_low = hex(0x1E1718);
+    p.surface_container = hex(0x272021);
+    p.surface_container_high = hex(0x2E2728);
+    p.surface_container_highest = hex(0x383132);
+
+    // Большинство вторичных подписей в исходной теме нейтрально-серые.
+    // Розовый #E6B9B8 оставляем только для выбранного красного контейнера.
+    p.on_surface = hex(0xEEEEEE);
+    p.on_surface_variant = hex(0x999999);
+    p.outline = hex(0x777777);
+    p.outline_variant = hex(0x272021);
+    p.inverse_surface = hex(0xEEEEEE);
+    p.inverse_on_surface = hex(0x160F10);
+    p.surface_variant = hex(0x494243);
+    p.background = hex(0x160F10);
+    p.on_background = hex(0xEEEEEE);
+    p.shadow = Color32::BLACK;
+    p.scrim = Color32::BLACK;
+    p
+}
+
 /// Тёмная авторская палитра старого оформления. Для Liquid Glass сохраняем
 /// исходные значения существовавших ролей; недостающие роли заполняются MCU.
 fn dark_scheme_from(primary: Color32, background: Color32, surface: Color32) -> Palette {
@@ -434,7 +502,7 @@ impl Palette {
             ThemePreset::Dark => dark_baseline(),
             ThemePreset::Light => light_baseline(),
             ThemePreset::Amoled => amoled(),
-            ThemePreset::Embermire => colored(0xF5B09C, 0x231B1A, 0x2E2524),
+            ThemePreset::Embermire => red_dark_palette(),
             ThemePreset::VelvetRose => colored(0xEEB0CB, 0x231A20, 0x2F2329),
             ThemePreset::MistyWave => colored(0x96E5E3, 0x1A1F22, 0x232A2E),
             ThemePreset::Glacier => colored(0x94D3EE, 0x1B1F24, 0x242930),
@@ -453,7 +521,7 @@ impl Palette {
             ThemePreset::Dark => ([0xAA, 0xC7, 0xFF], true),
             ThemePreset::Light => ([0x41, 0x5F, 0x91], false),
             ThemePreset::Amoled => return material3_amoled(),
-            ThemePreset::Embermire => ([0xF5, 0xB0, 0x9C], true),
+            ThemePreset::Embermire => return red_dark_palette(),
             ThemePreset::VelvetRose => ([0xEE, 0xB0, 0xCB], true),
             ThemePreset::MistyWave => ([0x96, 0xE5, 0xE3], true),
             ThemePreset::Glacier => ([0x94, 0xD3, 0xEE], true),
@@ -606,7 +674,39 @@ mod tests {
         assert_eq!(dark.primary, hex(0xAAC7FF));
         assert_eq!(dark.surface, hex(0x111318));
         let ember = Palette::for_glass_preset(ThemePreset::Embermire, [0x4F, 0x7C, 0xFF], true);
-        assert_eq!(ember.primary, hex(0xF5B09C));
-        assert_eq!(ember.surface, hex(0x231B1A));
+        assert_eq!(ember.primary, hex(0xE9312F));
+        assert_eq!(ember.surface, hex(0x160F10));
+        assert_eq!(ember.surface_container_low, hex(0x1E1718));
+        assert_eq!(ember.surface_container, hex(0x272021));
+        assert_eq!(ember.on_surface_variant, hex(0x999999));
+        assert_eq!(ember.secondary_container, hex(0x651A1D));
+    }
+
+    #[test]
+    fn embermire_uses_red_dark_palette_in_both_designs() {
+        let settings = crate::settings::GraphicsSettings {
+            theme: ThemePreset::Embermire,
+            ..Default::default()
+        };
+        let material = Palette::from_settings(&settings, Design::Material3);
+        let glass = Palette::from_settings(&settings, Design::LiquidGlass);
+
+        for palette in [&material, &glass] {
+            assert_eq!(palette.primary, hex(0xE9312F));
+            assert_eq!(palette.secondary, hex(0xFF5C59));
+            assert_eq!(palette.primary_container, hex(0x7D2023));
+            assert_eq!(palette.surface, hex(0x160F10));
+            assert_eq!(palette.surface_container_low, hex(0x1E1718));
+            assert_eq!(palette.surface_container, hex(0x272021));
+            assert_eq!(palette.surface_container_high, hex(0x2E2728));
+            assert_eq!(palette.surface_container_highest, hex(0x383132));
+            assert_eq!(palette.on_surface_variant, hex(0x999999));
+            assert_eq!(palette.secondary_container, hex(0x651A1D));
+            assert!(contrast_ratio(palette.primary, palette.on_primary) >= 4.5);
+            assert!(contrast_ratio(palette.secondary_container, palette.on_secondary_container) >= 4.5);
+            assert!(contrast_ratio(palette.surface, palette.on_surface) >= 4.5);
+        }
+        assert_eq!(material.primary, glass.primary);
+        assert_eq!(material.surface_container, glass.surface_container);
     }
 }

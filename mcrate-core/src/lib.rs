@@ -55,6 +55,9 @@ pub struct Track {
     pub title: String,
     pub artists: Vec<String>, // Vec = список (динамический массив)
     pub duration_secs: u32,   // длительность в секундах, u32 = целое без знака
+    /// Адрес картинки обложки (http/https) у онлайн-треков; `None`, если сервис её не дал.
+    /// У своих файлов всегда `None`: их обложка лежит внутри файла (или рядом с ним), см. `mcrate_providers::covers`.
+    pub cover_url: Option<String>,
 }
 
 /// Откуда брать звук. У сервисов это отличается:

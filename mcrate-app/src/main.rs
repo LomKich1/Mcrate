@@ -6,6 +6,7 @@
 mod app;
 mod background;
 mod controller;
+mod covers; // хаб обложек: фоновая загрузка и память (без UI)
 mod fonts;
 mod icons;
 mod media_keys;

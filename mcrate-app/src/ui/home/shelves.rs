@@ -33,7 +33,15 @@ impl McrateApp {
             for (idx, track) in &recents {
                 let is_current = current_id == Some(track.id.as_str());
                 let artists = artists_text(track);
-                let card = MediaCard { seed: &track.id, title: &track.title, subtitle: &artists, round: false, w: QUICK_W, h: QUICK_H };
+                let card = MediaCard {
+                    seed: &track.id,
+                    track: Some(track),
+                    title: &track.title,
+                    subtitle: &artists,
+                    round: false,
+                    w: QUICK_W,
+                    h: QUICK_H,
+                };
                 if media_card(ui, theme, &card, is_current, playing, time).clicked() {
                     play_index = Some(*idx);
                 }
@@ -57,9 +65,17 @@ impl McrateApp {
             id: "artists", title: "Ваши исполнители", subtitle: "Из вашей библиотеки, больше всего треков сверху"
         };
         shelf(ui, theme, self.bleed, &spec, |ui| {
-            for (name, count) in &artists {
+            for (name, count, first) in &artists {
                 let sub = format!("{count} {}", tracks_word(*count));
-                let card = MediaCard { seed: name, title: name, subtitle: &sub, round: true, w: ARTIST_W, h: ARTIST_H };
+                let card = MediaCard {
+                    seed: name,
+                    track: self.ctl.library.get(*first),
+                    title: name,
+                    subtitle: &sub,
+                    round: true,
+                    w: ARTIST_W,
+                    h: ARTIST_H,
+                };
                 if media_card(ui, theme, &card, false, false, time).clicked() {
                     play_artist = Some(name.clone());
                 }
@@ -73,22 +89,23 @@ impl McrateApp {
         }
     }
 
-    /// Исполнители по числу треков. Пересчитываем только когда меняется размер библиотеки.
-    fn top_artists(&self, ui: &Ui) -> Vec<(String, usize)> {
+    /// Исполнители по числу треков: имя, число треков и номер в библиотеке первого его трека (его обложка идёт на аватар:
+    /// фото исполнителей в данных нет). Пересчитываем только когда меняется размер библиотеки.
+    fn top_artists(&self, ui: &Ui) -> Vec<(String, usize, usize)> {
         let id = ui.scope_id().with("artists_cache");
         let len = self.ctl.library.len();
-        if let Some((cached_len, items)) = ui.ctx().data_mut(|d| d.get_temp::<(usize, Vec<(String, usize)>)>(id))
+        if let Some((cached_len, items)) = ui.ctx().data_mut(|d| d.get_temp::<(usize, Vec<(String, usize, usize)>)>(id))
             && cached_len == len
         {
             return items;
         }
-        let mut counts: HashMap<&str, usize> = HashMap::new();
-        for track in &self.ctl.library {
+        let mut counts: HashMap<&str, (usize, usize)> = HashMap::new();
+        for (index, track) in self.ctl.library.iter().enumerate() {
             for artist in &track.artists {
-                *counts.entry(artist.as_str()).or_default() += 1;
+                counts.entry(artist.as_str()).or_insert((0, index)).0 += 1; // индекс запоминается у первого трека
             }
         }
-        let mut items: Vec<(String, usize)> = counts.into_iter().map(|(a, n)| (a.to_string(), n)).collect();
+        let mut items: Vec<(String, usize, usize)> = counts.into_iter().map(|(a, (n, first))| (a.to_string(), n, first)).collect();
         items.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         items.truncate(ARTISTS_COUNT);
         ui.ctx().data_mut(|d| d.insert_temp(id, (len, items.clone())));

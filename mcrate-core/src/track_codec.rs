@@ -2,8 +2,9 @@
 //! и `playlists.txt`, чтобы формат трека жил в одном месте.
 //!
 //! Строка трека: поля через табуляцию: `сервис`, `длительность в секундах`, `id`, `название`,
-//! `исполнители` (через символ 0x1F). Табуляция, перевод строки, обратная косая и 0x1F внутри текста
-//! экранируются (`\t`, `\n`, `\r`, `\\`, `\u`). Нечитаемая строка даёт `None`: вызывающий её пропускает,
+//! `исполнители` (через символ 0x1F) и необязательное `адрес обложки`. Шестое поле пишется, только если
+//! обложка есть: строки без неё остались такими же, как до появления обложек, и старые файлы читаются как есть.
+//! Табуляция, перевод строки, обратная косая и 0x1F внутри текста экранируются (`\t`, `\n`, `\r`, `\\`, `\u`). Нечитаемая строка даёт `None`: вызывающий её пропускает,
 //! потому что порча одной записи не должна стирать весь файл.
 
 use std::path::{Path, PathBuf};
@@ -16,10 +17,14 @@ const ARTIST_SEP: char = '\u{1f}';
 /// Трек одной строкой (без перевода строки в конце).
 pub(crate) fn encode_track(t: &Track) -> String {
     let artists = t.artists.iter().map(|a| escape(a)).collect::<Vec<_>>().join(&ARTIST_SEP.to_string());
-    format!("{}\t{}\t{}\t{}\t{artists}", t.provider.key(), t.duration_secs, escape(&t.id), escape(&t.title))
+    let line = format!("{}\t{}\t{}\t{}\t{artists}", t.provider.key(), t.duration_secs, escape(&t.id), escape(&t.title));
+    match t.cover_url.as_deref().filter(|url| !url.is_empty()) {
+        Some(url) => format!("{line}\t{}", escape(url)),
+        None => line,
+    }
 }
 
-/// Трек из строки; `None`, если строка битая (неизвестный сервис, не число, пустой id, лишние поля).
+/// Трек из строки; `None`, если строка битая (неизвестный сервис, не число, пустой id, больше шести полей).
 pub(crate) fn decode_track(line: &str) -> Option<Track> {
     let mut f = line.split('\t');
     let provider = ProviderKind::from_key(f.next()?)?;
@@ -27,11 +32,12 @@ pub(crate) fn decode_track(line: &str) -> Option<Track> {
     let id = unescape(f.next()?);
     let title = unescape(f.next()?);
     let artists_field = f.next()?;
+    let cover_url = f.next().map(unescape).filter(|url| !url.is_empty()); // шестого поля у старых строк нет
     if f.next().is_some() || id.is_empty() {
         return None;
     }
     let artists = if artists_field.is_empty() { Vec::new() } else { artists_field.split(ARTIST_SEP).map(unescape).collect() };
-    Some(Track { id, provider, title, artists, duration_secs })
+    Some(Track { id, provider, title, artists, duration_secs, cover_url })
 }
 
 /// Экранирует текст поля: см. описание формата в начале файла.
@@ -96,7 +102,14 @@ pub(crate) mod tests {
     use super::*;
 
     pub(crate) fn track(id: &str, provider: ProviderKind) -> Track {
-        Track { id: id.to_string(), provider, title: format!("Трек {id}"), artists: vec!["А".into(), "Б".into()], duration_secs: 200 }
+        Track {
+            id: id.to_string(),
+            provider,
+            title: format!("Трек {id}"),
+            artists: vec!["А".into(), "Б".into()],
+            duration_secs: 200,
+            cover_url: None,
+        }
     }
 
     /// Путь к файлу в свежей временной папке (самой папки ещё нет: запись должна её создать).
@@ -118,6 +131,7 @@ pub(crate) mod tests {
             title: "Строка\nс переводом\\и\tтабом".into(),
             artists: vec!["Б\u{1f}В".into(), "Г".into()],
             duration_secs: 7,
+            cover_url: None,
         };
         let line = encode_track(&t);
         assert!(!line.contains('\n'), "строка трека не должна содержать перевод строки");
@@ -133,7 +147,25 @@ pub(crate) mod tests {
         assert!(decode_track("мусор").is_none());
         assert!(decode_track("local\tне число\tx\ty\t").is_none());
         assert!(decode_track("vk\t1\t\tпустой id\t").is_none());
-        assert!(decode_track(&format!("{good}\tлишнее поле")).is_none());
+        assert!(decode_track(&format!("{good}\tобложка\tлишнее поле")).is_none(), "после обложки полей быть не должно");
+    }
+
+    #[test]
+    fn cover_url_roundtrips_and_is_written_only_when_present() {
+        let mut t = track("sc1", ProviderKind::SoundCloud);
+        assert_eq!(encode_track(&t).split('\t').count(), 5, "без обложки строка прежняя, из пяти полей");
+        t.cover_url = Some("https://i1.sndcdn.com/artworks-x-t500x500.jpg?a=1\tb".into());
+        let line = encode_track(&t);
+        assert_eq!(line.split('\t').count(), 6);
+        assert_eq!(decode_track(&line).unwrap().cover_url, t.cover_url, "адрес с табуляцией должен пережить запись");
+    }
+
+    #[test]
+    fn line_from_before_covers_still_reads() {
+        let old = "soundcloud\t247\t123456\tГруппа крови\tКино";
+        let t = decode_track(old).unwrap();
+        assert_eq!((t.title.as_str(), t.cover_url), ("Группа крови", None));
+        assert_eq!(decode_track(&format!("{old}\t")).unwrap().cover_url, None, "пустое шестое поле это отсутствие обложки");
     }
 
     #[test]

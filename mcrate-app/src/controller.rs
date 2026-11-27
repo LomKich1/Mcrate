@@ -15,7 +15,9 @@ use std::time::{Duration, Instant};
 
 use mcrate_audio::{CacheStats, PlaybackEngine, PlaybackEvent, PlaybackSettings, RepeatMode, VisualizerFrame, Volume};
 use mcrate_core::{History, Likes, MusicProvider, Playlists, ProviderKind, Track, paths};
-use mcrate_providers::{LocalProvider, SoundCloudProvider};
+use mcrate_providers::{CoverStore, LocalProvider, SoundCloudProvider};
+
+use crate::covers::{CoverHub, MAX_CACHED_FILES};
 
 /// Как назвать сервис в интерфейсе («Свои файлы · в очереди: 3»).
 pub fn provider_label(kind: ProviderKind) -> &'static str {
@@ -141,6 +143,8 @@ pub struct Controller {
     local: Arc<LocalProvider>,
     /// SoundCloud; None, если не удалось создать HTTP-клиент (причина в `sc.error`).
     soundcloud: Option<Arc<SoundCloudProvider>>,
+    /// Обложки (`None`, если не вышло создать HTTP-клиент: тогда везде заглушки).
+    covers: Option<Arc<CoverHub>>,
     engine: Option<PlaybackEngine>,
     pub audio_error: Option<String>,
 
@@ -243,6 +247,16 @@ impl Controller {
             }
         };
 
+        // Обложки: клиент создаём внутри среды tokio, как и SoundCloud. Старые картинки из кэша чистим в фоне.
+        let covers = {
+            let _guard = rt.enter();
+            CoverStore::new(paths::covers_dir()).ok().map(Arc::new).map(|store| {
+                let pruner = Arc::clone(&store);
+                rt.spawn_blocking(move || pruner.prune_cache(MAX_CACHED_FILES));
+                CoverHub::new(store, rt.handle().clone())
+            })
+        };
+
         // Движок получает всех провайдеров и сам просит у нужного ссылку на звук (по `Track.provider`).
         // Нет звукового устройства: UI всё равно запускаем, ошибку покажем пользователю.
         let mut providers: Vec<Arc<dyn MusicProvider>> = vec![local.clone()];
@@ -269,6 +283,7 @@ impl Controller {
             rt: Some(rt),
             local,
             soundcloud,
+            covers,
             engine,
             audio_error,
             queue: QueueView { shuffle: false, repeat: RepeatMode::Off, len: 0, index: 0 },
@@ -296,6 +311,11 @@ impl Controller {
             sc_rx,
             sc_request: 0,
         }
+    }
+
+    /// Хаб обложек для интерфейса (`None`: загрузчик не создался).
+    pub(crate) fn covers(&self) -> Option<Arc<CoverHub>> {
+        self.covers.clone()
     }
 
     fn rt(&self) -> &tokio::runtime::Runtime {
@@ -684,9 +704,12 @@ fn restore_download_metadata(downloaded: &mut [Track], history: &History, likes:
     for playlist in playlists.list() {
         known.extend(playlist.tracks.iter().cloned());
     }
-    for track in downloaded.iter_mut().filter(|track| track.artists.is_empty() || track.duration_secs == 0) {
-        if let Some(saved) = known.iter().find(|saved| saved.provider == track.provider && saved.id == track.id) {
+    for track in downloaded.iter_mut() {
+        let Some(saved) = known.iter().find(|saved| saved.provider == track.provider && saved.id == track.id) else { continue };
+        if track.artists.is_empty() || track.duration_secs == 0 {
             *track = saved.clone();
+        } else if track.cover_url.is_none() {
+            track.cover_url = saved.cover_url.clone(); // скачан до появления обложек: берём адрес из истории, лайков или плейлиста
         }
     }
 }
@@ -696,7 +719,7 @@ mod tests {
     use super::*;
 
     fn track(id: &str, provider: ProviderKind) -> Track {
-        Track { id: id.to_string(), provider, title: id.to_string(), artists: vec![], duration_secs: 1 }
+        Track { id: id.to_string(), provider, title: id.to_string(), artists: vec![], duration_secs: 1, cover_url: None }
     }
 
     fn state_with_old_results() -> SoundCloudState {

@@ -5,7 +5,7 @@
 use super::components::{ConfirmDialog, DialogChoice, TextDialog, confirm_dialog, modal_card, text_dialog};
 use super::format::tracks_word;
 use super::ripple;
-use super::widgets::{ButtonKind, COLLAGE_MAX_TILES, SegmentPos, pill_button, playlist_cover, ripple_corner, segment_radius};
+use super::widgets::{ButtonKind, SegmentPos, collage_sample, pill_button, playlist_cover, ripple_corner, segment_radius};
 use crate::app::{McrateApp, View};
 use crate::icons::Icon;
 use crate::theme::{TextRole, Theme, with_alpha};
@@ -206,7 +206,7 @@ pub(crate) fn playlist_row(ui: &mut Ui, theme: &Theme, playlist: &Playlist, note
         Pos2::new(rect.left() + inset + ROW_COVER_SIZE / 2.0, rect.center().y),
         Vec2::splat(ROW_COVER_SIZE),
     );
-    playlist_cover(ui, theme, cover, (&playlist.name, &playlist.tracks[..playlist.tracks.len().min(COLLAGE_MAX_TILES)]), ROW_COVER_RADIUS);
+    playlist_cover(ui, theme, cover, (&playlist.name, &collage_sample(&playlist.tracks)), ROW_COVER_RADIUS);
     let text_left = cover.right() + 14.0;
     let clipped = ui
         .painter()

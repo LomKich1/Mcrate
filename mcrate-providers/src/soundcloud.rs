@@ -247,9 +247,25 @@ fn parse_item(item: &Value) -> Option<(Track, CachedTrack)> {
         title: title.to_string(),
         artists: artist.map(|a| vec![a.to_string()]).unwrap_or_default(),
         duration_secs: (item["duration"].as_u64().unwrap_or(0) / 1000) as u32, // в JSON миллисекунды
+        cover_url: parse_cover_url(item),
     };
     let cached = CachedTrack { transcodings, authorization: item["track_authorization"].as_str().unwrap_or("").to_string() };
     Some((track, cached))
+}
+
+/// Размер картинки, который просим у SoundCloud вместо стандартных 100 на 100 (`-large`): хватает и для большой
+/// обложки на экране «Сейчас играет», а весит около 30-60 КБ.
+const COVER_SIZE_SUFFIX: &str = "-t500x500.";
+
+/// Обложка трека: сначала `artwork_url`, если её нет, то аватар загрузившего (так делает и сам SoundCloud).
+/// Стандартную серую картинку «без аватара» не берём: на её месте лучше наша цветная плитка.
+fn parse_cover_url(item: &Value) -> Option<String> {
+    [&item["artwork_url"], &item["user"]["avatar_url"]]
+        .into_iter()
+        .filter_map(|v| v.as_str())
+        .map(str::trim)
+        .find(|url| (url.starts_with("https://") || url.starts_with("http://")) && !url.contains("default_avatar"))
+        .map(|url| url.replacen("-large.", COVER_SIZE_SUFFIX, 1)) // имя файла у SoundCloud содержит размер
 }
 
 fn parse_transcodings(item: &Value) -> Vec<Transcoding> {
@@ -356,7 +372,8 @@ mod tests {
             "policy": policy,
             "streamable": true,
             "track_authorization": "auth-token",
-            "user": { "username": "Кино (залил Вася)" },
+            "artwork_url": "https://i1.sndcdn.com/artworks-000111-abc-large.jpg",
+            "user": { "username": "Кино (залил Вася)", "avatar_url": "https://i1.sndcdn.com/avatars-000222-large.jpg" },
             "publisher_metadata": { "artist": "Кино" },
             "media": { "transcodings": [
                 { "url": "https://api-v2.soundcloud.com/media/1/progressive", "preset": "mp3_1_0",
@@ -381,6 +398,30 @@ mod tests {
         assert_eq!(track.provider, ProviderKind::SoundCloud);
         assert_eq!(cached.authorization, "auth-token");
         assert_eq!(cached.transcodings.len(), 4);
+    }
+
+    #[test]
+    fn cover_is_artwork_in_big_size() {
+        let (track, _) = parse_item(&sample("ALLOW")).unwrap();
+        assert_eq!(track.cover_url.as_deref(), Some("https://i1.sndcdn.com/artworks-000111-abc-t500x500.jpg"));
+    }
+
+    #[test]
+    fn cover_falls_back_to_uploader_avatar() {
+        let mut item = sample("ALLOW");
+        item["artwork_url"] = Value::Null; // у трека нет своей обложки
+        let (track, _) = parse_item(&item).unwrap();
+        assert_eq!(track.cover_url.as_deref(), Some("https://i1.sndcdn.com/avatars-000222-t500x500.jpg"));
+    }
+
+    #[test]
+    fn no_cover_when_there_is_nothing_usable() {
+        let mut item = sample("ALLOW");
+        item["artwork_url"] = Value::Null;
+        item["user"]["avatar_url"] = json!("https://a1.sndcdn.com/images/default_avatar_large.png"); // серая заглушка SoundCloud
+        assert_eq!(parse_item(&item).unwrap().0.cover_url, None);
+        item["user"]["avatar_url"] = json!("javascript:alert(1)"); // не http(s)
+        assert_eq!(parse_item(&item).unwrap().0.cover_url, None);
     }
 
     #[test]

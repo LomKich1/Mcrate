@@ -137,7 +137,7 @@ impl LocalProvider {
             .map(|t| t.get_strings(ItemKey::TrackArtist).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
             .unwrap_or_default(); // нет тега = пустой список
 
-        let track = Track { id, provider: ProviderKind::Local, title, artists, duration_secs };
+        let track = Track { id, provider: ProviderKind::Local, title, artists, duration_secs, cover_url: None }; // обложку берёт `covers` из самого файла
 
         // .write() = замок на запись
         self.entries

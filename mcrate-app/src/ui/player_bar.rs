@@ -6,7 +6,7 @@ use mcrate_audio::RepeatMode;
 use super::format::{artists_text, fmt_time};
 use super::layout::bar_columns;
 use super::ripple;
-use super::widgets::{ButtonKind, IconButton, cover_tile, elided, icon_button, like_button, loading_outline, place_at, slider_bar};
+use super::widgets::{ButtonKind, IconButton, elided, icon_button, like_button, loading_outline, place_at, slider_bar, track_cover};
 use crate::app::{McrateApp, View};
 use crate::icons::Icon;
 use crate::theme::{Theme, with_alpha};
@@ -55,7 +55,7 @@ impl McrateApp {
                 let cover_size = if compact { 40.0 } else { 52.0 };
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(cover_size), Sense::hover());
                 let cover_radius = if compact { 10.0 } else { 14.0 };
-                cover_tile(ui, theme, rect, &t.id, cover_radius);
+                track_cover(ui, theme, rect, &t, cover_radius);
                 // Пока трек грузится или докачивается, по периметру обложки бежит контур (без чисел).
                 if self.ctl.is_loading() || self.ctl.download_percent().is_some() {
                     let time = ui.input(|i| i.time);

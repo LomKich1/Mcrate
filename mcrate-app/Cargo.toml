@@ -32,6 +32,10 @@ serde = { version = "1", features = ["derive"] }
 
 # Только Windows: winit даёт доступ к DWM (Mica/Acrylic) через WindowExtWindows.
 # Версия должна совпадать с той, что использует eframe (0.30.x).
+[dev-dependencies]
+# Только для тестов хаба обложек: пишут настоящие картинки на диск
+image = { version = "0.25", default-features = false, features = ["png"] }
+
 [target.'cfg(windows)'.dependencies]
 winit = "0.30"
 # Глобальные медиаклавиши (Play/Pause, Следующий, Предыдущий) работают и когда окно не в фокусе.

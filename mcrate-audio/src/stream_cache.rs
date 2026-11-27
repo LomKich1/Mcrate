@@ -241,6 +241,7 @@ impl DownloadStore {
                     title: format!("Трек {id}"),
                     artists: Vec::new(),
                     duration_secs: 0,
+                    cover_url: None,
                 };
                 found.push((metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH), track));
             }
@@ -403,7 +404,7 @@ mod tests {
     use std::time::Duration;
 
     fn track(id: &str, provider: ProviderKind) -> Track {
-        Track { id: id.to_string(), provider, title: "t".into(), artists: vec![], duration_secs: 1 }
+        Track { id: id.to_string(), provider, title: "t".into(), artists: vec![], duration_secs: 1, cover_url: None }
     }
 
     /// Уникальная пустая папка для теста (без внешних крейтов).
@@ -586,6 +587,7 @@ mod tests {
             title: "Песня".into(),
             artists: vec!["Исполнитель".into()],
             duration_secs: 137,
+            cover_url: None,
         };
         store.remember(&full);
         let listed = store.tracks();

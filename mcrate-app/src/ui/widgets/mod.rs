@@ -5,6 +5,7 @@
 
 mod buttons;
 mod cover;
+mod cover_images;
 mod download_icon;
 mod feedback;
 mod glide;
@@ -17,7 +18,8 @@ mod text;
 mod track_row;
 
 pub(crate) use buttons::{ButtonKind, IconButton, glass_icon_button, icon_button, like_button, pill_button, place_at};
-pub(crate) use cover::{COLLAGE_MAX_TILES, cover_tile, loading_outline, playlist_cover};
+pub(crate) use cover::{collage_sample, cover_tile, loading_outline, playlist_cover, track_cover};
+pub(crate) use cover_images::install as install_cover_hub;
 pub(crate) use feedback::{error_banner, loading_indicator, status_snackbar};
 pub(super) use glide::squish;
 pub(crate) use glide::{glide_begin, glide_end};

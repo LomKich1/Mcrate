@@ -10,7 +10,7 @@ use super::components::{
 use super::format::tracks_word;
 use super::layout::{TRACK_LIST_MAX_WIDTH, centered_column, rows_in_view, scroll_end_padding};
 use super::window_layout::EDGE;
-use super::widgets::{ButtonKind, apply_list_gap, cover_tile, error_banner, pill_button, status_snackbar};
+use super::widgets::{ButtonKind, apply_list_gap, collage_sample, error_banner, pill_button, playlist_cover, status_snackbar};
 use crate::app::{McrateApp, View};
 use crate::icons::Icon;
 use crate::theme::Theme;
@@ -22,12 +22,16 @@ const AUDIO_EXT: [&str; 6] = ["mp3", "flac", "ogg", "wav", "m4a", "aac"];
 const UPLOADS_SCROLL_KEY: &str = "uploads_page_scroll";
 /// Ключ общей прокрутки узкой страницы «Скачанные».
 const DOWNLOADS_SCROLL_KEY: &str = "downloaded_page_scroll";
+/// Ключ общей прокрутки узкой страницы «Понравившиеся».
+const LIKED_SCROLL_KEY: &str = "liked_page_scroll";
 
 /// Источник треков, для которого строится общая страница коллекции.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TrackCollectionKind {
     Local,
     Downloaded,
+    /// Треки с сердечком (`Controller::likes`).
+    Liked,
 }
 
 impl TrackCollectionKind {
@@ -35,6 +39,7 @@ impl TrackCollectionKind {
         match self {
             Self::Local => "Ваши загрузки",
             Self::Downloaded => "Скачанные",
+            Self::Liked => "Понравившиеся",
         }
     }
 
@@ -42,6 +47,7 @@ impl TrackCollectionKind {
         match self {
             Self::Local => "Локальная коллекция",
             Self::Downloaded => "Сохранённые онлайн-треки",
+            Self::Liked => "Треки с сердечком",
         }
     }
 
@@ -49,6 +55,7 @@ impl TrackCollectionKind {
         match self {
             Self::Local => UPLOADS_SCROLL_KEY,
             Self::Downloaded => DOWNLOADS_SCROLL_KEY,
+            Self::Liked => LIKED_SCROLL_KEY,
         }
     }
 
@@ -80,6 +87,24 @@ impl McrateApp {
         self.track_collection_view(ui, theme, TrackCollectionKind::Downloaded);
     }
 
+    /// «Понравившиеся»: та же страница, что у «Скачанных» (коллаж, кнопки, поиск, список), свежие лайки первыми.
+    pub(crate) fn collection_liked_view(&mut self, ui: &mut Ui, theme: &Theme) {
+        self.track_collection_view(ui, theme, TrackCollectionKind::Liked);
+    }
+
+    /// Сколько треков в коллекции до поиска.
+    fn collection_total(&self, kind: TrackCollectionKind) -> usize {
+        self.collection_items(kind).len()
+    }
+
+    /// Все треки коллекции до поиска (для обложки-коллажа и числа в карточке).
+    fn collection_items(&self, kind: TrackCollectionKind) -> &[Track] {
+        match kind {
+            TrackCollectionKind::Local => &self.ctl.library,
+            TrackCollectionKind::Downloaded => &self.ctl.downloaded,
+            TrackCollectionKind::Liked => self.ctl.likes.items(),
+        }
+    }
     /// Общий экран локальной и онлайн-коллекции: левая карточка, поиск и виртуализированный список.
     fn track_collection_view(&mut self, ui: &mut Ui, theme: &Theme, kind: TrackCollectionKind) {
         centered_column(ui, f32::INFINITY, |ui| {
@@ -98,14 +123,12 @@ impl McrateApp {
                 ui.add_space(8.0);
             }
 
-            let total = match kind {
-                TrackCollectionKind::Local => self.ctl.library.len(),
-                TrackCollectionKind::Downloaded => self.ctl.downloaded.len(),
-            };
+            let total = self.collection_total(kind);
             if total == 0 {
                 match kind {
                     TrackCollectionKind::Local => self.empty_library(ui, theme),
                     TrackCollectionKind::Downloaded => self.empty_downloads(ui, theme),
+                    TrackCollectionKind::Liked => self.empty_likes(ui, theme),
                 }
                 return;
             }
@@ -138,10 +161,7 @@ impl McrateApp {
 
     /// Шапка поиска; у локальной коллекции справа остаются кнопки выбора файлов и папки.
     fn track_collection_header(&mut self, ui: &mut Ui, theme: &Theme, kind: TrackCollectionKind) {
-        let has_items = match kind {
-            TrackCollectionKind::Local => !self.ctl.library.is_empty(),
-            TrackCollectionKind::Downloaded => !self.ctl.downloaded.is_empty(),
-        };
+        let has_items = self.collection_total(kind) > 0;
         let title_shown = if has_items { narrow_title_shown(ui, kind.scroll_key()) } else { 1.0 };
         let ctl = &mut self.ctl;
         let header = TitleRow {
@@ -189,11 +209,14 @@ impl McrateApp {
                 "сохранено из сервисов",
                 "Онлайн-треки, сохранённые на устройстве и доступные без повторной загрузки.",
             ),
+            TrackCollectionKind::Liked => ("mcrate-liked-tracks", "с сердечком", "Треки, которые вы отметили сердечком: свежие сверху."),
         };
+        // Обложка коллекции: коллаж из её треков (поиск по списку её не меняет). Пустая коллекция остаётся плиткой по ключу.
+        let sample = collage_sample(self.collection_items(kind));
         if vertical {
             ui.add_space(12.0);
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(cover_size), Sense::hover());
-            cover_tile(ui, theme, rect, cover_key, theme.shape_radius(crate::theme::ShapeRole::Large) as f32);
+            playlist_cover(ui, theme, rect, (cover_key, &sample), theme.shape_radius(crate::theme::ShapeRole::Large) as f32);
             ui.add_space(18.0);
             ui.label(RichText::new(kind.title()).size(theme.text_size(crate::theme::TextRole::HeadlineSmall)).strong());
             ui.add_space(5.0);
@@ -207,7 +230,7 @@ impl McrateApp {
         } else {
             ui.horizontal(|ui| {
                 let (rect, _) = ui.allocate_exact_size(Vec2::splat(cover_size), Sense::hover());
-                cover_tile(ui, theme, rect, cover_key, theme.shape_radius(crate::theme::ShapeRole::Medium) as f32);
+                playlist_cover(ui, theme, rect, (cover_key, &sample), theme.shape_radius(crate::theme::ShapeRole::Medium) as f32);
                 ui.add_space(14.0);
                 ui.vertical(|ui| {
                     ui.label(RichText::new(kind.title()).size(theme.text_size(crate::theme::TextRole::TitleLarge)).strong());
@@ -263,6 +286,7 @@ impl McrateApp {
             let scroll_id = match kind {
                 TrackCollectionKind::Local => "uploads_playlist_tracks",
                 TrackCollectionKind::Downloaded => "downloaded_tracks",
+                TrackCollectionKind::Liked => "liked_tracks",
             };
             egui::ScrollArea::vertical().id_salt(scroll_id).auto_shrink([false, false]).wheel_scroll_multiplier(egui::vec2(1.0, 2.0)).show(ui, |ui| {
                 clicked = self.track_collection_rows(ui, theme, &self.filtered, current, playing, kind);
@@ -347,6 +371,11 @@ impl McrateApp {
                 }
             },
         );
+    }
+
+    fn empty_likes(&self, ui: &mut Ui, theme: &Theme) {
+        let top = empty_state_top_space(ui.available_height(), self.bottom_inset);
+        empty_state(ui, theme, top, Icon::HeartOutline, "Лайков пока нет", "Нажмите на сердечко у трека, и он появится здесь.");
     }
 
     fn empty_downloads(&self, ui: &mut Ui, theme: &Theme) {
