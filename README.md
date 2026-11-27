@@ -1,7 +1,7 @@
 # Mcrate
 
 Десктопный плеер для Windows 11 на Rust: Yandex Music, VK Music, SoundCloud, Spotify и свои локальные файлы.
-Интерфейс на egui (wgpu) с Liquid Glass и Material 3. Проект приватный, подробности и план работ в [CLAUDE.md](CLAUDE.md).
+Интерфейс на egui (wgpu) с Liquid Glass и Material 3. Правила и список задач в [CLAUDE.md](CLAUDE.md).
 
 ## Структура
 - `mcrate-core`: общие типы (`Track`, `MusicProvider`) и хранилище токенов (Windows Credential Manager).
